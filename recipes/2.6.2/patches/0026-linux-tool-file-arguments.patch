@@ -1,0 +1,167 @@
+diff --git a/src/renderer/src/util/Heroic.test.ts b/src/renderer/src/util/Heroic.test.ts
+index aab87cd..1f738b2 100644
+--- a/src/renderer/src/util/Heroic.test.ts
++++ b/src/renderer/src/util/Heroic.test.ts
+@@ -104,9 +104,11 @@ describe.runIf(process.platform === "linux")("Heroic integration", () => {
+     new HeroicStore("epic");
+     const selected = { path: gamePath, store: "epic" };
+     expect(selectedGamePrefix(selected)).toBe(prefix);
++    const input = path.join(gamePath, "Input file.esp");
++    fs.writeFileSync(input, "fixture");
+     const command = await resolveGameTool(
+       "/tools/Editor.exe",
+-      ['path "quoted"; literal'],
++      [input, 'path "quoted"; literal'],
+       {},
+       selected,
+     );
+@@ -114,7 +116,7 @@ describe.runIf(process.platform === "linux")("Heroic integration", () => {
+       env: { ...process.env, ...command.options.env },
+     });
+     expect(JSON.parse(stdout)).toEqual({
+-      args: ["/tools/Editor.exe", 'path "quoted"; literal'],
++      args: ["/tools/Editor.exe", `Z:${input.replaceAll("/", "\\")}`, 'path "quoted"; literal'],
+       prefix,
+     });
+   });
+diff --git a/src/renderer/src/util/linux/gameTools.test.ts b/src/renderer/src/util/linux/gameTools.test.ts
+index 3e4ead4..e18dcf4 100644
+--- a/src/renderer/src/util/linux/gameTools.test.ts
++++ b/src/renderer/src/util/linux/gameTools.test.ts
+@@ -87,7 +87,11 @@ describe.runIf(process.platform === "linux")("game tool runner", () => {
+     config({ 0: { name: "selected_proton" } });
+     expect(await getConfiguredProtonName(steam, "42")).toBe("selected_proton");
+     expect(await resolveProtonPath(steam, "selected_proton")).toBe(runner);
+-    const args = ["path with spaces", 'value="quoted"', "literal; $(touch example)"];
++    const input = path.join(gamePath, "Input file.esp");
++    const output = path.join(gamePath, "New output.esp");
++    write(input, "fixture");
++    const literals = ["path with spaces", 'value="quoted"', "literal; $(touch example)"];
++    const args = [input, output, ...literals];
+     const command = await resolveGameTool(
+       "/tools/Editor.exe",
+       args,
+@@ -100,7 +104,13 @@ describe.runIf(process.platform === "linux")("game tool runner", () => {
+       env: { ...process.env, ...command.options.env },
+     });
+     expect(JSON.parse(stdout)).toEqual({
+-      args: ["run", "/tools/Editor.exe", ...args],
++      args: [
++        "run",
++        "/tools/Editor.exe",
++        `Z:${input.replaceAll("/", "\\")}`,
++        `Z:${output.replaceAll("/", "\\")}`,
++        ...literals,
++      ],
+       prefix,
+       app: "42",
+       cwd: gamePath,
+@@ -142,14 +152,20 @@ describe.runIf(process.platform === "linux")("game tool runner", () => {
+     expect(await findLatestProton(steam)).toBe(latest);
+   });
+   it("keeps native tools native and requires an existing explicit Wine prefix", async () => {
++    const input = path.join(gamePath, "Input.esp");
++    write(input, "fixture");
+     expect(
+-      (await resolveGameTool("/tools/editor", [], {}, { path: gamePath, store: "steam" }))
+-        .executable,
+-    ).toBe("/tools/editor");
+-    const command = await resolveGameTool("/tools/Editor.exe", ["argument"], {
++      await resolveGameTool("/tools/editor", [input], {}, { path: gamePath, store: "steam" }),
++    ).toEqual({ executable: "/tools/editor", args: [input], options: {} });
++    const command = await resolveGameTool("/tools/Editor.exe", [input, "argument"], {
+       env: { WINEPREFIX: prefix },
+     });
+     expect(command.executable).toBe("wine");
++    expect(command.args).toEqual([
++      "/tools/Editor.exe",
++      `Z:${input.replaceAll("/", "\\")}`,
++      "argument",
++    ]);
+     expect(command.options.env.WINEPREFIX).toBe(prefix);
+     await expect(
+       resolveGameTool("Tool.exe", [], { env: { WINEPREFIX: path.join(root, "missing") } }),
+diff --git a/src/renderer/src/util/linux/gameTools.ts b/src/renderer/src/util/linux/gameTools.ts
+index 9fa7e21..fd35aa1 100644
+--- a/src/renderer/src/util/linux/gameTools.ts
++++ b/src/renderer/src/util/linux/gameTools.ts
+@@ -6,6 +6,7 @@ import {
+   getCompatibilityGame,
+   selectedGamePrefix,
+ } from "../compatibilityPaths";
++import { mapWineArgument } from "../linuxCompatibility";
+ import {
+   buildProtonCommand,
+   buildProtonEnvironment,
+@@ -39,7 +40,10 @@ export async function resolveGameTool(
+   const command = { executable, args, options };
+   if (process.platform !== "linux" || !isWindowsExecutable(executable)) return command;
+   if (!game && !options.env?.WINEPREFIX) return command;
+-  if (game && runners.has(game.store ?? "")) return runners.get(game.store)(command, game);
++  const wineArgs = args.map(mapWineArgument);
++  if (game && runners.has(game.store ?? "")) {
++    return runners.get(game.store)({ ...command, args: wineArgs }, game);
++  }
+   const prefix = options.env?.WINEPREFIX ?? selectedGamePrefix(game);
+   if (!prefix || !fs.existsSync(path.join(prefix, "drive_c"))) {
+     throw new Error(
+@@ -62,7 +66,7 @@ export async function resolveGameTool(
+         "This tool's WINEPREFIX differs from the selected Steam game. Use the game's prefix with Proton.",
+       );
+     }
+-    const result = buildProtonCommand(proton.protonPath, executable, args);
++    const result = buildProtonCommand(proton.protonPath, executable, wineArgs);
+     return {
+       ...result,
+       options: {
+@@ -78,7 +82,7 @@ export async function resolveGameTool(
+   }
+   return {
+     executable: "wine",
+-    args: [executable, ...args],
++    args: [executable, ...wineArgs],
+     options: {
+       ...options,
+       shell: false,
+diff --git a/src/renderer/src/util/linuxSelfTest.ts b/src/renderer/src/util/linuxSelfTest.ts
+index 99fb161..a230822 100644
+--- a/src/renderer/src/util/linuxSelfTest.ts
++++ b/src/renderer/src/util/linuxSelfTest.ts
+@@ -43,6 +43,14 @@ export async function runLinuxSelfTest(): Promise<void> {
+     assert.deepEqual(GetPrivateProfileString("GENERAL", "ENABLED", "", windowsPath), ["1"]);
+     assert.match(fs.readFileSync(ini).subarray(2).toString("utf16le"), /^; fixture\r\n/);
+     assert.equal(resolveCaseInsensitiveSync(windowsPath), ini);
++    const newConfig = resolveCaseInsensitiveSync(path.join(documents, "My Games/New/settings.ini"));
++    assert.equal(
++      newConfig,
++      path.join(prefix, "drive_c/users/steamuser/Documents/My Games/New/settings.ini"),
++    );
++    fs.mkdirSync(path.dirname(newConfig), { recursive: true });
++    WritePrivateProfileString("General", "Enabled", "1", newConfig);
++    assert.equal(fs.existsSync(path.join(documents, "My Games/New/settings.ini")), false);
+     assert.equal(
+       resolveWindowsUserPathSync(process.env.VORTEX_USERDATA),
+       process.env.VORTEX_USERDATA,
+@@ -86,7 +94,7 @@ export async function runLinuxSelfTest(): Promise<void> {
+ 
+     const command = await resolveGameTool(
+       "/fixtures/Tool.exe",
+-      ['value="quoted"', "path with spaces"],
++      [ini, 'value="quoted"', "path with spaces"],
+       { env: { WINEPREFIX: prefix } },
+     );
+     assert.equal(command.executable, "wine");
+@@ -100,7 +108,12 @@ export async function runLinuxSelfTest(): Promise<void> {
+       { env: { ...process.env, ...command.options.env, ELECTRON_RUN_AS_NODE: "1" } },
+     );
+     assert.deepEqual(JSON.parse(output.stdout), {
+-      args: ["/fixtures/Tool.exe", 'value="quoted"', "path with spaces"],
++      args: [
++        "/fixtures/Tool.exe",
++        `Z:${ini.replaceAll("/", "\\")}`,
++        'value="quoted"',
++        "path with spaces",
++      ],
+       prefix,
+     });
+     console.log(

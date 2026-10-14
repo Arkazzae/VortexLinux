@@ -1,0 +1,192 @@
+diff --git a/src/renderer/src/util/fsAtomic.test.ts b/src/renderer/src/util/fsAtomic.test.ts
+index 3d23f7f..ae7e3a2 100644
+--- a/src/renderer/src/util/fsAtomic.test.ts
++++ b/src/renderer/src/util/fsAtomic.test.ts
+@@ -17,7 +17,8 @@ vi.mock("tmp", async (importOriginal) => {
+   };
+ });
+ 
+-import { copyFileAtomic } from "./fsAtomic";
++import { setCompatibilityGameProvider } from "./compatibilityPaths";
++import { copyFileAtomic, writeFileAtomic } from "./fsAtomic";
+ 
+ describe("copyFileAtomic", () => {
+   let dir: string;
+@@ -76,3 +77,147 @@ describe("copyFileAtomic", () => {
+     expect(nodeFs.readdirSync(dir)).toEqual(["dest.txt"]);
+   });
+ });
++
++describe.runIf(process.platform === "linux")("atomic writes to compatibility paths", () => {
++  let dir: string;
++  let hostConfig: string;
++  let prefixConfig: string;
++  const configPath = "ExampleGame/Saved/Config/Windows";
++  const manifest = "vortex.deployment.example-config.json";
++
++  beforeEach(() => {
++    dir = nodeFs.mkdtempSync(path.join(os.tmpdir(), "fs-atomic-prefix-"));
++    const localAppData = path.join(dir, "Local");
++    const prefix = path.join(dir, "prefix");
++    hostConfig = path.join(localAppData, configPath);
++    prefixConfig = path.join(prefix, "drive_c/users/steamuser/AppData/Local", configPath);
++    nodeFs.mkdirSync(prefixConfig, { recursive: true });
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", localAppData);
++    vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(dir, ".config"));
++    vi.stubEnv("VORTEX_LINUX_DOCUMENTS", path.join(dir, "Documents"));
++    vi.stubEnv("VORTEX_USERDATA", path.join(dir, "Vortex"));
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++  });
++
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    vi.unstubAllEnvs();
++    nodeFs.rmSync(dir, { recursive: true, force: true });
++  });
++
++  it("writes a deployment manifest when only the Proton configuration directory exists", async () => {
++    await writeFileAtomic(path.join(hostConfig, manifest), '{"files":[]}');
++
++    expect(nodeFs.readFileSync(path.join(prefixConfig, manifest), "utf8")).toBe('{"files":[]}');
++    expect(nodeFs.readdirSync(prefixConfig)).toEqual([manifest]);
++    expect(nodeFs.existsSync(path.join(dir, "Local"))).toBe(false);
++  });
++
++  it("writes and verifies the manifest in Proton even when a stale host copy exists", async () => {
++    nodeFs.mkdirSync(hostConfig, { recursive: true });
++    nodeFs.writeFileSync(path.join(hostConfig, manifest), "stale host manifest");
++    nodeFs.writeFileSync(path.join(prefixConfig, manifest), "old prefix manifest");
++
++    await writeFileAtomic(path.join(hostConfig, manifest), "new prefix manifest");
++
++    expect(nodeFs.readFileSync(path.join(prefixConfig, manifest), "utf8")).toBe(
++      "new prefix manifest",
++    );
++    expect(nodeFs.readFileSync(path.join(hostConfig, manifest), "utf8")).toBe(
++      "stale host manifest",
++    );
++    expect(nodeFs.readdirSync(prefixConfig)).toEqual([manifest]);
++    expect(nodeFs.readdirSync(hostConfig)).toEqual([manifest]);
++  });
++
++  it("preserves existing directory and filename casing when replacing a configuration file", async () => {
++    nodeFs.writeFileSync(path.join(prefixConfig, "Engine.ini"), "old settings");
++    const requested = path.join(path.dirname(prefixConfig), "windows", "engine.ini");
++
++    await writeFileAtomic(requested, "new settings");
++
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini"), "utf8")).toBe("new settings");
++    expect(nodeFs.readdirSync(prefixConfig)).toEqual(["Engine.ini"]);
++    expect(nodeFs.readdirSync(path.dirname(prefixConfig))).toEqual(["Windows"]);
++    expect(nodeFs.existsSync(path.join(dir, "Local"))).toBe(false);
++  });
++
++  it("copies configuration files within Proton without leaving a temporary file on the host", async () => {
++    nodeFs.mkdirSync(hostConfig, { recursive: true });
++    nodeFs.writeFileSync(path.join(hostConfig, "Engine.ini"), "stale host settings");
++    nodeFs.writeFileSync(path.join(prefixConfig, "Engine.ini"), "current prefix settings");
++    nodeFs.writeFileSync(path.join(prefixConfig, "Engine.ini.baked"), "old baked settings");
++
++    await copyFileAtomic(
++      path.join(hostConfig, "Engine.ini"),
++      path.join(hostConfig, "Engine.ini.baked"),
++    );
++
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini.baked"), "utf8")).toBe(
++      "current prefix settings",
++    );
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini"), "utf8")).toBe(
++      "current prefix settings",
++    );
++    expect(nodeFs.readFileSync(path.join(hostConfig, "Engine.ini"), "utf8")).toBe(
++      "stale host settings",
++    );
++    expect(nodeFs.readdirSync(prefixConfig).sort()).toEqual(["Engine.ini", "Engine.ini.baked"]);
++    expect(nodeFs.readdirSync(hostConfig)).toEqual(["Engine.ini"]);
++  });
++
++  it("copies into Proton when the host configuration directory does not exist", async () => {
++    const source = path.join(dir, "Engine.ini");
++    nodeFs.writeFileSync(source, "mod settings");
++
++    await copyFileAtomic(source, path.join(hostConfig, "Engine.ini"));
++
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini"), "utf8")).toBe("mod settings");
++    expect(nodeFs.readFileSync(source, "utf8")).toBe("mod settings");
++    expect(nodeFs.readdirSync(prefixConfig)).toEqual(["Engine.ini"]);
++    expect(nodeFs.existsSync(path.join(dir, "Local"))).toBe(false);
++  });
++
++  it("preserves the existing Proton destination and cleans up when a copy fails", async () => {
++    nodeFs.mkdirSync(hostConfig, { recursive: true });
++    nodeFs.writeFileSync(path.join(prefixConfig, "Engine.ini"), "existing settings");
++
++    await expect(
++      copyFileAtomic(path.join(hostConfig, "missing.ini"), path.join(hostConfig, "Engine.ini")),
++    ).rejects.toMatchObject({ code: "ENOENT" });
++
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini"), "utf8")).toBe(
++      "existing settings",
++    );
++    expect(nodeFs.readdirSync(prefixConfig)).toEqual(["Engine.ini"]);
++    expect(nodeFs.readdirSync(hostConfig)).toEqual([]);
++  });
++
++  it("rejects unavailable-prefix operations without changing the source or either destination", async () => {
++    const source = path.join(dir, "Engine.ini");
++    nodeFs.writeFileSync(source, "source settings");
++    nodeFs.mkdirSync(hostConfig, { recursive: true });
++    nodeFs.writeFileSync(path.join(hostConfig, "Engine.ini"), "host settings");
++    nodeFs.writeFileSync(path.join(prefixConfig, "Engine.ini"), "prefix settings");
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(dir, "missing-prefix") },
++    }));
++
++    await expect(
++      writeFileAtomic(path.join(hostConfig, "Engine.ini"), "new settings"),
++    ).rejects.toMatchObject({ code: "ENOENT" });
++    await expect(copyFileAtomic(source, path.join(hostConfig, "Engine.ini"))).rejects.toMatchObject(
++      {
++        code: "ENOENT",
++      },
++    );
++
++    expect(nodeFs.readFileSync(source, "utf8")).toBe("source settings");
++    expect(nodeFs.readFileSync(path.join(hostConfig, "Engine.ini"), "utf8")).toBe("host settings");
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini"), "utf8")).toBe(
++      "prefix settings",
++    );
++    expect(nodeFs.readdirSync(prefixConfig)).toEqual(["Engine.ini"]);
++    expect(nodeFs.readdirSync(hostConfig)).toEqual(["Engine.ini"]);
++  });
++});
+diff --git a/src/renderer/src/util/fsAtomic.ts b/src/renderer/src/util/fsAtomic.ts
+index ce40a2f..45c82d1 100644
+--- a/src/renderer/src/util/fsAtomic.ts
++++ b/src/renderer/src/util/fsAtomic.ts
+@@ -6,10 +6,15 @@ import { file } from "tmp";
+ 
+ import { checksum } from "./checksum";
+ import * as fs from "./fs";
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
+ import { log } from "./log";
+ 
+ export function writeFileAtomic(filePath: string, input: string | Buffer) {
+-  return writeFileAtomicImpl(filePath, input, 3);
++  // tmp creates files without the filesystem API's Proton/case translation.
++  // Resolve first so creation, verification and rename use the same directory.
++  return PromiseBB.try(() => resolveCaseInsensitiveSync(filePath)).then((resolvedPath) =>
++    writeFileAtomicImpl(resolvedPath, input, 3),
++  );
+ }
+ 
+ function writeFileAtomicImpl(
+@@ -99,6 +104,8 @@ export function copyFileAtomic(srcPath: string, destPath: string): PromiseBB<voi
+   let cleanup: (next?: (err?: Error) => void) => void;
+   let tmpPath: string;
+   return new PromiseBB<void>((resolve, reject) => {
++    srcPath = resolveCaseInsensitiveSync(srcPath);
++    destPath = resolveCaseInsensitiveSync(destPath);
+     // the copy only ever works on the temp PATH; discardDescriptor makes tmp close its
+     // descriptor immediately, so no descriptor is held (or ever double-closed) here
+     file(

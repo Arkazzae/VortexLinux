@@ -1,0 +1,79 @@
+diff --git a/src/renderer/src/extensions/ini_prep/index.ts b/src/renderer/src/extensions/ini_prep/index.ts
+index e88f00d4d..5ffab275e 100644
+--- a/src/renderer/src/extensions/ini_prep/index.ts
++++ b/src/renderer/src/extensions/ini_prep/index.ts
+@@ -278,13 +278,28 @@ function bakeSettings(
+     .then(() => undefined);
+ }
+ 
++export function restoreIniBackup(iniFileName: string): PromiseBB<void> {
++  const backupFile = iniFileName + ".base";
++  return fs
++    .copyAsync(backupFile, iniFileName + ".baked", {
++      noSelfCopy: true,
++    })
++    .then(() => fs.copyAsync(backupFile, iniFileName, { noSelfCopy: true }))
++    .catch((err) => {
++      if (err.code === "ENOENT") {
++        log("debug", "skipping missing ini backup during purge", {
++          backupFile,
++          iniFileName,
++        });
++        return PromiseBB.resolve();
++      }
++      return PromiseBB.reject(err);
++    });
++}
++
+ function purgeChanges(t: TFunction, gameMode: string, discovery: IDiscoveryResult) {
+   return PromiseBB.map(iniFiles(gameMode, discovery), (iniFileName) =>
+-    fs
+-      .copyAsync(iniFileName + ".base", iniFileName + ".baked", {
+-        noSelfCopy: true,
+-      })
+-      .then(() => fs.copyAsync(iniFileName + ".base", iniFileName, { noSelfCopy: true })),
++    restoreIniBackup(iniFileName),
+   );
+ }
+ 
+diff --git a/src/renderer/src/extensions/ini_prep/index.optional.test.ts b/src/renderer/src/extensions/ini_prep/index.optional.test.ts
+new file mode 100644
+index 000000000..f2c8c0f83
+--- /dev/null
++++ b/src/renderer/src/extensions/ini_prep/index.optional.test.ts
+@@ -0,0 +1,35 @@
++import * as nodeFs from "fs/promises";
++import * as os from "os";
++import * as path from "path";
++
++import { expect, it } from "vitest";
++
++import { restoreIniBackup } from "./index";
++
++it("skips an optional ini whose backup was never created", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-ini-purge-"));
++  try {
++    const iniPath = path.join(tempPath, "Optional.ini");
++
++    await expect(restoreIniBackup(iniPath)).resolves.toBeUndefined();
++    await expect(nodeFs.stat(iniPath)).rejects.toMatchObject({ code: "ENOENT" });
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});
++
++it("restores existing ini backups during purge", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-ini-purge-"));
++  try {
++    const iniPath = path.join(tempPath, "Existing.ini");
++    const contents = "[General]\nvalue=restored\n";
++    await nodeFs.writeFile(iniPath + ".base", contents);
++
++    await restoreIniBackup(iniPath);
++
++    await expect(nodeFs.readFile(iniPath, "utf8")).resolves.toBe(contents);
++    await expect(nodeFs.readFile(iniPath + ".baked", "utf8")).resolves.toBe(contents);
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});

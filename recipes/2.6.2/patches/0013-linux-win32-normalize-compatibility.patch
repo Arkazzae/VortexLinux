@@ -1,0 +1,110 @@
+diff --git a/src/renderer/src/util/monkeyPatching.ts b/src/renderer/src/util/monkeyPatching.ts
+--- a/src/renderer/src/util/monkeyPatching.ts
++++ b/src/renderer/src/util/monkeyPatching.ts
+@@ -1,6 +1,6 @@
+ import type * as pathT from "path";
+ 
+-import { patchPathCompatibility } from "./pathCompatibility";
++import { patchPathCompatibility, patchWin32NormalizeCompatibility } from "./pathCompatibility";
+ 
+ /**
+  * Monkey patching is obviously considered evil but there may be cases where the alternative
+@@ -124,6 +124,7 @@ function applyMonkeyPatches() {
+   );
+ 
+   const path: typeof pathT = require("path");
++  patchWin32NormalizeCompatibility(path.win32, path);
+   patchPathCompatibility(path);
+ }
+ 
+diff --git a/src/renderer/src/util/pathCompatibility.test.ts b/src/renderer/src/util/pathCompatibility.test.ts
+--- a/src/renderer/src/util/pathCompatibility.test.ts
++++ b/src/renderer/src/util/pathCompatibility.test.ts
+@@ -2,7 +2,11 @@ import * as path from "node:path";
+ 
+ import { describe, expect, it } from "vitest";
+ 
+-import { extensionPathInput, patchPathCompatibility } from "./pathCompatibility";
++import {
++  extensionPathInput,
++  patchPathCompatibility,
++  patchWin32NormalizeCompatibility,
++} from "./pathCompatibility";
+ 
+ function linuxPath(): Pick<typeof path, "join" | "normalize" | "resolve"> {
+   return {
+@@ -12,6 +16,10 @@ function linuxPath(): Pick<typeof path, "join" | "normalize" | "resolve"> {
+   };
+ }
+ 
++function windowsNormalize(): Pick<typeof path, "normalize"> {
++  return { normalize: path.win32.normalize };
++}
++
+ describe("extension path compatibility", () => {
+   it("translates Windows-authored separators only on Linux", () => {
+     expect(extensionPathInput("tools\\redmod\\bin\\redMod.exe", "linux")).toBe(
+@@ -47,4 +55,24 @@ describe("extension path compatibility", () => {
+       "/games/Cyberpunk 2077/r6/scripts",
+     );
+   });
++
++  it("normalizes explicit win32 layout identifiers for native comparisons", () => {
++    const explicitWin32 = windowsNormalize();
++    const native = linuxPath();
++    patchWin32NormalizeCompatibility(explicitWin32, native, "linux");
++
++    expect(explicitWin32.normalize("bin/x64/plugins/cyber_engine_tweaks.asi")).toBe(
++      "bin/x64/plugins/cyber_engine_tweaks.asi",
++    );
++  });
++
++  it("does not change explicit win32 normalization on Windows", () => {
++    const explicitWin32 = windowsNormalize();
++    const native = linuxPath();
++    patchWin32NormalizeCompatibility(explicitWin32, native, "win32");
++
++    expect(explicitWin32.normalize("bin/x64/plugins/cyber_engine_tweaks.asi")).toBe(
++      "bin\\x64\\plugins\\cyber_engine_tweaks.asi",
++    );
++  });
+ });
+diff --git a/src/renderer/src/util/pathCompatibility.ts b/src/renderer/src/util/pathCompatibility.ts
+--- a/src/renderer/src/util/pathCompatibility.ts
++++ b/src/renderer/src/util/pathCompatibility.ts
+@@ -3,6 +3,7 @@ import type * as pathT from "path";
+ import { unknownToError } from "@vortex/shared";
+ 
+ type PatchablePath = Pick<typeof pathT, "join" | "normalize" | "resolve">;
++type PatchableNormalize = Pick<typeof pathT, "normalize">;
+ 
+ /**
+  * Community extensions were historically authored for the Windows-only
+@@ -15,6 +16,27 @@ export function extensionPathInput(input: string, platform = process.platform):
+   return platform === "linux" ? input.replaceAll("\\", "/") : input;
+ }
+ 
++/**
++ * A few legacy extensions explicitly use path.win32.normalize() for archive
++ * layout identifiers and then compare them with native paths supplied by
++ * Vortex. Keep every other win32 helper intact for Wine command construction,
++ * but normalize those identifiers with the host implementation on Linux.
++ */
++export function patchWin32NormalizeCompatibility(
++  win32Path: PatchableNormalize,
++  nativePath: PatchableNormalize,
++  platform = process.platform,
++): void {
++  if (platform !== "linux") {
++    return;
++  }
++
++  const nativeNormalize = nativePath.normalize;
++  win32Path.normalize = function (input: string) {
++    return nativeNormalize(extensionPathInput(input, platform));
++  };
++}
++
+ export function patchPathCompatibility(path: PatchablePath, platform = process.platform): void {
+   const oldJoin = path.join;
+   const oldNormalize = path.normalize;

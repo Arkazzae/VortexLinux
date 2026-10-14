@@ -1,0 +1,166 @@
+diff --git a/src/renderer/src/IPCDownloadAdapter.ts b/src/renderer/src/IPCDownloadAdapter.ts
+index 37ba7c2..c394b60 100644
+--- a/src/renderer/src/IPCDownloadAdapter.ts
++++ b/src/renderer/src/IPCDownloadAdapter.ts
+@@ -139,6 +139,11 @@ type ActiveDownload = {
+   callback?: (err: Error | null, id?: string) => void;
+   fileNameHint?: string;
+   allowInstall?: boolean;
++  rawUrls?: string[];
++  modInfo?: ModInfo;
++  gameIds?: Array<string | undefined>;
++  localPath?: string;
++  resolvedMeta?: unknown;
+   lastBytesReceived: number;
+   lastProgressDispatch: number;
+   startedEventEmitted: boolean;
+@@ -439,8 +444,50 @@ export class IPCDownloadAdapter {
+     wireState: WireDownloadState,
+     activeDownload?: ActiveDownload,
+   ): Promise<void> {
+-    const reduxState = this.#api.getState();
+-    const download = reduxState.persistent.downloads.files?.[downloadId];
++    let reduxState = this.#api.getState();
++    let download = reduxState.persistent.downloads.files?.[downloadId];
++
++    // A game setup failure can roll its state branch back while a community
++    // extension's download is still active. The main process still completes
++    // the file and the extension then immediately asks to install its id. Keep
++    // enough request data in the active entry to rebuild the finished record
++    // instead of returning "Unknown Download" from the install API.
++    if (
++      download === undefined &&
++      activeDownload?.rawUrls !== undefined &&
++      activeDownload.modInfo !== undefined &&
++      activeDownload.gameIds !== undefined &&
++      activeDownload.localPath !== undefined
++    ) {
++      log("warn", "rebuilding download record removed while transfer was active", { downloadId });
++      this.#api.store.dispatch(
++        initDownload(
++          downloadId,
++          activeDownload.rawUrls,
++          activeDownload.modInfo,
++          activeDownload.gameIds,
++        ),
++      );
++      this.#api.store.dispatch(setDownloadFilePath(downloadId, activeDownload.localPath));
++
++      if (activeDownload.fileNameHint !== undefined && !activeDownload.modInfo.name) {
++        this.#api.store.dispatch(
++          setDownloadModInfo(downloadId, "name", activeDownload.fileNameHint),
++        );
++      }
++
++      if (activeDownload.resolvedMeta !== undefined) {
++        const actions = Object.entries(flatten(activeDownload.resolvedMeta)).map(([key, value]) =>
++          setDownloadModInfo(downloadId, key, value),
++        );
++        if (actions.length > 0) {
++          batchDispatch(this.#api.store, actions);
++        }
++      }
++
++      reduxState = this.#api.getState();
++      download = reduxState.persistent.downloads.files?.[downloadId];
++    }
+ 
+     if (download?.localPath !== undefined) {
+       const gameId = toInternalGameId(this.#api, download.game?.[0] ?? activeGameId(reduxState));
+@@ -592,14 +639,19 @@ export class IPCDownloadAdapter {
+ 
+       const allowInstall = normalizeAllowInstall(options?.allowInstall);
+ 
+-      this.#activeDownloads.set(downloadId, {
++      const activeDownload: ActiveDownload = {
+         callback,
+         fileNameHint: fileName,
+         allowInstall,
++        rawUrls,
++        modInfo,
++        gameIds,
++        localPath: tempName,
+         lastBytesReceived: 0,
+         lastProgressDispatch: 0,
+         startedEventEmitted: false,
+-      });
++      };
++      this.#activeDownloads.set(downloadId, activeDownload);
+       log("debug", "download queued", { downloadId, collationId });
+ 
+       // Create the Redux record. nexus_integration's onChangeDownloads watches
+@@ -621,6 +673,7 @@ export class IPCDownloadAdapter {
+       // attributeExtractors and collection install plumbing read from.
+       const resolvedMeta = this.#resolvedMeta.get(collationId);
+       this.#resolvedMeta.delete(collationId);
++      activeDownload.resolvedMeta = resolvedMeta;
+ 
+       if (resolvedMeta !== undefined) {
+         const flattened = flatten(resolvedMeta) as Record<string, unknown>;
+@@ -880,6 +933,10 @@ export class IPCDownloadAdapter {
+       this.#activeDownloads.set(downloadId, {
+         callback,
+         allowInstall,
++        rawUrls: download.urls ?? [],
++        modInfo: download.modInfo as ModInfo,
++        gameIds: download.game ?? [gameId],
++        localPath: download.localPath,
+         lastBytesReceived: 0,
+         lastProgressDispatch: 0,
+         startedEventEmitted: false,
+diff --git a/src/renderer/src/IPCDownloadAdapter.test.ts b/src/renderer/src/IPCDownloadAdapter.test.ts
+index f08630f..a192669 100644
+--- a/src/renderer/src/IPCDownloadAdapter.test.ts
++++ b/src/renderer/src/IPCDownloadAdapter.test.ts
+@@ -101,6 +101,50 @@ function wireState(status: string, bytesReceived: number) {
+ }
+ 
+ describe("runtime restore", () => {
++  test("rebuilds an active download record removed before completion", async ({
++    makeDownloadAdapter,
++  }) => {
++    const h = makeDownloadAdapter({ download: { modInfo: { name: "Community Tool" } } });
++    const callback = vi.fn();
++    const downloadId = h.downloadId;
++
++    h.events.emit(
++      "resume-download",
++      downloadId,
++      (err: Error | null, id?: string) => callback(err, id),
++      { allowInstall: false },
++    );
++    await h.started.promise;
++
++    h.setState((draft) => {
++      delete draft.persistent.downloads.files[downloadId];
++    });
++
++    const finished = new Promise<void>((resolve) =>
++      h.events.on("did-finish-download", (id: string) => {
++        if (id === downloadId) resolve();
++      }),
++    );
++    h.getStates.mockResolvedValue({ [downloadId]: wireState("completed", 100) });
++    await vi.advanceTimersByTimeAsync(250);
++    await finished;
++
++    expect(h.dispatched).toContainEqual(
++      expect.objectContaining({
++        type: "INIT_DOWNLOAD",
++        payload: expect.objectContaining({ id: downloadId }),
++      }),
++    );
++    expect(h.dispatched).toContainEqual(
++      expect.objectContaining({
++        type: "SET_DOWNLOAD_FILEPATH",
++        payload: expect.objectContaining({ id: downloadId }),
++      }),
++    );
++    expect(h.dispatched).toContainEqual(finishDownload(downloadId, "finished", null));
++    expect(callback).toHaveBeenCalledWith(null, downloadId);
++  });
++
+   test("restores a checkpointless paused download under the same id", async ({
+     makeDownloadAdapter,
+   }) => {
+

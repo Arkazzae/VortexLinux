@@ -1,0 +1,92 @@
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+index dc41c6834..a6f2ec861 100644
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -39,11 +39,33 @@
+   return path.join(os.homedir(), "Documents");
+ }
+ 
+-function linuxUserPathMappings(): IUserPathMapping[] {
+-  const appData =
++function linuxAppDataPath(): string {
++  return (
+     process.env.VORTEX_LINUX_APPDATA ??
+     process.env.XDG_CONFIG_HOME ??
+-    path.join(os.homedir(), ".config");
++    path.join(os.homedir(), ".config")
++  );
++}
++
++/**
++ * Electron stores Vortex itself under {appData}/Vortex. That directory must
++ * stay on the Linux filesystem; leftover Wine copies of %APPDATA%\\Vortex
++ * in Steam prefixes are not a substitute for staging, downloads, or state.
++ */
++function vortexUserDataPath(): string {
++  return process.env.VORTEX_USERDATA ?? path.join(linuxAppDataPath(), "Vortex");
++}
++
++function isPathInside(root: string, candidate: string): boolean {
++  const relative = path.relative(path.resolve(root), path.resolve(candidate));
++  return (
++    relative === "" ||
++    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
++  );
++}
++
++function linuxUserPathMappings(): IUserPathMapping[] {
++  const appData = linuxAppDataPath();
+   const localAppData =
+     process.env.VORTEX_LINUX_LOCAL_APPDATA ?? path.resolve(appData, "..", "Local");
+   const localLow = process.env.VORTEX_LINUX_LOCAL_LOW ?? path.resolve(appData, "..", "LocalLow");
+@@ -183,6 +205,10 @@
+     return input;
+   }
+ 
++  if (isPathInside(vortexUserDataPath(), input)) {
++    return input;
++  }
++
+   const candidates = linuxUserPathMappings()
+     .flatMap((mapping) => {
+       const relative = path.relative(mapping.linuxRoot, input);
+diff --git a/src/renderer/src/util/compatibilityPaths.test.ts b/src/renderer/src/util/compatibilityPaths.test.ts
+index 96f707c23..7bc1fa18f 100644
+--- a/src/renderer/src/util/compatibilityPaths.test.ts
++++ b/src/renderer/src/util/compatibilityPaths.test.ts
+@@ -107,6 +107,35 @@
+     expect(resolveWindowsUserPathSync(requested)).toBe(path.join(actualDirectory, "Settings.ini"));
+   });
+ 
++  it("does not remap Vortex userData into a leftover Wine prefix", () => {
++    const prefixStaging = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "AppData",
++      "Roaming",
++      "Vortex",
++      "cyberpunk2077",
++      "mods",
++    );
++    fs.mkdirSync(prefixStaging, { recursive: true });
++    fs.writeFileSync(path.join(prefixStaging, "stale.txt"), "prefix");
++
++    const stagingFile = path.join(
++      process.env.VORTEX_LINUX_APPDATA!,
++      "Vortex",
++      "cyberpunk2077",
++      "mods",
++      "redscript-mod",
++      "r6",
++      "scripts",
++      "NoIntroVideos.reds",
++    );
++    expect(resolveWindowsUserPathSync(stagingFile)).toBe(stagingFile);
++  });
++
+   it("leaves unrelated and unmatched paths unchanged", () => {
+     const unrelated = path.join(tempDir, "Downloads", "archive.zip");
+     const unmatched = path.join(process.env.VORTEX_LINUX_DOCUMENTS, "Unknown", "file.ini");

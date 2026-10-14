@@ -1,0 +1,62 @@
+#!/bin/sh
+
+set -eu
+
+APPDIR=${APPDIR:-"$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"}
+
+export ELECTRON_TRASH="${ELECTRON_TRASH:-gio}"
+# FOMOD needs build/Release.
+unset PREBUILDS_ONLY
+
+export DOTNET_ROOT="$APPDIR/usr/lib/dotnet"
+export DOTNET_ROOT_X64="$DOTNET_ROOT"
+export PATH="$DOTNET_ROOT:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+export VORTEX_DOTNET_WIN_ROOT="${VORTEX_DOTNET_WIN_ROOT:-$APPDIR/opt/Vortex/dotnet-win-x64}"
+export VORTEX_WINEPREFIX="${VORTEX_WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/vortex-linux/wineprefix}"
+export DOTNET_ROLL_FORWARD="${DOTNET_ROLL_FORWARD:-Major}"
+export DOTNET_MULTILEVEL_LOOKUP="${DOTNET_MULTILEVEL_LOOKUP:-0}"
+
+if [ "${1-}" = "--vortex-self-test" ]; then
+  runtime_probe="$APPDIR/opt/Vortex/resources/app.asar.unpacked/assets/dotnetprobe"
+  fomod_release="$APPDIR/opt/Vortex/resources/app.asar.unpacked/node_modules/@nexusmods/fomod-installer-native/build/Release"
+  fomod_node="$fomod_release/modinstaller.node"
+  fomod_library="$fomod_release/ModInstaller.Native.so"
+  if [ ! -x "$DOTNET_ROOT/dotnet" ] || [ ! -x "$runtime_probe" ] ||
+     [ ! -f "$fomod_node" ] || [ ! -f "$fomod_library" ]; then
+    printf 'AppImage runtime self-test failed: bundled runtime files are missing\n' >&2
+    exit 1
+  fi
+
+  if ! env -u LD_LIBRARY_PATH ELECTRON_RUN_AS_NODE=1 \
+      "$APPDIR/opt/Vortex/vortex" "$APPDIR/usr/share/vortex-linux/test-runtime.cjs" \
+      "$APPDIR/opt/Vortex/resources/app.asar"; then
+    printf 'AppImage runtime self-test failed\n' >&2
+    exit 1
+  fi
+
+  exec "$runtime_probe" 9
+fi
+
+# Electron-based developer tools export this when they use Electron as their
+# Node.js host. It must never leak into a normal Vortex desktop launch.
+unset ELECTRON_RUN_AS_NODE
+
+case "${1-}" in
+  nxm://*) set -- --download "$@" ;;
+esac
+
+case "${VORTEX_OZONE_PLATFORM:-x11}" in
+  auto) ;;
+  *) set -- "--ozone-platform=${VORTEX_OZONE_PLATFORM:-x11}" --disable-vulkan "$@" ;;
+esac
+
+# Electron normally uses unprivileged user namespaces when the setuid sandbox
+# inside an AppImage cannot be used. Fall back only on systems that disable it.
+if { [ -r /proc/sys/kernel/unprivileged_userns_clone ] &&
+     [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = 0 ]; } ||
+   { [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] &&
+     [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 ]; }; then
+  set -- --no-sandbox "$@"
+fi
+
+exec "$APPDIR/opt/Vortex/vortex" "$@"

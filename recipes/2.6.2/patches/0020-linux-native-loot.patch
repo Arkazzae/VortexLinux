@@ -1,0 +1,463 @@
+diff --git a/extensions/gamebryo-plugin-management/build.mjs b/extensions/gamebryo-plugin-management/build.mjs
+index acdb1fe..d089b40 100644
+--- a/extensions/gamebryo-plugin-management/build.mjs
++++ b/extensions/gamebryo-plugin-management/build.mjs
+@@ -1,3 +1,4 @@
++import { copyFileSync } from "node:fs";
+ import * as path from "node:path";
+ 
+ import { createConfig, bundle, nativeRemapPlugin } from "../../scripts/extensions-rolldown.mjs";
+@@ -8,7 +9,24 @@ const output = path.resolve(extensionPath, "dist", "index.cjs");
+ 
+ const remapPlugin = nativeRemapPlugin({
+   "./build/Release/node-loot": "./node-loot.node",
++  ...(process.platform === "linux" ? { loot: "./libloot-adapter.cjs" } : {}),
+ });
+ 
+ const config = createConfig(entryPoint, output, [remapPlugin]);
+ await bundle(config);
++
++if (process.platform === "linux") {
++  if (!process.env.LIBLOOT_NODE_PATH)
++    throw new Error("LIBLOOT_NODE_PATH must point to the built Linux libloot addon");
++  await bundle(
++    createConfig(
++      path.join(extensionPath, "src/native/libloot-adapter.ts"),
++      path.join(extensionPath, "dist/libloot-adapter.cjs"),
++    ),
++  );
++  copyFileSync(
++    path.join(extensionPath, "src/native/libloot-worker.cjs"),
++    path.join(extensionPath, "dist/libloot-worker.cjs"),
++  );
++  copyFileSync(process.env.LIBLOOT_NODE_PATH, path.join(extensionPath, "dist/libloot.node"));
++}
+diff --git a/extensions/gamebryo-plugin-management/package.json b/extensions/gamebryo-plugin-management/package.json
+index a70b365..029bc09 100644
+--- a/extensions/gamebryo-plugin-management/package.json
++++ b/extensions/gamebryo-plugin-management/package.json
+@@ -4,11 +4,12 @@
+   "description": "Management for Gamebryo plugins",
+   "scripts": {
+     "_assets": "copyfiles -u 1 -f ./src/stylesheets/plugin_management.scss ./src/language.json ./src/loot_icon.png dist",
+-    "_native": "node ../copy-native.mjs ./node_modules/loot/build/Release/node-loot.node ./node_modules/loot/loot_api/libloot.dll ./node_modules/loot/async.js && node -e \"const fs=require('fs');const f='dist/async.js';let c=fs.readFileSync(f,'utf8');c=c.replace('./build/Release/node-loot','./node-loot');fs.writeFileSync(f,c);\"",
++    "_native": "node -e \"if(process.platform==='win32')process.exit(1)\" || (pnpm run _native_windows)",
+     "_build": "node build.mjs && pnpm run _assets && pnpm run _native && pnpm extractInfo",
+-    "build": "node -e \"if(process.platform==='win32')process.exit(1)\" || (pnpm run _build)",
++    "build": "pnpm run _build",
+     "typecheck": "pnpm tsc",
+-    "test": "pnpm exec vitest run"
++    "test": "pnpm exec vitest run",
++    "_native_windows": "node ../copy-native.mjs ./node_modules/loot/build/Release/node-loot.node ./node_modules/loot/loot_api/libloot.dll ./node_modules/loot/async.js && node -e \"const fs=require('fs');const f='dist/async.js';let c=fs.readFileSync(f,'utf8');c=c.replace('./build/Release/node-loot','./node-loot');fs.writeFileSync(f,c);\""
+   },
+   "author": "Black Tree Gaming Ltd.",
+   "license": "GPL-3.0",
+diff --git a/extensions/gamebryo-plugin-management/src/autosort.ts b/extensions/gamebryo-plugin-management/src/autosort.ts
+index 8a5a0d2..96da12e 100644
+--- a/extensions/gamebryo-plugin-management/src/autosort.ts
++++ b/extensions/gamebryo-plugin-management/src/autosort.ts
+@@ -844,7 +844,7 @@ class LootInterface {
+         await LootProm.createAsync(
+           this.convertGameId(gameMode, false),
+           this.gamePath,
+-          localPath,
++          process.platform === "linux" ? fs.realpathSync(localPath) : localPath,
+           "en",
+           this.logCB,
+           this.fork,
+diff --git a/extensions/gamebryo-plugin-management/src/native/libloot-adapter.ts b/extensions/gamebryo-plugin-management/src/native/libloot-adapter.ts
+new file mode 100644
+index 0000000..144d615
+--- /dev/null
++++ b/extensions/gamebryo-plugin-management/src/native/libloot-adapter.ts
+@@ -0,0 +1,122 @@
++import { fork, type ChildProcess } from "node:child_process";
++import * as path from "node:path";
++
++type Callback = (error: Error | null, result?: any) => void;
++interface IWorkerError {
++  message: string;
++  cycle?: Array<{ name: string; typeOfEdgeToNextVertex: string }>;
++}
++
++export class LootAsync {
++  private worker: ChildProcess;
++  private pending = new Map<number, Callback>();
++  private sequence = 0;
++  private closed = false;
++
++  private constructor() {
++    this.worker = fork(path.join(__dirname, "libloot-worker.cjs"), [], {
++      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
++      execArgv: [],
++      stdio: ["ignore", "ignore", "pipe", "ipc"],
++    });
++    let stderr = "";
++    this.worker.stderr?.on("data", (chunk) => {
++      stderr = (stderr + chunk.toString()).slice(-8192);
++    });
++    this.worker.on("message", (message: { id: number; error?: IWorkerError; result?: any }) => {
++      const callback = this.pending.get(message.id);
++      if (callback === undefined) return;
++      this.pending.delete(message.id);
++      if (message.error === undefined) {
++        callback(null, message.result);
++      } else {
++        const { message: text, ...details } = message.error;
++        callback(Object.assign(new Error(text), details));
++      }
++    });
++    this.worker.on("error", (error) => this.close(error));
++    this.worker.on("exit", (code, signal) => {
++      const error = new Error(`LOOT exited (${signal ?? code}): ${stderr.trim()}`);
++      error.name = "RemoteDied";
++      this.close(error);
++    });
++  }
++
++  public static create(
++    gameId: string,
++    gamePath: string,
++    localPath: string,
++    language: string,
++    logCallback: unknown,
++    onFork: unknown,
++    callback: Callback,
++  ): void {
++    let instance: LootAsync;
++    try {
++      instance = new LootAsync();
++      instance.call("init", [gameId, gamePath, localPath, language], (error) => {
++        if (error) instance.close(error);
++        callback(error, error ? undefined : instance);
++      });
++    } catch (error) {
++      callback(error as Error);
++    }
++  }
++
++  public isClosed(): boolean {
++    return this.closed;
++  }
++
++  public close(error = new Error("already closed")): void {
++    if (this.closed) return;
++    this.closed = true;
++    this.worker.kill();
++    const pending = [...this.pending.values()];
++    this.pending.clear();
++    for (const callback of pending) {
++      callback(error);
++    }
++  }
++
++  private call(method: string, args: unknown[], callback: Callback): void {
++    if (this.closed) {
++      callback(new Error("already closed"));
++      return;
++    }
++    const id = ++this.sequence;
++    this.pending.set(id, callback);
++    this.worker.send({ id, method, args }, (error) => {
++      if (error) this.close(error);
++    });
++  }
++
++  public sortPlugins(names: string[], callback: Callback): void {
++    this.call("sortPlugins", [names], callback);
++  }
++  public loadPlugins(names: string[], headersOnly: boolean, callback: Callback): void {
++    this.call("loadPlugins", [names, headersOnly], callback);
++  }
++  public getPlugin(name: string, callback: Callback): void {
++    this.call("getPlugin", [name], callback);
++  }
++  public getPluginMetadata(name: string, callback: Callback): void {
++    this.call("getPluginMetadata", [name], callback);
++  }
++  public loadLists(
++    masterlist: string,
++    userlist: string,
++    prelude: string,
++    callback: Callback,
++  ): void {
++    this.call("loadLists", [masterlist, userlist, prelude], callback);
++  }
++  public loadCurrentLoadOrderState(callback: Callback): void {
++    this.call("loadCurrentLoadOrderState", [], callback);
++  }
++  public clearConditionCache(callback: Callback): void {
++    this.call("clearConditionCache", [], callback);
++  }
++  public getGroupsPath(from: string, to: string, callback: Callback): void {
++    this.call("getGroupsPath", [from, to], callback);
++  }
++}
+diff --git a/extensions/gamebryo-plugin-management/src/native/libloot-worker.cjs b/extensions/gamebryo-plugin-management/src/native/libloot-worker.cjs
+new file mode 100644
+index 0000000..774a913
+--- /dev/null
++++ b/extensions/gamebryo-plugin-management/src/native/libloot-worker.cjs
+@@ -0,0 +1,249 @@
++const fs = require("node:fs");
++const path = require("node:path");
++const binding = require("./libloot.node");
++
++const gameTypes = {
++    oblivion: binding.GameType.Oblivion,
++    skyrim: binding.GameType.Skyrim,
++    fallout3: binding.GameType.Fallout3,
++    falloutnv: binding.GameType.FalloutNV,
++    fallout4: binding.GameType.Fallout4,
++    skyrimse: binding.GameType.SkyrimSE,
++    fallout4vr: binding.GameType.Fallout4VR,
++    skyrimvr: binding.GameType.SkyrimVR,
++    morrowind: binding.GameType.Morrowind,
++    starfield: binding.GameType.Starfield,
++    oblivionremastered: binding.GameType.OblivionRemastered,
++};
++const edgeTypes = [
++    "hardcoded",
++    "masterFlag",
++    "master",
++    "masterlistRequirement",
++    "userlistRequirement",
++    "masterlistLoadAfter",
++    "userlistLoadAfter",
++    "masterlistGroup",
++    "userGroup",
++    "recordOverlap",
++    "assetOverlap",
++    "tieBreak",
++    "blueprintMaster",
++];
++let game;
++let database;
++let dataPath;
++let language;
++let names = new Map();
++
++function resolvePath(input) {
++    let current = path.parse(input).root;
++    for (const part of input.slice(current.length).split(path.sep).filter(Boolean)) {
++        const next = path.join(current, part);
++        if (fs.existsSync(next)) {
++            current = next;
++        } else {
++            const matches = fs
++                .readdirSync(current)
++                .filter((entry) => entry.toLowerCase() === part.toLowerCase());
++            if (matches.length !== 1)
++                throw new Error(`Cannot resolve an unambiguous path: ${next}`);
++            current = path.join(current, matches[0]);
++        }
++    }
++    return current;
++}
++
++function resolveNames(input) {
++    names = new Map();
++    for (const entry of fs.readdirSync(dataPath)) {
++        const name = entry.replace(/\.ghost$/i, "");
++        if (!/\.(esm|esp|esl)$/i.test(name)) continue;
++        const key = name.toLowerCase();
++        if (names.has(key)) throw new Error(`Several plugin files have the same name: ${name}`);
++        names.set(key, name);
++    }
++    return input.map((name) => {
++        if (/[\\/]/.test(name)) throw new Error(`Expected a plugin filename: ${name}`);
++        return names.get(name.toLowerCase()) ?? name;
++    });
++}
++
++function fields(value, keys) {
++    return Object.fromEntries(keys.map((key) => [key, value[key]]));
++}
++function content(entries) {
++    return entries.map((entry) => fields(entry, ["text", "language"]));
++}
++function file(value) {
++    return { name: value.name.asStr(), displayName: value.displayName };
++}
++function cleaning(value) {
++    return {
++        ...fields(value, [
++            "itmCount",
++            "deletedReferenceCount",
++            "deletedNavmeshCount",
++            "cleaningUtility",
++        ]),
++        CRC: value.crc,
++        info: content(value.detail),
++    };
++}
++function metadata(value) {
++    if (!value) return null;
++    return {
++        name: value.name,
++        group: value.group,
++        requirements: value.requirements.map(file),
++        incompatibilities: value.incompatibilities.map(file),
++        loadAfterFiles: value.loadAfterFiles.map(file),
++        tags: value.tags.map((tag) => fields(tag, ["name", "condition", "isAddition"])),
++        cleanInfo: value.cleanInfo.map(cleaning),
++        dirtyInfo: value.dirtyInfo.map(cleaning),
++        locations: value.locations.map((location) => ({ URL: location.url, name: location.name })),
++        messages: value.messages.map((message) => ({
++            type: message.messageType,
++            content: binding.selectMessageContent(message.content, language)?.text ?? "",
++            condition: message.condition,
++        })),
++    };
++}
++
++const methods = {
++    init(gameId, gamePath, localPath, selectedLanguage) {
++        const gameType = gameTypes[gameId];
++        if (gameType === undefined) throw new Error(`Unsupported LOOT game: ${gameId}`);
++        game = new binding.Game(gameType, resolvePath(gamePath), resolvePath(localPath));
++        database = game.database();
++        language = selectedLanguage;
++        const relative =
++            gameId === "morrowind"
++                ? "Data Files"
++                : gameId === "oblivionremastered"
++                  ? "OblivionRemastered/Content/Dev/ObvData/Data"
++                  : "Data";
++        dataPath = resolvePath(path.join(gamePath, relative));
++        game.setAdditionalDataPaths([dataPath]);
++        return binding.liblootVersion();
++    },
++    loadPlugins(input, headersOnly) {
++        const resolved = resolveNames(input).map((name) => {
++            const file = path.join(dataPath, name);
++            return fs.existsSync(file) ? file : `${file}.ghost`;
++        });
++        if (headersOnly) game.loadPluginHeaders(resolved);
++        else game.loadPlugins(resolved);
++    },
++    sortPlugins(input) {
++        return game.sortPlugins(resolveNames(input));
++    },
++    loadCurrentLoadOrderState() {
++        game.loadCurrentLoadOrderState();
++    },
++    clearConditionCache() {
++        database.clearConditionCache();
++    },
++    getPlugin(name) {
++        const plugin = game.plugin(names.get(name.toLowerCase()) ?? name);
++        if (!plugin) return null;
++        return {
++            ...Object.fromEntries(
++                [
++                    "name",
++                    "version",
++                    "crc",
++                    "isMaster",
++                    "isLightPlugin",
++                    "isEmpty",
++                    "loadsArchive",
++                ].map((key) => [key, plugin[key]()]),
++            ),
++            masters: plugin.masters(),
++            bashTags: plugin.bashTags(),
++            isValidAsLightPlugin: plugin.isValidAsLightPlugin(),
++        };
++    },
++    getPluginMetadata(name) {
++        return metadata(
++            database.pluginMetadata(
++                name,
++                binding.MergeMode.WithUserMetadata,
++                binding.EvalMode.Evaluate,
++            ),
++        );
++    },
++    loadLists(masterlist, userlist, prelude) {
++        if (prelude) database.loadMasterlistWithPrelude(masterlist, prelude);
++        else database.loadMasterlist(masterlist);
++        database.discardAllUserMetadata();
++        if (userlist) database.loadUserlist(userlist);
++    },
++    getGroupsPath(from, to) {
++        return database.groupsPath(from, to).map((vertex) => ({
++            name: vertex.name,
++            typeOfEdgeToNextVertex: edgeTypes[vertex.outEdgeType],
++        }));
++    },
++};
++
++// libloot's Node binding only reports messages, so rebuild the cycle that
++// Vortex needs to offer solutions from the vertices printed in the message.
++const edgeTypeNames = new Map(
++    [
++        "Hardcoded",
++        "Master Flag",
++        "Master",
++        "Masterlist Requirement",
++        "User Requirement",
++        "Masterlist Load After",
++        "User Load After",
++        "Masterlist Group",
++        "User Group",
++        "Record Overlap",
++        "Asset Overlap",
++        "Tie Break",
++        "Blueprint Master",
++    ].map((name, index) => [name, edgeTypes[index]]),
++);
++
++function parseCycle(description) {
++    const cycle = [];
++    const edge = /(.+?) --\[([^\]]+)\]-> /y;
++    let end = 0;
++    let match;
++    while ((match = edge.exec(description)) !== null) {
++        const typeOfEdgeToNextVertex = edgeTypeNames.get(match[2]);
++        if (typeOfEdgeToNextVertex === undefined) return undefined;
++        cycle.push({ name: match[1], typeOfEdgeToNextVertex });
++        end = edge.lastIndex;
++    }
++    return cycle.length > 0 && description.slice(end) === cycle[0].name
++        ? cycle
++        : undefined;
++}
++
++function serializeError(error) {
++    const message = String(error?.message ?? error);
++    // Sorting reports "found a cycle: ..."; group paths use "cyclic interaction detected: ...".
++    const match = /(?:found a cycle|cyclic interaction detected): (.*)$/is.exec(message);
++    if (match !== null) {
++        const description = match[1];
++        const cycle = parseCycle(description);
++        if (cycle !== undefined) {
++            return { message: `Cyclic interaction detected: ${description}`, cycle };
++        }
++    }
++    return { message };
++}
++
++process.on("disconnect", () => process.exit(0));
++process.on("message", ({ id, method, args }) => {
++    try {
++        if (!Object.hasOwn(methods, method)) throw new Error(`Unknown LOOT operation: ${method}`);
++        const result = methods[method](...args);
++        process.send({ id, result });
++    } catch (error) {
++        process.send({ id, error: serializeError(error) });
++    }
++});
+diff --git a/src/renderer/src/util/fs.ts b/src/renderer/src/util/fs.ts
+index 88b7832..f1e0a36 100644
+--- a/src/renderer/src/util/fs.ts
++++ b/src/renderer/src/util/fs.ts
+@@ -98,6 +98,8 @@ export const openSync = resolveSyncPathArguments(originalFs.openSync, [0]);
+ /** @deprecated use node:fs directly */
+ export const readdirSync = resolveSyncPathArguments(originalFs.readdirSync, [0]);
+ /** @deprecated use node:fs directly */
++export const realpathSync = resolveSyncPathArguments(originalFs.realpathSync, [0]);
++/** @deprecated use node:fs directly */
+ export const readFileSync = resolveSyncPathArguments(originalFs.readFileSync, [0]);
+ /** @deprecated use node:fs directly */
+ export const statSync = resolveSyncPathArguments(originalFs.statSync, [0]);

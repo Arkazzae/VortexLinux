@@ -1,0 +1,226 @@
+diff --git a/src/renderer/src/extensions/mod_management/views/Settings.tsx b/src/renderer/src/extensions/mod_management/views/Settings.tsx
+index 5a30b36..dd51df5 100644
+--- a/src/renderer/src/extensions/mod_management/views/Settings.tsx
++++ b/src/renderer/src/extensions/mod_management/views/Settings.tsx
+@@ -55,10 +55,10 @@ import * as selectors from "../../../util/selectors";
+ import { getSafe } from "../../../util/storeHelper";
+ import { cleanFailedTransfer, testPathTransfer, transferPath } from "../../../util/transferPath";
+ import { ciEqual, isChildPath, isPathValid, isReservedDirectory } from "../../../util/util";
+-import { getVolumePath } from "../../../util/volume";
+ import { currentGame, currentGameDiscovery } from "../../gamemode_management/selectors";
+ import type { IDiscoveryResult } from "../../gamemode_management/types/IDiscoveryResult";
+ import type { IGameStored } from "../../gamemode_management/types/IGameStored";
++import { suggestStagingPath } from "../../gamemode_management/util/discovery";
+ import { setDeploymentNecessary } from "../actions/deployment";
+ import { setActivator, setInstallPath, setInstallPathMode } from "../actions/settings";
+ import { setTransferMods } from "../actions/transactions";
+@@ -1040,23 +1040,13 @@ class Settings extends ComponentEx<IProps, IComponentState> {
+   };
+ 
+   private suggestPath = async () => {
+-    const { modPaths, onShowError, suggestInstallPathDirectory } = this.props;
++    const { gameMode, onShowError } = this.props;
+     try {
+-      // stat the volume root rather than the full mod path — the mod directory
+-      // may not exist yet (e.g. first-time setup), but we only need the device id
+-      const [modPathStats, userDataStats] = await Promise.all([
+-        fs.statAsync(path.parse(modPaths[""]).root),
+-        window.api.app.getPath("userData").then((userDataPath) => fs.statAsync(userDataPath)),
+-      ]);
+-
+-      let suggestion: string;
+-      if (modPathStats.dev === userDataStats.dev) {
+-        suggestion = path.join("{USERDATA}", "{game}", "mods");
+-      } else {
+-        const volume = getVolumePath(modPaths[""]);
+-        suggestion = path.join(volume, suggestInstallPathDirectory, "{game}");
+-      }
+-      this.changePath(suggestion);
++      // Use the same nearest-existing-ancestor/device logic as automatic setup.
++      // On POSIX, path.parse("/mnt/library/game").root is merely "/" and may be
++      // a different filesystem from the game, so inspecting it gives a false
++      // same-device result and suggests USERDATA again.
++      this.changePath(await suggestStagingPath(this.context.api, gameMode));
+     } catch (err) {
+       if (err instanceof UserCanceled) {
+         return;
+diff --git a/src/renderer/src/extensions/mod_management/reducers/settings.ts b/src/renderer/src/extensions/mod_management/reducers/settings.ts
+index 09b8370..9195215 100644
+--- a/src/renderer/src/extensions/mod_management/reducers/settings.ts
++++ b/src/renderer/src/extensions/mod_management/reducers/settings.ts
+@@ -27,7 +27,9 @@ export const settingsReducer: IReducerSpec = {
+   },
+   defaults: {
+     installPath: {},
+-    installPathMode: "userData",
++    // Linux game libraries commonly live on a separate mounted filesystem.
++    // Defaulting to USERDATA there makes hardlink deployment impossible.
++    installPathMode: process.platform === "linux" ? "suggested" : "userData",
+     suggestInstallPathDirectory: "Vortex Mods",
+     modlistState: {},
+     activator: {},
+diff --git a/src/renderer/src/extensions/hardlink_activator/index.ts b/src/renderer/src/extensions/hardlink_activator/index.ts
+index 53250a5..6a16dc7 100644
+--- a/src/renderer/src/extensions/hardlink_activator/index.ts
++++ b/src/renderer/src/extensions/hardlink_activator/index.ts
+@@ -21,6 +21,7 @@ import type {
+   IDeploymentMethod,
+   IUnavailableReason,
+ } from "../mod_management/types/IDeploymentMethod";
++import { applySuggestedStagingPathIfEmpty } from "../mod_management/util/stagingFix";
+ import { collectHardlinkKeys, purgeMatchingHardlinks } from "./hardlinkIdentity";
+ 
+ export class FileFound extends Error {
+@@ -136,16 +137,19 @@ class DeploymentMethod extends LinkingDeployment {
+               },
+             );
+           },
+-          fixCallback: (api: IExtensionApi) =>
+-            new PromiseBB((_resolve, _reject) => {
+-              api.events.emit("show-main-page", "application_settings");
+-              api.store.dispatch(setSettingsPage("Mods"));
+-              api.highlightControl(
+-                "#install-path-form",
+-                5000,
+-                "Change this to be on the same drive as the game.",
+-              );
+-            }),
++          fixCallback: async (api: IExtensionApi) => {
++            if (await applySuggestedStagingPathIfEmpty(api, gameId)) {
++              return;
++            }
++
++            api.events.emit("show-main-page", "application_settings");
++            api.store.dispatch(setSettingsPage("Mods"));
++            api.highlightControl(
++              "#install-path-form",
++              5000,
++              "Change this to be on the same drive as the game.",
++            );
++          },
+         };
+       }
+     } catch (err) {
+diff --git a/src/renderer/src/extensions/move_activator/index.ts b/src/renderer/src/extensions/move_activator/index.ts
+index 7c99e81..7e3bff2 100644
+--- a/src/renderer/src/extensions/move_activator/index.ts
++++ b/src/renderer/src/extensions/move_activator/index.ts
+@@ -23,6 +23,7 @@ import type {
+   IDeploymentMethod,
+   IUnavailableReason,
+ } from "../mod_management/types/IDeploymentMethod";
++import { applySuggestedStagingPathIfEmpty } from "../mod_management/util/stagingFix";
+ 
+ const LNK_EXT = ".vortex_lnk";
+ 
+@@ -136,16 +137,19 @@ class DeploymentMethod extends LinkingDeployment {
+               },
+             );
+           },
+-          fixCallback: (api: IExtensionApi) =>
+-            new PromiseBB((resolve, reject) => {
+-              api.events.emit("show-main-page", "application_settings");
+-              api.store.dispatch(setSettingsPage("Mods"));
+-              api.highlightControl(
+-                "#install-path-form",
+-                5000,
+-                "Change this to be on the same drive as the game.",
+-              );
+-            }),
++          fixCallback: async (api: IExtensionApi) => {
++            if (await applySuggestedStagingPathIfEmpty(api, gameId)) {
++              return;
++            }
++
++            api.events.emit("show-main-page", "application_settings");
++            api.store.dispatch(setSettingsPage("Mods"));
++            api.highlightControl(
++              "#install-path-form",
++              5000,
++              "Change this to be on the same drive as the game.",
++            );
++          },
+         };
+       }
+     } catch (err) {
+diff --git a/src/renderer/src/extensions/mod_management/util/stagingFix.ts b/src/renderer/src/extensions/mod_management/util/stagingFix.ts
+new file mode 100644
+index 0000000..8ac0ffe
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/stagingFix.ts
+@@ -0,0 +1,54 @@
++import { getErrorCode } from "@vortex/shared";
++
++import type { IExtensionApi } from "../../../types/IExtensionContext";
++import * as fs from "../../../util/fs";
++import { log } from "../../../util/log";
++import { suggestStagingPath } from "../../gamemode_management/util/discovery";
++import { setInstallPath } from "../actions/settings";
++import { installPathForGame } from "../selectors";
++
++const STAGING_DIR_TAG = "__vortex_staging_folder";
++
++export function stagingDirectoryHasMods(entries: string[]): boolean {
++  return entries.some((entry) => entry !== STAGING_DIR_TAG);
++}
++
++/**
++ * Apply the same-filesystem staging suggestion when doing so cannot orphan any
++ * installed mods. Non-empty staging folders still go through Settings, whose
++ * transfer workflow can move their contents safely.
++ */
++export async function applySuggestedStagingPathIfEmpty(
++  api: IExtensionApi,
++  gameId: string,
++): Promise<boolean> {
++  const currentPath = installPathForGame(api.getState(), gameId);
++  let entries: string[];
++
++  try {
++    entries = await fs.readdirAsync(currentPath);
++  } catch (err) {
++    if (getErrorCode(err) !== "ENOENT") {
++      log("warn", "failed to inspect staging directory before automatic fix", {
++        gameId,
++        currentPath,
++        error: err,
++      });
++      return false;
++    }
++    entries = [];
++  }
++
++  if (stagingDirectoryHasMods(entries)) {
++    return false;
++  }
++
++  const suggestion = await suggestStagingPath(api, gameId);
++  api.store.dispatch(setInstallPath(gameId, suggestion));
++  log("info", "applied same-filesystem staging suggestion", {
++    gameId,
++    from: currentPath,
++    to: suggestion,
++  });
++  return true;
++}
+diff --git a/src/renderer/src/extensions/mod_management/util/stagingFix.test.ts b/src/renderer/src/extensions/mod_management/util/stagingFix.test.ts
+new file mode 100644
+index 0000000..8f57749
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/stagingFix.test.ts
+@@ -0,0 +1,14 @@
++import { describe, expect, it } from "vitest";
++
++import { stagingDirectoryHasMods } from "./stagingFix";
++
++describe("stagingDirectoryHasMods", () => {
++  it("treats an absent tag payload as empty", () => {
++    expect(stagingDirectoryHasMods([])).toBe(false);
++    expect(stagingDirectoryHasMods(["__vortex_staging_folder"])).toBe(false);
++  });
++
++  it("does not allow an automatic path change when mod data exists", () => {
++    expect(stagingDirectoryHasMods(["__vortex_staging_folder", "example-mod"])).toBe(true);
++  });
++});
+

@@ -1,0 +1,712 @@
+diff --git a/src/renderer/src/extensions/firststeps_dashlet/todos.tsx b/src/renderer/src/extensions/firststeps_dashlet/todos.tsx
+index cec6708..cb110fa 100644
+--- a/src/renderer/src/extensions/firststeps_dashlet/todos.tsx
++++ b/src/renderer/src/extensions/firststeps_dashlet/todos.tsx
+@@ -1,12 +1,12 @@
+ import type { TFunction } from "i18next";
+ import * as React from "react";
+-import * as winapi from "winapi-bindings";
+ 
+ import { setSettingsPage } from "../../actions/session";
+ import Icon from "../../controls/Icon";
+ import Spinner from "../../controls/Spinner";
+ import type { IExtensionApi, ToDoType } from "../../types/IExtensionContext";
+ import * as selectors from "../../util/selectors";
++import { getDiskSpace, getVolumePath } from "../../util/volume";
+ import { setProfilesVisible } from "../settings_interface/actions/interface";
+ import type { IToDo } from "./IToDo";
+ 
+@@ -26,7 +26,7 @@ function minDiskSpace(required: number, key: string) {
+       try {
+         freeSpace[key] = {
+           path: checkPath,
+-          free: winapi.GetDiskFreeSpaceEx(checkPath).freeToCaller,
++          free: getDiskSpace(checkPath).freeToCaller,
+         };
+       } catch (err) {
+         return false;
+@@ -93,7 +93,7 @@ function todos(api: IExtensionApi): IToDo[] {
+       text: "Downloads are on drive",
+       value: (t: TFunction, props: any) => {
+         try {
+-          return winapi.GetVolumePathName(props.dlPath);
++          return getVolumePath(props.dlPath);
+         } catch (err) {
+           err["dlPath"] = props.dlPath;
+           throw err;
+@@ -122,7 +122,7 @@ function todos(api: IExtensionApi): IToDo[] {
+           if (props.instPath === undefined) {
+             return t("<No staging folder>");
+           }
+-          return winapi.GetVolumePathName(props.instPath);
++          return getVolumePath(props.instPath);
+         } catch (err) {
+           return t("<Invalid Drive>");
+         }
+diff --git a/src/renderer/src/extensions/gamemode_management/index.ts b/src/renderer/src/extensions/gamemode_management/index.ts
+index 14c83e5..62a3e9a 100644
+--- a/src/renderer/src/extensions/gamemode_management/index.ts
++++ b/src/renderer/src/extensions/gamemode_management/index.ts
+@@ -30,6 +30,7 @@ import GameStoreHelperInstance from "../../util/GameStoreHelper";
+ import { isContributed } from "../../util/isContributed";
+ import local from "../../util/local";
+ import { showError } from "../../util/message";
++import { resolveNativeExecutable, resolvePlatformPath } from "../../util/nativeExecutable";
+ import opn from "../../util/opn";
+ import { activeGameId, activeProfile } from "../../util/selectors";
+ import { getSafe } from "../../util/storeHelper";
+@@ -180,7 +181,7 @@ function refreshGameInfo(store: Redux.Store<IState>, gameId: string): PromiseBB<
+ 
+ function verifyGamePath(game: IGame, gamePath: string): PromiseBB<void> {
+   return PromiseBB.map(game.requiredFiles || [], (file) =>
+-    PromiseBB.resolve(fsExtra.stat(path.join(gamePath, file))),
++    PromiseBB.resolve(fsExtra.stat(resolvePlatformPath(gamePath, file))),
+   )
+     .then(() => undefined)
+     .catch((err) => {
+@@ -314,7 +315,7 @@ function browseGameLocation(api: IExtensionApi, gameId: string): PromiseBB<void>
+             return manualGameStoreSelection(api, corrected);
+           })
+           .then(({ corrected, store }) => {
+-            let executable = game.executable(corrected);
++            let executable = resolveNativeExecutable(corrected, game.executable(corrected));
+             if (executable === game.executable()) {
+               executable = undefined;
+             }
+@@ -488,7 +489,7 @@ function removeDisappearedGames(
+       return PromiseBB.resolve();
+     }
+     return PromiseBB.map(requiredFiles, (file) =>
+-      fsExtra.stat(path.join(discovered[gameId].path, file)),
++      fsExtra.stat(resolvePlatformPath(discovered[gameId].path, file)),
+     )
+       .then(() => undefined)
+       .catch((err) => {
+diff --git a/src/renderer/src/extensions/gamemode_management/util/discovery.ts b/src/renderer/src/extensions/gamemode_management/util/discovery.ts
+index ed4c17c..7a866b4 100644
+--- a/src/renderer/src/extensions/gamemode_management/util/discovery.ts
++++ b/src/renderer/src/extensions/gamemode_management/util/discovery.ts
+@@ -4,7 +4,6 @@ import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/
+ import Bluebird from "bluebird";
+ import * as fsExtra from "fs-extra";
+ import turbowalk from "turbowalk";
+-import * as winapi from "winapi-bindings";
+ 
+ import type { IDiscoveredTool } from "../../../types/IDiscoveredTool";
+ import type { IExtensionApi } from "../../../types/IExtensionContext";
+@@ -19,10 +18,12 @@ import type { Normalize } from "../../../util/getNormalizeFunc";
+ import getNormalizeFunc from "../../../util/getNormalizeFunc";
+ import getVortexPath from "../../../util/getVortexPath";
+ import { log } from "../../../util/log";
++import { resolveNativeExecutable, resolvePlatformPath } from "../../../util/nativeExecutable";
+ import StarterInfo from "../../../util/StarterInfo";
+ import { getSafe } from "../../../util/storeHelper";
+ import * as storeLookup from "../../../util/storeLookup";
+ import { truthy } from "../../../util/util";
++import { getVolumePath } from "../../../util/volume";
+ import { modPathsForGame } from "../../mod_management/selectors";
+ import type { IDiscoveryResult } from "../types/IDiscoveryResult";
+ import type { IToolStored } from "../types/IToolStored";
+@@ -60,7 +61,7 @@ export function quickDiscoveryTools(
+           return autoGenIcon(tool, toolPath, gameId).then(() => {
+             onDiscoveredTool(gameId, {
+               ...tool,
+-              path: path.join(toolPath, tool.executable(toolPath)),
++              path: resolvePlatformPath(toolPath, tool.executable(toolPath)),
+               hidden: false,
+               parameters: tool.parameters || [],
+               custom: false,
+@@ -81,7 +82,7 @@ export function quickDiscoveryTools(
+               return autoGenIcon(tool, resolvedPath, gameId).then(() => {
+                 onDiscoveredTool(gameId, {
+                   ...tool,
+-                  path: path.join(resolvedPath, tool.executable(resolvedPath)),
++                  path: resolvePlatformPath(resolvedPath, tool.executable(resolvedPath)),
+                   hidden: false,
+                   parameters: tool.parameters || [],
+                   custom: false,
+@@ -253,7 +254,7 @@ function handleDiscoveredGame(
+     return undefined;
+   }
+   log("info", "found game", { name: game.name, location: resolvedPath, store });
+-  const exe = game.executable(resolvedPath);
++  const exe = resolveNativeExecutable(resolvedPath, game.executable(resolvedPath));
+   const disco: IDiscoveryResult = {
+     path: resolvedPath,
+     executable: exe !== game.executable() ? exe : undefined,
+@@ -463,7 +464,7 @@ function verifyToolDir(tool: ITool, testPath: string): Bluebird<void> {
+     // is not something we want at this point because we don't even know yet if the user
+     // wants to manage the game at all.
+     (fileName: string) =>
+-      fsExtra.stat(path.join(testPath, fileName)).catch((err) => {
++      fsExtra.stat(resolvePlatformPath(testPath, fileName)).catch((err) => {
+         return Bluebird.reject(err);
+       }),
+   ).then(() => undefined);
+@@ -572,7 +573,7 @@ function testApplicationDirValid(
+     .then(() => {
+       const game = application as IGame;
+       if (game.queryModPath !== undefined) {
+-        const exe = game.executable(testPath);
++        const exe = resolveNativeExecutable(testPath, game.executable(testPath));
+         const disco: IDiscoveryResult = {
+           path: testPath,
+           executable: exe !== game.executable() ? exe : undefined,
+@@ -581,7 +582,7 @@ function testApplicationDirValid(
+ 
+         return discoverRelativeTools(game, testPath, discoveredGames, onDiscoveredTool, normalize);
+       } else {
+-        const exePath = path.join(testPath, application.executable(testPath));
++        const exePath = resolvePlatformPath(testPath, application.executable(testPath));
+         return autoGenIcon(application, exePath, gameId).then(() => {
+           onDiscoveredTool(gameId, {
+             ...application,
+@@ -769,12 +770,12 @@ export async function suggestStagingPath(api: IExtensionApi, gameId: string): Pr
+ 
+   let suggestion: string;
+ 
+-  if (statModPath.dev === statUserData.dev || process.platform !== "win32") {
++  if (statModPath.dev === statUserData.dev) {
+     // main mod folder is on same drive as userdata, use a subdirectory below that
+     suggestion = path.join("{USERDATA}", "{game}", "mods");
+   } else {
+     // different drives, suggest path on same drive
+-    const volume = winapi.GetVolumePathName(modPaths[""]);
++    const volume = getVolumePath(modPaths[""]);
+     suggestion = path.join(volume, state.settings.mods.suggestInstallPathDirectory, "{game}");
+   }
+ 
+diff --git a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
+index 8c6d5a8..eb8c9f0 100644
+--- a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
++++ b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
+@@ -1,5 +1,4 @@
+ import { stat } from "node:fs/promises";
+-import path from "node:path";
+ 
+ import { getErrorMessageOrDefault } from "@vortex/shared";
+ import { ProcessCanceled } from "@vortex/shared/errors";
+@@ -7,6 +6,8 @@ import exeVersion from "exe-version";
+ 
+ import { log } from "@/logging";
+ 
++import { resolvePlatformPath } from "../../../util/nativeExecutable";
++
+ import type { IGame } from "../../../types/IGame";
+ import type { IDiscoveryResult } from "../types/IDiscoveryResult";
+ 
+@@ -17,7 +18,7 @@ async function fromExtension(game: IGame, discovery: IDiscoveryResult): Promise<
+ }
+ 
+ async function fromExecutable(game: IGame, discovery: IDiscoveryResult): Promise<string> {
+-  const exePath = path.join(discovery.path, discovery.executable || game.executable());
++  const exePath = resolvePlatformPath(discovery.path, discovery.executable || game.executable());
+ 
+   try {
+     await stat(exePath);
+diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
+index 3e13fbc..976df7b 100644
+--- a/src/renderer/src/util/StarterInfo.ts
++++ b/src/renderer/src/util/StarterInfo.ts
+@@ -26,6 +26,7 @@ import {
+ import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
+ import getVortexPath from "./getVortexPath";
+ import { isWindowsExecutable } from "./linux/proton";
++import { resolvePlatformPath } from "./nativeExecutable";
+ import type { Steam, ISteamEntry } from "./Steam";
+ import { getSafe } from "./storeHelper";
+ import * as storeLookup from "./storeLookup";
+@@ -487,7 +488,10 @@ class StarterInfo implements IStarterInfo {
+ 
+   private initFromGame(game: IGameStored, gameDiscovery: IDiscoveryResult) {
+     this.name = gameDiscovery.name || game.name;
+-    this.exePath = path.join(gameDiscovery.path, gameDiscovery.executable || game.executable);
++    this.exePath = resolvePlatformPath(
++      gameDiscovery.path,
++      gameDiscovery.executable || game.executable,
++    );
+     this.commandLine = getSafe(gameDiscovery, ["parameters"], getSafe(game, ["parameters"], []));
+     this.workingDirectory = path.dirname(this.exePath);
+     this.originalEnvironment = getSafe(game, ["environment"], {});
+diff --git a/src/renderer/src/util/compatibilityPaths.test.ts b/src/renderer/src/util/compatibilityPaths.test.ts
+new file mode 100644
+index 0000000..697494d
+--- /dev/null
++++ b/src/renderer/src/util/compatibilityPaths.test.ts
+@@ -0,0 +1,91 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { resetCompatibilityPathCache, resolveWindowsUserPathSync } from "./compatibilityPaths";
++
++describe.runIf(process.platform === "linux")("compatibility profile paths", () => {
++  let tempDir: string;
++  let oldDocuments: string | undefined;
++  let oldPrefixes: string | undefined;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-prefixes-"));
++    oldDocuments = process.env.VORTEX_LINUX_DOCUMENTS;
++    oldPrefixes = process.env.VORTEX_COMPAT_PREFIXES;
++    process.env.VORTEX_LINUX_DOCUMENTS = path.join(tempDir, "Documents");
++    process.env.VORTEX_COMPAT_PREFIXES = path.join(tempDir, "prefix");
++    resetCompatibilityPathCache();
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++    restoreEnvironment("VORTEX_LINUX_DOCUMENTS", oldDocuments);
++    restoreEnvironment("VORTEX_COMPAT_PREFIXES", oldPrefixes);
++    resetCompatibilityPathCache();
++  });
++
++  it("maps a Windows Documents path into an arbitrary compatibility prefix", () => {
++    const actualDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "Documents",
++      "My Games",
++      "Example",
++    );
++    fs.mkdirSync(actualDirectory, { recursive: true });
++    fs.writeFileSync(path.join(actualDirectory, "Settings.ini"), "");
++
++    const requested = path.join(
++      process.env.VORTEX_LINUX_DOCUMENTS,
++      "my games",
++      "example",
++      "settings.ini",
++    );
++    expect(resolveWindowsUserPathSync(requested)).toBe(path.join(actualDirectory, "Settings.ini"));
++  });
++
++  it("maps a not-yet-created file when its destination directory exists", () => {
++    const actualDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "Documents",
++      "My Games",
++      "Example",
++    );
++    fs.mkdirSync(actualDirectory, { recursive: true });
++
++    const requested = path.join(
++      process.env.VORTEX_LINUX_DOCUMENTS,
++      "My Games",
++      "Example",
++      "NewSettings.ini",
++    );
++    expect(resolveWindowsUserPathSync(requested)).toBe(
++      path.join(actualDirectory, "NewSettings.ini"),
++    );
++  });
++
++  it("leaves unrelated and unmatched paths unchanged", () => {
++    const unrelated = path.join(tempDir, "Downloads", "archive.zip");
++    const unmatched = path.join(process.env.VORTEX_LINUX_DOCUMENTS, "Unknown", "file.ini");
++    expect(resolveWindowsUserPathSync(unrelated)).toBe(unrelated);
++    expect(resolveWindowsUserPathSync(unmatched)).toBe(unmatched);
++  });
++});
++
++function restoreEnvironment(key: string, value: string | undefined) {
++  if (value === undefined) {
++    delete process.env[key];
++  } else {
++    process.env[key] = value;
++  }
++}
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+new file mode 100644
+index 0000000..ec0c952
+--- /dev/null
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -0,0 +1,184 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++interface ICandidate {
++  existingParts: number;
++  mtime: number;
++  path: string;
++}
++
++let cachedPrefixKey: string | undefined;
++let cachedPrefixes: string[] = [];
++
++function expandHome(input: string): string {
++  return input.replace(/^\$HOME(?=\/|$)/, os.homedir());
++}
++
++function xdgDocumentsPath(): string {
++  if (process.env.VORTEX_LINUX_DOCUMENTS !== undefined) {
++    return process.env.VORTEX_LINUX_DOCUMENTS;
++  }
++
++  try {
++    const config = fs.readFileSync(path.join(os.homedir(), ".config", "user-dirs.dirs"), "utf8");
++    const match = config.match(/^XDG_DOCUMENTS_DIR=(?:"([^"]*)"|'([^']*)'|([^\n]*))$/m);
++    const value = match?.[1] ?? match?.[2] ?? match?.[3];
++    if (value !== undefined && value.length > 0) {
++      return path.normalize(expandHome(value));
++    }
++  } catch {
++    // Fall back to the freedesktop default below.
++  }
++
++  return path.join(os.homedir(), "Documents");
++}
++
++function steamLibraries(): string[] {
++  const steamRoots = [
++    path.join(os.homedir(), ".local", "share", "Steam"),
++    path.join(os.homedir(), ".steam", "steam"),
++  ];
++  const libraries = new Set(steamRoots.filter(fs.existsSync));
++
++  for (const steamRoot of steamRoots) {
++    const manifests = [
++      path.join(steamRoot, "steamapps", "libraryfolders.vdf"),
++      path.join(steamRoot, "config", "libraryfolders.vdf"),
++    ];
++    for (const manifest of manifests) {
++      try {
++        const contents = fs.readFileSync(manifest, "utf8");
++        for (const match of contents.matchAll(/"path"\s+"([^"]+)"/g)) {
++          libraries.add(match[1].replaceAll("\\\\", "\\"));
++        }
++      } catch {
++        // A missing Steam installation or manifest is expected.
++      }
++    }
++  }
++
++  return [...libraries];
++}
++
++function findSteamPrefixes(): string[] {
++  return steamLibraries().flatMap((library) => {
++    const compatData = path.join(library, "steamapps", "compatdata");
++    try {
++      return fs
++        .readdirSync(compatData, { withFileTypes: true })
++        .filter((entry) => entry.isDirectory())
++        .map((entry) => path.join(compatData, entry.name, "pfx"))
++        .filter(fs.existsSync);
++    } catch {
++      return [];
++    }
++  });
++}
++
++function compatibilityPrefixes(): string[] {
++  const configured = process.env.VORTEX_COMPAT_PREFIXES ?? "";
++  const cacheKey = `${os.homedir()}\0${configured}`;
++  if (cacheKey === cachedPrefixKey) {
++    return cachedPrefixes;
++  }
++
++  const explicit = configured
++    .split(path.delimiter)
++    .filter(Boolean)
++    .map((entry) => path.resolve(expandHome(entry)));
++  cachedPrefixes = [...new Set([...explicit, ...findSteamPrefixes()])];
++  cachedPrefixKey = cacheKey;
++  return cachedPrefixes;
++}
++
++function windowsDocumentsRoots(): string[] {
++  return compatibilityPrefixes().flatMap((prefix) => {
++    const users = path.join(prefix, "drive_c", "users");
++    try {
++      return fs
++        .readdirSync(users, { withFileTypes: true })
++        .filter((entry) => entry.isDirectory())
++        .map((entry) => path.join(users, entry.name, "Documents"))
++        .filter(fs.existsSync);
++    } catch {
++      return [];
++    }
++  });
++}
++
++function resolveCandidate(root: string, relative: string): ICandidate | undefined {
++  const parts = relative.split(path.sep).filter(Boolean);
++  let current = root;
++  let existingParts = 0;
++
++  try {
++    for (const [index, part] of parts.entries()) {
++      const exact = path.join(current, part);
++      if (fs.existsSync(exact)) {
++        current = exact;
++        existingParts += 1;
++        continue;
++      }
++
++      const match = fs
++        .readdirSync(current)
++        .find((entry) => entry.toLowerCase() === part.toLowerCase());
++      if (match === undefined) {
++        current = path.join(current, ...parts.slice(index));
++        break;
++      }
++      current = path.join(current, match);
++      existingParts += 1;
++    }
++
++    const minimumExistingParts = parts[0]?.toLowerCase() === "my games" ? 2 : 1;
++    if (existingParts < minimumExistingParts) {
++      return undefined;
++    }
++    return {
++      existingParts,
++      mtime: fs.statSync(nearestExisting(current)).mtimeMs,
++      path: current,
++    };
++  } catch {
++    return undefined;
++  }
++}
++
++function nearestExisting(input: string): string {
++  let current = input;
++  while (!fs.existsSync(current) && path.dirname(current) !== current) {
++    current = path.dirname(current);
++  }
++  return current;
++}
++
++export function resolveWindowsUserPathSync(input: string): string {
++  if (process.platform !== "linux" || !path.isAbsolute(input)) {
++    return input;
++  }
++
++  const documents = xdgDocumentsPath();
++  const relative = path.relative(documents, input);
++  if (relative.startsWith("..") || path.isAbsolute(relative) || relative.length === 0) {
++    return input;
++  }
++
++  const candidates = windowsDocumentsRoots()
++    .map((root) => resolveCandidate(root, relative))
++    .filter((candidate): candidate is ICandidate => candidate !== undefined)
++    .sort(
++      (lhs, rhs) =>
++        Number(fs.existsSync(rhs.path)) - Number(fs.existsSync(lhs.path)) ||
++        rhs.existingParts - lhs.existingParts ||
++        rhs.mtime - lhs.mtime,
++    );
++
++  return candidates[0]?.path ?? input;
++}
++
++export function resetCompatibilityPathCache() {
++  cachedPrefixKey = undefined;
++  cachedPrefixes = [];
++}
+diff --git a/src/renderer/src/util/nativeExecutable.test.ts b/src/renderer/src/util/nativeExecutable.test.ts
+new file mode 100644
+index 0000000..b3c2a04
+--- /dev/null
++++ b/src/renderer/src/util/nativeExecutable.test.ts
+@@ -0,0 +1,70 @@
++import * as fs from "fs";
++import * as os from "os";
++import * as path from "path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { resolveNativeExecutable, resolvePlatformPath } from "./nativeExecutable";
++
++describe("native executable resolution", () => {
++  let root: string;
++
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-native-executable-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  function executable(relativePath: string): void {
++    const target = path.join(root, relativePath);
++    fs.mkdirSync(path.dirname(target), { recursive: true });
++    fs.writeFileSync(target, "#!/bin/sh\n");
++    fs.chmodSync(target, 0o755);
++  }
++
++  it("keeps an existing declared executable", () => {
++    executable("bin/sample.exe");
++    executable("bin/sample");
++
++    expect(resolveNativeExecutable(root, "bin/sample.exe", "linux")).toBe("bin/sample.exe");
++  });
++
++  it("finds an executable with the same stem", () => {
++    executable("bin/sample");
++
++    expect(resolveNativeExecutable(root, "bin/sample.exe", "linux")).toBe("bin/sample");
++  });
++
++  it("matches a native executable to a decorated Windows variant", () => {
++    executable("bin/sample");
++    executable("bin/unrelated");
++
++    expect(resolveNativeExecutable(root, "bin/sample_render.exe", "linux")).toBe("bin/sample");
++  });
++
++  it("does not return a non-executable or unrelated file", () => {
++    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
++    fs.writeFileSync(path.join(root, "bin", "sample"), "data");
++    executable("bin/different");
++
++    expect(resolveNativeExecutable(root, "bin/sample_render.exe", "linux")).toBe(
++      "bin/sample_render.exe",
++    );
++  });
++
++  it("does not alter declarations on other platforms", () => {
++    executable("bin/sample");
++
++    expect(resolveNativeExecutable(root, "bin/sample.exe", "win32")).toBe("bin/sample.exe");
++  });
++
++  it("returns an absolute platform path for validation", () => {
++    executable("bin/sample");
++
++    expect(resolvePlatformPath(root, "bin/sample.exe", "linux")).toBe(
++      path.join(root, "bin", "sample"),
++    );
++  });
++});
+diff --git a/src/renderer/src/util/nativeExecutable.ts b/src/renderer/src/util/nativeExecutable.ts
+new file mode 100644
+index 0000000..ac03b41
+--- /dev/null
++++ b/src/renderer/src/util/nativeExecutable.ts
+@@ -0,0 +1,113 @@
++import * as fs from "fs";
++import * as path from "path";
++
++function isExecutableFile(filePath: string): boolean {
++  try {
++    const stat = fs.statSync(filePath);
++    if (!stat.isFile()) {
++      return false;
++    }
++    fs.accessSync(filePath, fs.constants.X_OK);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function normalizedStem(fileName: string): string {
++  return path.basename(fileName, path.extname(fileName)).toLocaleLowerCase();
++}
++
++function scoreCandidate(requestedStem: string, candidateName: string): number {
++  const candidateStem = normalizedStem(candidateName);
++  if (candidateStem === requestedStem) {
++    return 100;
++  }
++
++  const requestedTokens = requestedStem.split(/[^a-z0-9]+/).filter(Boolean);
++  const candidateTokens = candidateStem.split(/[^a-z0-9]+/).filter(Boolean);
++  if (requestedTokens.length === 0 || candidateTokens.length === 0) {
++    return 0;
++  }
++
++  const candidateIsRequestedPrefix =
++    requestedStem.startsWith(candidateStem) &&
++    /[^a-z0-9]/.test(requestedStem.charAt(candidateStem.length));
++  if (candidateIsRequestedPrefix) {
++    return 80 + Math.min(candidateStem.length, 19);
++  }
++
++  const requestedIsCandidatePrefix =
++    candidateStem.startsWith(requestedStem) &&
++    /[^a-z0-9]/.test(candidateStem.charAt(requestedStem.length));
++  if (requestedIsCandidatePrefix) {
++    return 70 + Math.min(requestedStem.length, 19);
++  }
++
++  const commonTokens = candidateTokens.filter((token) => requestedTokens.includes(token));
++  return commonTokens.length === Math.min(requestedTokens.length, candidateTokens.length)
++    ? 50 + commonTokens.join("").length
++    : 0;
++}
++
++/**
++ * Resolve a Windows executable declared by an extension to a native executable
++ * shipped beside it by the Linux build of the application. The resolver is
++ * deliberately local and name-based: it never contains application IDs or a
++ * catalogue of special cases.
++ */
++export function resolveNativeExecutable(
++  basePath: string,
++  declaredPath: string,
++  platform: NodeJS.Platform = process.platform,
++): string {
++  if (platform !== "linux" || !declaredPath?.toLocaleLowerCase().endsWith(".exe")) {
++    return declaredPath;
++  }
++
++  const absoluteDeclared = path.isAbsolute(declaredPath)
++    ? declaredPath
++    : path.join(basePath, declaredPath);
++  if (fs.existsSync(absoluteDeclared)) {
++    return declaredPath;
++  }
++
++  const directory = path.dirname(absoluteDeclared);
++  const requestedStem = normalizedStem(absoluteDeclared);
++  let candidates: string[];
++  try {
++    candidates = fs.readdirSync(directory);
++  } catch {
++    return declaredPath;
++  }
++
++  const best = candidates
++    .filter((candidate) => !candidate.toLocaleLowerCase().endsWith(".exe"))
++    .map((candidate) => ({
++      candidate,
++      score: scoreCandidate(requestedStem, candidate),
++    }))
++    .filter(
++      ({ candidate, score }) => score >= 50 && isExecutableFile(path.join(directory, candidate)),
++    )
++    .sort((lhs, rhs) => rhs.score - lhs.score || lhs.candidate.localeCompare(rhs.candidate))[0];
++
++  if (best === undefined) {
++    return declaredPath;
++  }
++
++  const resolvedAbsolute = path.join(directory, best.candidate);
++  return path.isAbsolute(declaredPath)
++    ? resolvedAbsolute
++    : path.relative(basePath, resolvedAbsolute);
++}
++
++export function resolvePlatformPath(
++  basePath: string,
++  declaredPath: string,
++  platform: NodeJS.Platform = process.platform,
++): string {
++  return path.isAbsolute(declaredPath)
++    ? resolveNativeExecutable(basePath, declaredPath, platform)
++    : path.join(basePath, resolveNativeExecutable(basePath, declaredPath, platform));
++}

@@ -1,0 +1,235 @@
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+--- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+@@ -13,6 +13,7 @@
+ import { getGame, UserCanceled } from "../../util/api";
+ import * as fs from "../../util/fs";
+ import type { Normalize } from "../../util/getNormalizeFunc";
++import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
+ import { activeGameId } from "../../util/selectors";
+ import { truthy } from "../../util/util";
+ import type { IDeploymentFailure } from "./actions/session";
+@@ -435,9 +436,13 @@
+     const game = getGame(gameId);
+     const directoryCleaning = game.directoryCleaning || "tag";
+ 
+-    // stat to ensure the target directory exists
+-    return Promise.resolve(
+-      fs
++    return Promise.resolve().then(() => {
++      // Link scanners use raw filesystem APIs, unlike fs.statAsync.
++      // Resolve both roots so purge reaches the same files as deployment.
++      installPath = resolveCaseInsensitiveSync(installPath);
++      dataPath = resolveCaseInsensitiveSync(dataPath);
++      // A missing selected prefix must fail, rather than count as an empty target.
++      return fs
+         .statAsync(dataPath)
+         .then(() => this.purgeLinks(installPath, dataPath, onProgress))
+         .then(() => this.postLinkPurge(dataPath, false, true, directoryCleaning))
+@@ -447,8 +452,8 @@
+             return Promise.resolve(undefined);
+           }
+           return Promise.reject(err);
+-        }),
+-    );
++        });
++    });
+   }
+ 
+   public postPurge(): PromiseLike<void> {
+@@ -851,15 +856,18 @@
+               (entry) => !entry.isDirectory && LinkingActivator.isTagName(entry.filePath),
+             ) !== undefined;
+ 
+-    return Promise.resolve(
+-      turbowalk(
+-        baseDir,
+-        (entries) => {
+-          allEntries = allEntries.concat(entries);
+-        },
+-        { recurse: false, skipHidden: false, skipLinks: false },
+-      ),
+-    )
++    return Promise.resolve()
++      .then(() => {
++        // finalize also calls this directly with the game's logical mod path.
++        baseDir = resolveCaseInsensitiveSync(baseDir);
++        return turbowalk(
++          baseDir,
++          (entries) => {
++            allEntries = allEntries.concat(entries);
++          },
++          { recurse: false, skipHidden: false, skipLinks: false },
++        );
++      })
+       .then(() => {
+         doRemove = doRemove || taggedForRemoval(allEntries);
+ 
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
+@@ -0,0 +1,163 @@
++import * as nodeFs from "node:fs";
++import * as path from "node:path";
++
++import { afterEach, expect, vi } from "vitest";
++
++import { test } from "../../test-utils/deploymentTest";
++import type { IGame } from "../../types/IGame";
++import { setCompatibilityGameProvider } from "../../util/compatibilityPaths";
++import { saveActivation } from "./util/activationStore";
++import BlacklistSet from "./util/BlacklistSet";
++
++afterEach(() => {
++  setCompatibilityGameProvider(undefined);
++  vi.unstubAllEnvs();
++});
++
++for (const staleHost of [false, true]) {
++  test.runIf(process.platform === "linux")(
++    `purges Proton config deployment and restores originals with ${staleHost ? "a stale" : "no"} host directory`,
++    async ({ makeDeployment }) => {
++      const gameId = "abioticfactor";
++      const modType = "abioticfactor-config";
++      const modName = "ConfigMod";
++      const original = "[SystemSettings]\nr.Test=0\n";
++      const modified = "[SystemSettings]\nr.Test=1\n";
++      const h = makeDeployment({
++        gameId,
++        modName,
++        files: { "Engine.ini": modified, "ModOnly.ini": "mod-only file" },
++      });
++      const root = path.dirname(h.stagingDir);
++      const localAppData = path.join(root, "Local");
++      const prefix = path.join(root, "prefix");
++      const relative = "AbioticFactor/Saved/Config/Windows";
++      const hostConfig = path.join(localAppData, relative);
++      const prefixConfig = path.join(prefix, "drive_c/users/steamuser/AppData/Local", relative);
++      const engine = path.join(prefixConfig, "Engine.ini");
++      const backup = `${engine}.vortex_backup`;
++      const manifest = `vortex.deployment.${modType}.json`;
++      nodeFs.mkdirSync(prefixConfig, { recursive: true });
++      nodeFs.writeFileSync(engine, original);
++      nodeFs.writeFileSync(path.join(prefixConfig, "GameUserSettings.ini"), "unrelated settings");
++      if (staleHost) {
++        nodeFs.mkdirSync(hostConfig, { recursive: true });
++        nodeFs.writeFileSync(path.join(hostConfig, "Engine.ini"), "stale host settings");
++      }
++      vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", localAppData);
++      vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(root, ".config"));
++      vi.stubEnv("VORTEX_LINUX_DOCUMENTS", path.join(root, "Documents"));
++      vi.stubEnv("VORTEX_USERDATA", path.join(root, "Vortex"));
++      setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++
++      await h.method.prepare(hostConfig, true, [], h.normalize);
++      await h.method.activate(
++        path.join(h.stagingDir, modName),
++        modName,
++        "",
++        new BlacklistSet([], { details: {} } as IGame, h.normalize),
++      );
++      const deployed = await h.method.finalize(gameId, hostConfig, h.stagingDir);
++      expect(deployed).toHaveLength(2);
++      await saveActivation(
++        gameId,
++        modType,
++        "test-instance",
++        hostConfig,
++        h.stagingDir,
++        deployed,
++        h.method.id,
++      );
++      expect(nodeFs.readFileSync(engine, "utf8")).toBe(modified);
++      expect(nodeFs.readFileSync(backup, "utf8")).toBe(original);
++      expect(nodeFs.statSync(engine).ino).toBe(
++        nodeFs.statSync(path.join(h.stagingDir, modName, "Engine.ini")).ino,
++      );
++      expect(
++        JSON.parse(nodeFs.readFileSync(path.join(prefixConfig, manifest), "utf8")).files,
++      ).toHaveLength(2);
++
++      await h.method.prePurge(h.stagingDir);
++      await h.method.purge(h.stagingDir, hostConfig, gameId);
++      await h.method.postPurge();
++      await saveActivation(
++        gameId,
++        modType,
++        "test-instance",
++        hostConfig,
++        h.stagingDir,
++        [],
++        h.method.id,
++      );
++
++      expect(nodeFs.readFileSync(engine, "utf8")).toBe(original);
++      expect(nodeFs.readdirSync(prefixConfig).sort()).toEqual([
++        "Engine.ini",
++        "GameUserSettings.ini",
++      ]);
++      expect(nodeFs.readFileSync(path.join(prefixConfig, "GameUserSettings.ini"), "utf8")).toBe(
++        "unrelated settings",
++      );
++      expect(nodeFs.readFileSync(path.join(h.stagingDir, modName, "Engine.ini"), "utf8")).toBe(
++        modified,
++      );
++      expect(
++        nodeFs.existsSync(path.join(h.stagingDir, `vortex.deployment.${modType}.msgpack`)),
++      ).toBe(false);
++      if (staleHost) {
++        expect(nodeFs.readdirSync(hostConfig)).toEqual(["Engine.ini"]);
++        expect(nodeFs.readFileSync(path.join(hostConfig, "Engine.ini"), "utf8")).toBe(
++          "stale host settings",
++        );
++      } else {
++        expect(nodeFs.existsSync(localAppData)).toBe(false);
++      }
++    },
++  );
++}
++
++test.runIf(process.platform === "linux")(
++  "purges a native game's deployment when the target uses different casing",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "modified" } });
++    const original = "original native configuration";
++    nodeFs.writeFileSync(h.inGame("Engine.ini"), original);
++    nodeFs.writeFileSync(h.inGame("GameUserSettings.ini"), "unrelated native settings");
++    setCompatibilityGameProvider(() => ({ path: h.gameDir, executable: "Game.sh" }));
++
++    await h.deploy();
++    expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe("modified");
++    await h.method.prePurge(h.stagingDir);
++    await h.method.purge(h.stagingDir, path.join(h.gameDir, "..", "data"), "skyrimse");
++    await h.method.postPurge();
++
++    expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe(original);
++    expect(nodeFs.readdirSync(h.gameDir).sort()).toEqual(["Engine.ini", "GameUserSettings.ini"]);
++    expect(nodeFs.readFileSync(h.inGame("GameUserSettings.ini"), "utf8")).toBe(
++      "unrelated native settings",
++    );
++  },
++);
++
++test.runIf(process.platform === "linux")(
++  "rejects purge when the selected Proton prefix is unavailable",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "modified" } });
++    const root = path.dirname(h.stagingDir);
++    const localAppData = path.join(root, "Local");
++    const hostConfig = path.join(localAppData, "AbioticFactor/Saved/Config/Windows");
++    nodeFs.mkdirSync(hostConfig, { recursive: true });
++    nodeFs.writeFileSync(path.join(hostConfig, "Engine.ini"), "host configuration");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", localAppData);
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(root, "missing-prefix") },
++    }));
++
++    await expect(h.method.purge(h.stagingDir, hostConfig, "skyrimse")).rejects.toMatchObject({
++      code: "ENOENT",
++    });
++    expect(nodeFs.readFileSync(path.join(hostConfig, "Engine.ini"), "utf8")).toBe(
++      "host configuration",
++    );
++  },
++);

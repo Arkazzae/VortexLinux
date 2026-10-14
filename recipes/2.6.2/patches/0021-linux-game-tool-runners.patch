@@ -1,0 +1,785 @@
+diff --git a/src/renderer/src/ExtensionManager.ts b/src/renderer/src/ExtensionManager.ts
+index 6f1c70b..ee7a2f8 100644
+--- a/src/renderer/src/ExtensionManager.ts
++++ b/src/renderer/src/ExtensionManager.ts
+@@ -88,7 +88,11 @@ import type {
+ import { getApplication } from "./util/application";
+ import { Archive } from "./util/archives";
+ import { fileMD5 } from "./util/checksum";
+-import { type CompatibilityGame, setCompatibilityGameProvider } from "./util/compatibilityPaths";
++import {
++  type CompatibilityGame,
++  getCompatibilityGame,
++  setCompatibilityGameProvider,
++} from "./util/compatibilityPaths";
+ import { COMPANY_ID } from "./util/constants";
+ import {
+   MissingDependency,
+@@ -105,6 +109,7 @@ import getVortexPath from "./util/getVortexPath";
+ import type { i18n } from "./util/i18n";
+ import { TString } from "./util/i18n";
+ import lazyRequire from "./util/lazyRequire";
++import { resolveGameTool } from "./util/linux/gameTools";
+ import { showError } from "./util/message";
+ import { deregisterProtocolHandler, registerProtocolHandler } from "./util/protocolRegistration";
+ import runElevatedCustomTool from "./util/runElevatedCustomTool";
+@@ -2344,6 +2349,7 @@ class ExtensionManager {
+     if (!truthy(executable)) {
+       return PromiseBB.reject(new ProcessCanceled("Executable not set"));
+     }
++    const compatibilityGame = getCompatibilityGame();
+     const interpreter = this.mInterpreters[path.extname(executable).toLowerCase()];
+     if (interpreter !== undefined) {
+       try {
+@@ -2357,7 +2363,7 @@ class ExtensionManager {
+       }
+     }
+ 
+-    const cwd = options.cwd || path.dirname(executable);
++    let cwd = options.cwd || path.dirname(executable);
+ 
+     // Detect if executable is a script file that requires shell: true
+     // Common script extensions that need shell interpretation
+@@ -2374,7 +2380,7 @@ class ExtensionManager {
+     // I think the key is called "Path" on windows but I'm not willing to bet this is consistent
+     // across all language variants and versions
+     const pathEnvName = Object.keys(process.env).find((key) => key.toLowerCase() === "path");
+-    const env = {
++    let env = {
+       ...filteredEnvironment(),
+       [pathEnvName]: process.env["PATH_ORIG"] || process.env["PATH"],
+       ...options.env,
+@@ -2390,7 +2396,15 @@ class ExtensionManager {
+       this.applyStartHooks({ executable, args, options })
+         .then((updatedParameters) => {
+           ({ executable, args, options } = updatedParameters);
+-          return PromiseBB.resolve();
++          return PromiseBB.resolve(resolveGameTool(executable, args, options, compatibilityGame));
++        })
++        .then((command) => {
++          executable = command.executable;
++          args = command.args;
++          options = { ...options, ...command.options };
++          cwd = options.cwd || cwd;
++          env = { ...env, ...options.env };
++          delete env[""];
+         })
+         .then(
+           () =>
+@@ -2417,7 +2431,9 @@ class ExtensionManager {
+ 
+                 const child = spawn(
+                   runExe,
+-                  options.shell ? args : args.map((arg) => arg.replace(/"/g, "")),
++                  options.shell || process.platform === "linux"
++                    ? args
++                    : args.map((arg) => arg.replace(/"/g, "")),
+                   spawnOptions,
+                 );
+                 if (truthy(child["exitCode"])) {
+diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
+index b02a209..338e8f7 100644
+--- a/src/renderer/src/util/StarterInfo.ts
++++ b/src/renderer/src/util/StarterInfo.ts
+@@ -25,7 +25,6 @@ import {
+ } from "./CustomErrors";
+ import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
+ import getVortexPath from "./getVortexPath";
+-import { isWindowsExecutable } from "./linux/proton";
+ import { resolvePlatformPath } from "./nativeExecutable";
+ import type { Steam, ISteamEntry } from "./Steam";
+ import { getSafe } from "./storeHelper";
+@@ -109,18 +108,6 @@ async function findSteamEntry(info: IStarterInfo): Promise<ISteamEntry | undefin
+   }
+ }
+ 
+-/**
+- * Check if a tool should run through the matching Steam game's Proton prefix.
+- * Full games must be handed to Steam so it can apply the selected compatibility
+- * tool, launch options, DRM and Steam Runtime environment.
+- */
+-async function shouldRunWithProton(info: IStarterInfo): Promise<ISteamEntry | undefined> {
+-  if (info.isGame || !isWindowsExecutable(info.exePath)) {
+-    return undefined;
+-  }
+-  return findSteamEntry(info);
+-}
+-
+ /**
+  * wrapper for information about a game or tool, combining static and runtime/discovery information
+  * for the purpose of actually starting them in a uniform way.
+@@ -287,36 +274,6 @@ class StarterInfo implements IStarterInfo {
+       return;
+     }
+ 
+-    // Check if a tool should run through its matching game's Proton prefix on Linux
+-    const protonGameEntry = await shouldRunWithProton(info);
+-    if (protonGameEntry?.usesProton) {
+-      // On Linux with Proton, we can't track when the process exits (ProcessMonitor
+-      // only works on Windows), so don't set tool as running to avoid stuck spinner
+-      const protonSpawned = () => {
+-        if (["hide", "hide_recover"].includes(info.onStart)) {
+-          hideWindow();
+-        } else if (info.onStart === "close") {
+-          getApplication().quit();
+-        }
+-      };
+-
+-      const steamStore = storeLookup.getGameStore(getGameStoresSafe(), "steam") as Steam;
+-      return steamStore.runToolWithProton(
+-        api,
+-        info.exePath,
+-        info.commandLine,
+-        {
+-          cwd: info.workingDirectory || path.dirname(info.exePath),
+-          env: info.environment,
+-          suggestDeploy: true,
+-          shell: info.shell,
+-          detach: info.detach || info.onStart === "close",
+-          onSpawned: protonSpawned,
+-        },
+-        protonGameEntry,
+-      );
+-    }
+-
+     return api
+       .runExecutable(info.exePath, info.commandLine, {
+         cwd: info.workingDirectory || path.dirname(info.exePath),
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+index 058df74..08729b3 100644
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -31,6 +31,10 @@ export function registerCompatibilityStore(store: string, resolver: PrefixResolv
+   resetCompatibilityPathCache();
+ }
+ 
++export function getCompatibilityGame(): CompatibilityGame | undefined {
++  return gameProvider?.();
++}
++
+ export function selectedGamePrefix(game = gameProvider?.()): string | null | undefined {
+   if (game === undefined) return undefined;
+   const key = JSON.stringify([
+diff --git a/src/renderer/src/util/linux/gameTools.test.ts b/src/renderer/src/util/linux/gameTools.test.ts
+new file mode 100644
+index 0000000..3e4ead4
+--- /dev/null
++++ b/src/renderer/src/util/linux/gameTools.test.ts
+@@ -0,0 +1,171 @@
++import { execFile } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { promisify } from "node:util";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { resetCompatibilityPathCache } from "../compatibilityPaths";
++import { resolveGameTool } from "./gameTools";
++import {
++  findLatestProton,
++  getConfiguredProtonName,
++  getProtonInfo,
++  resolveProtonPath,
++} from "./proton";
++
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++
++function vdf(value: Record<string, any>): string {
++  return Object.entries(value)
++    .map(([key, item]) =>
++      typeof item === "object" ? `"${key}"\n{\n${vdf(item)}}\n` : `"${key}" "${item}"\n`,
++    )
++    .join("");
++}
++
++describe.runIf(process.platform === "linux")("game tool runner", () => {
++  let root: string;
++  let steam: string;
++  let library: string;
++  let gamePath: string;
++  let prefix: string;
++  function write(file: string, text: string): void {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, text);
++  }
++  function config(mapping: Record<string, { name: string }>): void {
++    write(
++      path.join(steam, "config/config.vdf"),
++      vdf({
++        InstallConfigStore: { Software: { valve: { Steam: { CompatToolMapping: mapping } } } },
++      }),
++    );
++  }
++  function proton(name: string, internal?: string): string {
++    const directory = path.join(library, "steamapps/common", name);
++    write(
++      path.join(directory, "proton"),
++      `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),prefix:process.env.WINEPREFIX,app:process.env.SteamAppId,cwd:process.cwd()}));`,
++    );
++    fs.chmodSync(path.join(directory, "proton"), 0o755);
++    if (internal)
++      write(
++        path.join(directory, "compatibilitytool.vdf"),
++        vdf({ compatibilitytools: { compat_tools: { [internal]: { install_path: "." } } } }),
++      );
++    return directory;
++  }
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-tool-test-"));
++    vi.mocked(os.homedir).mockReturnValue(root);
++    vi.stubEnv("XDG_DATA_HOME", path.join(root, ".local/share"));
++    steam = path.join(root, ".local/share/Steam");
++    library = path.join(root, "Games with spaces");
++    gamePath = path.join(library, "steamapps/common/Game");
++    prefix = path.join(library, "steamapps/compatdata/42/pfx");
++    fs.mkdirSync(path.join(prefix, "drive_c"), { recursive: true });
++    fs.mkdirSync(gamePath, { recursive: true });
++    write(
++      path.join(steam, "steamapps/libraryfolders.vdf"),
++      vdf({ libraryfolders: { 1: { path: library } } }),
++    );
++    write(
++      path.join(library, "steamapps/appmanifest_42.acf"),
++      vdf({ AppState: { appid: "42", installdir: "Game" } }),
++    );
++  });
++  afterEach(() => {
++    resetCompatibilityPathCache();
++    vi.unstubAllEnvs();
++    vi.restoreAllMocks();
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++  it("uses Steam's default mapping and the tool manifest in an additional library", async () => {
++    const runner = proton("Custom directory", "selected_proton");
++    config({ 0: { name: "selected_proton" } });
++    expect(await getConfiguredProtonName(steam, "42")).toBe("selected_proton");
++    expect(await resolveProtonPath(steam, "selected_proton")).toBe(runner);
++    const args = ["path with spaces", 'value="quoted"', "literal; $(touch example)"];
++    const command = await resolveGameTool(
++      "/tools/Editor.exe",
++      args,
++      { cwd: gamePath, shell: true },
++      { path: gamePath, store: "steam" },
++    );
++    expect(command.options.shell).toBe(false);
++    const { stdout } = await promisify(execFile)(command.executable, command.args, {
++      cwd: command.options.cwd,
++      env: { ...process.env, ...command.options.env },
++    });
++    expect(JSON.parse(stdout)).toEqual({
++      args: ["run", "/tools/Editor.exe", ...args],
++      prefix,
++      app: "42",
++      cwd: gamePath,
++    });
++  });
++  it("honors a per-game selection and does not replace a missing configured runner", async () => {
++    proton("Proton 10.0");
++    config({ 0: { name: "proton_10" }, 42: { name: "missing" } });
++    expect(await getConfiguredProtonName(steam, "42")).toBe("missing");
++    expect(
++      (await getProtonInfo(steam, path.join(library, "steamapps"), "42")).protonPath,
++    ).toBeUndefined();
++    await expect(
++      resolveGameTool("Tool.exe", [], {}, { path: gamePath, store: "steam" }),
++    ).rejects.toThrow(/selected in Steam/);
++  });
++  it("falls back to Steam's default after a per-game selection is cleared", async () => {
++    config({ 0: { name: "proton_10" }, 42: { name: "" } });
++    expect(await getConfiguredProtonName(steam, "42")).toBe("proton_10");
++  });
++  it("finds compatibility tools in Steam's extra tool directories", async () => {
++    const extra = path.join(root, "extra tools");
++    const runner = path.join(extra, "GE-Proton");
++    write(path.join(runner, "proton"), "");
++    write(
++      path.join(runner, "compatibilitytool.vdf"),
++      vdf({ compatibilitytools: { compat_tools: { "GE-Proton": { install_path: "." } } } }),
++    );
++    vi.stubEnv("STEAM_EXTRA_COMPAT_TOOLS_PATHS", extra);
++    expect(await resolveProtonPath(steam, "GE-Proton")).toBe(runner);
++  });
++  it("compares Proton versions numerically and never matches 9 with 19", async () => {
++    proton("Proton 9.0");
++    const latest = proton("Proton 19.0");
++    proton("Proton 10.0");
++    expect(await resolveProtonPath(steam, "proton_9")).toBe(
++      path.join(library, "steamapps/common/Proton 9.0"),
++    );
++    expect(await findLatestProton(steam)).toBe(latest);
++  });
++  it("keeps native tools native and requires an existing explicit Wine prefix", async () => {
++    expect(
++      (await resolveGameTool("/tools/editor", [], {}, { path: gamePath, store: "steam" }))
++        .executable,
++    ).toBe("/tools/editor");
++    const command = await resolveGameTool("/tools/Editor.exe", ["argument"], {
++      env: { WINEPREFIX: prefix },
++    });
++    expect(command.executable).toBe("wine");
++    expect(command.options.env.WINEPREFIX).toBe(prefix);
++    await expect(
++      resolveGameTool("Tool.exe", [], { env: { WINEPREFIX: path.join(root, "missing") } }),
++    ).rejects.toThrow(/prefix is unavailable/);
++  });
++  it("does not launch a Steam tool in a different Wine prefix", async () => {
++    proton("Proton 10.0");
++    const other = path.join(root, "other");
++    fs.mkdirSync(path.join(other, "drive_c"), { recursive: true });
++    await expect(
++      resolveGameTool(
++        "Tool.exe",
++        [],
++        { env: { WINEPREFIX: other } },
++        { path: gamePath, store: "steam" },
++      ),
++    ).rejects.toThrow(/differs/);
++  });
++});
+diff --git a/src/renderer/src/util/linux/gameTools.ts b/src/renderer/src/util/linux/gameTools.ts
+new file mode 100644
+index 0000000..9fa7e21
+--- /dev/null
++++ b/src/renderer/src/util/linux/gameTools.ts
+@@ -0,0 +1,88 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import {
++  type CompatibilityGame,
++  getCompatibilityGame,
++  selectedGamePrefix,
++} from "../compatibilityPaths";
++import {
++  buildProtonCommand,
++  buildProtonEnvironment,
++  getProtonInfo,
++  isWindowsExecutable,
++} from "./proton";
++import { canonicalPath, findSteamInstallation, steamLibraries, steamRoots } from "./steamLibraries";
++
++export interface ToolOptions {
++  cwd?: string;
++  env?: Record<string, string>;
++  shell?: boolean;
++}
++export interface ToolCommand {
++  executable: string;
++  args: string[];
++  options: ToolOptions;
++}
++type StoreRunner = (command: ToolCommand, game: CompatibilityGame) => Promise<ToolCommand>;
++const runners = new Map<string, StoreRunner>();
++export function registerGameToolRunner(store: string, runner: StoreRunner): void {
++  runners.set(store, runner);
++}
++
++export async function resolveGameTool(
++  executable: string,
++  args: string[],
++  options: ToolOptions,
++  game = getCompatibilityGame(),
++): Promise<ToolCommand> {
++  const command = { executable, args, options };
++  if (process.platform !== "linux" || !isWindowsExecutable(executable)) return command;
++  if (!game && !options.env?.WINEPREFIX) return command;
++  if (game && runners.has(game.store ?? "")) return runners.get(game.store)(command, game);
++  const prefix = options.env?.WINEPREFIX ?? selectedGamePrefix(game);
++  if (!prefix || !fs.existsSync(path.join(prefix, "drive_c"))) {
++    throw new Error(
++      "The game's Wine prefix is unavailable. Launch the game once or configure WINEPREFIX for this tool.",
++    );
++  }
++  if (game?.store === "steam") {
++    const installed = game.path ? findSteamInstallation(game.path) : undefined;
++    if (!installed) throw new Error("Cannot find the selected game's Steam installation");
++    const library = canonicalPath(path.dirname(installed.steamAppsPath));
++    const steam = steamRoots().find((root) => steamLibraries([root]).includes(library));
++    if (!steam) throw new Error("Cannot find Steam's configuration for this game library");
++    const proton = await getProtonInfo(steam, installed.steamAppsPath, installed.appId);
++    if (!proton.protonPath)
++      throw new Error(
++        "The Proton version selected in Steam is not installed or could not be identified",
++      );
++    if (options.env?.WINEPREFIX && canonicalPath(prefix) !== canonicalPath(installed.prefix)) {
++      throw new Error(
++        "This tool's WINEPREFIX differs from the selected Steam game. Use the game's prefix with Proton.",
++      );
++    }
++    const result = buildProtonCommand(proton.protonPath, executable, args);
++    return {
++      ...result,
++      options: {
++        ...options,
++        shell: false,
++        env: {
++          ...buildProtonEnvironment(proton.compatDataPath, steam, options.env),
++          SteamAppId: installed.appId,
++          SteamGameId: installed.appId,
++        },
++      },
++    };
++  }
++  return {
++    executable: "wine",
++    args: [executable, ...args],
++    options: {
++      ...options,
++      shell: false,
++      env: { ...options.env, WINEPREFIX: prefix },
++    },
++  };
++}
+diff --git a/src/renderer/src/util/linux/proton.ts b/src/renderer/src/util/linux/proton.ts
+index d6fe193..65a8d0e 100644
+--- a/src/renderer/src/util/linux/proton.ts
++++ b/src/renderer/src/util/linux/proton.ts
+@@ -1,9 +1,9 @@
+-import * as path from "path";
++import * as fs from "node:fs";
++import * as path from "node:path";
+ 
+ import { parse } from "simple-vdf";
+ 
+-import * as fs from "../fs";
+-import { log } from "../log";
++import { steamLibraries } from "./steamLibraries";
+ 
+ export interface IProtonInfo {
+   usesProton: boolean;
+@@ -11,226 +11,117 @@ export interface IProtonInfo {
+   protonPath?: string;
+ }
+ 
+-/**
+- * Check if a game uses Proton by looking for its compatdata folder
+- */
+-export async function detectProtonUsage(steamAppsPath: string, appId: string): Promise<boolean> {
+-  const compatDataPath = path.join(steamAppsPath, "compatdata", appId);
+-  try {
+-    await fs.statAsync(compatDataPath);
+-    return true;
+-  } catch {
+-    return false;
+-  }
++function value(object: any, key: string): any {
++  return object?.[Object.keys(object).find((entry) => entry.toLowerCase() === key.toLowerCase())];
+ }
+ 
+-/**
+- * Get the compatdata path for a game
+- */
++export async function detectProtonUsage(steamAppsPath: string, appId: string): Promise<boolean> {
++  return fs.existsSync(path.join(getCompatDataPath(steamAppsPath, appId), "pfx"));
++}
+ export function getCompatDataPath(steamAppsPath: string, appId: string): string {
+   return path.join(steamAppsPath, "compatdata", appId);
+ }
+-
+-/**
+- * Get the Wine prefix path within compatdata
+- */
+ export function getWinePrefixPath(compatDataPath: string): string {
+   return path.join(compatDataPath, "pfx");
+ }
+ 
+-/**
+- * Read Steam's config.vdf to find the configured Proton version for a game
+- */
+ export async function getConfiguredProtonName(
+   steamPath: string,
+   appId: string,
+ ): Promise<string | undefined> {
+-  const configPath = path.join(steamPath, "config", "config.vdf");
+-  try {
+-    const configData = await fs.readFileAsync(configPath, "utf8");
+-    const config = parse(configData.toString()) as any;
+-    const mapping = config?.InstallConfigStore?.Software?.Valve?.Steam?.CompatToolMapping;
+-    return mapping?.[appId]?.name;
+-  } catch (err: any) {
+-    log("debug", "Could not read Steam config.vdf", { error: err?.message });
+-    return undefined;
+-  }
+-}
+-
+-/**
+- * Check if a path exists asynchronously
+- */
+-async function pathExists(filePath: string): Promise<boolean> {
+   try {
+-    await fs.statAsync(filePath);
+-    return true;
++    let config: any = parse(fs.readFileSync(path.join(steamPath, "config", "config.vdf"), "utf8"));
++    for (const key of ["InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping"]) {
++      config = value(config, key);
++    }
++    // Steam keeps an empty name after the per-game override is cleared.
++    const name = (id: string): string | undefined => {
++      const candidate = config?.[id]?.name;
++      return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
++    };
++    return name(appId) ?? name("0");
+   } catch {
+-    return false;
+-  }
+-}
+-
+-/**
+- * Extract a searchable keyword from a Proton config name.
+- * Config names use formats like "proton_experimental", "proton_9", "proton_hotfix".
+- * Returns the portion after "proton_" for fuzzy matching against folder names.
+- */
+-function extractProtonKeyword(protonName: string): string | undefined {
+-  const lower = protonName.toLowerCase();
+-  if (!lower.startsWith("proton_")) {
+     return undefined;
+   }
+-  return lower.slice("proton_".length);
+ }
+ 
+-/**
+- * Check if a folder name matches a Proton keyword via fuzzy matching.
+- * Handles cases like: "proton_experimental" -> "Proton - Experimental"
+- *                     "proton_9" -> "Proton 9.0"
+- *                     "proton_hotfix" -> "Proton Hotfix"
+- */
+-function folderMatchesKeyword(folderName: string, keyword: string): boolean {
+-  const lowerFolder = folderName.toLowerCase();
+-
+-  // Direct substring match (handles "experimental", "hotfix", etc.)
+-  if (lowerFolder.includes(keyword)) {
+-    return true;
+-  }
+-
+-  // Version number match: "9" should match "9.0", "9.1", etc.
+-  if (/^\d+$/.test(keyword)) {
+-    const versionPattern = new RegExp(`\\b${keyword}(\\.\\d+)?\\b`);
+-    return versionPattern.test(lowerFolder);
+-  }
+-
+-  return false;
++function installations(steamPath: string): string[] {
++  const directories = [
++    path.join(steamPath, "compatibilitytools.d"),
++    ...(process.env.STEAM_EXTRA_COMPAT_TOOLS_PATHS ?? "").split(path.delimiter).filter(Boolean),
++    // Distribution packages such as proton-ge-custom install here.
++    "/usr/share/steam/compatibilitytools.d",
++    "/usr/local/share/steam/compatibilitytools.d",
++    ...steamLibraries([steamPath]).map((library) => path.join(library, "steamapps", "common")),
++  ];
++  return directories.flatMap((directory) => {
++    try {
++      return fs
++        .readdirSync(directory)
++        .map((entry) => path.join(directory, entry))
++        .filter((entry) => fs.existsSync(path.join(entry, "proton")));
++    } catch {
++      return [];
++    }
++  });
+ }
+ 
+-/**
+- * Resolve a Proton config name to its installation path.
+- *
+- * Steam stores the configured Proton version in config.vdf using internal names
+- * (e.g., "proton_experimental", "proton_9", "GE-Proton10-28"), but the actual
+- * installation folders use different naming conventions:
+- *   - config.vdf: "proton_experimental" -> folder: "Proton - Experimental"
+- *   - config.vdf: "proton_9"            -> folder: "Proton 9.0"
+- *   - config.vdf: "GE-Proton10-28"      -> folder: "GE-Proton10-28" (exact match)
+- *
+- * Steam provides no direct mapping between these names. Custom tools (GE-Proton, etc.)
+- * use matching names, but official Proton versions do not.
+- *
+- * Resolution strategy (no hardcoded mappings):
+- * 1. Custom tools: Check compatibilitytools.d/{name} - custom Proton builds
+- *    use their config name as the folder name directly.
+- * 2. Exact match: Check steamapps/common/{name} - in case config name matches.
+- * 3. Fuzzy match: Scan steamapps/common/Proton* folders and match by keyword.
+- *    Extract the keyword after "proton_" and find a folder containing it.
+- *
+- * This approach is self-maintaining and doesn't require updates when Valve
+- * releases new Proton versions.
+- */
+ export async function resolveProtonPath(
+   steamPath: string,
+   protonName: string,
+ ): Promise<string | undefined> {
+-  // 1. Check custom compatibility tools directory (GE-Proton, etc.)
+-  // Custom tools use their config name as the folder name directly
+-  const customToolPath = path.join(steamPath, "compatibilitytools.d", protonName);
+-  if (await pathExists(customToolPath)) {
+-    return customToolPath;
+-  }
+-
+-  const commonPath = path.join(steamPath, "steamapps", "common");
+-
+-  // 2. Check for exact match in steamapps/common
+-  const exactPath = path.join(commonPath, protonName);
+-  if (await pathExists(exactPath)) {
+-    return exactPath;
+-  }
+-
+-  // 3. Fuzzy match: scan Proton* folders and match by keyword
+-  const keyword = extractProtonKeyword(protonName);
+-  if (keyword) {
++  const installed = installations(steamPath);
++  for (const directory of installed) {
+     try {
+-      const entries = await fs.readdirAsync(commonPath);
+-      const protonDirs = entries.filter((e) => e.toLowerCase().startsWith("proton"));
+-
+-      for (const dir of protonDirs) {
+-        if (folderMatchesKeyword(dir, keyword)) {
+-          return path.join(commonPath, dir);
+-        }
+-      }
+-    } catch (err: any) {
+-      log("debug", "Could not scan steamapps/common for Proton", {
+-        error: err?.message,
+-      });
++      const manifest = parse(
++        fs.readFileSync(path.join(directory, "compatibilitytool.vdf"), "utf8"),
++      );
++      const tools = value(value(manifest, "compatibilitytools"), "compat_tools");
++      if (Object.hasOwn(tools ?? {}, protonName)) return directory;
++    } catch {
++      /* Older tools may not have a manifest. */
+     }
+   }
+-
+-  return undefined;
++  const exact = installed.find((directory) => path.basename(directory) === protonName);
++  if (exact) return exact;
++  const keyword = /^proton_(.+)$/i.exec(protonName)?.[1];
++  if (!keyword) return undefined;
++  const pattern = /^\d+$/.test(keyword) ? new RegExp(`\\b${keyword}(?:\\.\\d+)?\\b`) : undefined;
++  const matches = installed.filter((directory) => {
++    const name = path.basename(directory).toLowerCase();
++    return (
++      name.startsWith("proton") &&
++      (pattern ? pattern.test(name) : name.includes(keyword.toLowerCase()))
++    );
++  });
++  return matches.length === 1 ? matches[0] : undefined;
+ }
+ 
+-/**
+- * Find the latest installed Proton version (fallback)
+- */
+ export async function findLatestProton(steamPath: string): Promise<string | undefined> {
+-  const commonPath = path.join(steamPath, "steamapps", "common");
+-  try {
+-    const entries = await fs.readdirAsync(commonPath);
+-    const protonDirs = entries
+-      .filter((e) => e.toLowerCase().startsWith("proton"))
+-      .sort()
+-      .reverse();
+-
+-    if (protonDirs.length > 0) {
+-      return path.join(commonPath, protonDirs[0]);
+-    }
+-  } catch (err: any) {
+-    log("debug", "Could not scan for Proton versions", { error: err?.message });
+-  }
+-  return undefined;
++  return installations(steamPath)
++    .filter((directory) => /^proton\s+\d/i.test(path.basename(directory)))
++    .sort((left, right) =>
++      path.basename(right).localeCompare(path.basename(left), "en", { numeric: true }),
++    )[0];
+ }
+ 
+-/**
+- * Get full Proton info for a game
+- */
+ export async function getProtonInfo(
+   steamPath: string,
+   steamAppsPath: string,
+   appId: string,
+ ): Promise<IProtonInfo> {
+-  const usesProton = await detectProtonUsage(steamAppsPath, appId);
+-  if (!usesProton) {
+-    return { usesProton: false };
+-  }
+-
+-  const compatDataPath = getCompatDataPath(steamAppsPath, appId);
+-
+-  // Try to get configured Proton, fall back to latest
++  if (!(await detectProtonUsage(steamAppsPath, appId))) return { usesProton: false };
+   const protonName = await getConfiguredProtonName(steamPath, appId);
+-  let protonPath: string | undefined;
+-
+-  if (protonName) {
+-    protonPath = await resolveProtonPath(steamPath, protonName);
+-  }
+-
+-  if (!protonPath) {
+-    protonPath = await findLatestProton(steamPath);
+-  }
+-
+-  return { usesProton: true, compatDataPath, protonPath };
++  const protonPath =
++    protonName !== undefined
++      ? await resolveProtonPath(steamPath, protonName)
++      : await findLatestProton(steamPath);
++  return { usesProton: true, compatDataPath: getCompatDataPath(steamAppsPath, appId), protonPath };
+ }
+ 
+-/**
+- * Check if a file is a Windows executable
+- */
+ export function isWindowsExecutable(filePath: string): boolean {
+-  const ext = path.extname(filePath).toLowerCase();
+-  return [".exe", ".bat", ".cmd"].includes(ext);
++  return [".exe", ".bat", ".cmd"].includes(path.extname(filePath).toLowerCase());
+ }
+-
+-/**
+- * Build environment variables for running through Proton
+- */
+ export function buildProtonEnvironment(
+   compatDataPath: string,
+   steamPath: string,
+@@ -248,17 +139,10 @@ export function buildProtonEnvironment(
+     LD_PRELOAD: preloads.join(":"),
+   };
+ }
+-
+-/**
+- * Build the command to run an executable through Proton
+- */
+ export function buildProtonCommand(
+   protonPath: string,
+   exePath: string,
+   args: string[],
+ ): { executable: string; args: string[] } {
+-  return {
+-    executable: path.join(protonPath, "proton"),
+-    args: ["run", exePath, ...args],
+-  };
++  return { executable: path.join(protonPath, "proton"), args: ["run", exePath, ...args] };
+ }
+diff --git a/src/renderer/src/util/linux/steamPaths.ts b/src/renderer/src/util/linux/steamPaths.ts
+index 0aea742..dd42a48 100644
+--- a/src/renderer/src/util/linux/steamPaths.ts
++++ b/src/renderer/src/util/linux/steamPaths.ts
+@@ -16,13 +16,9 @@ export function getLinuxSteamPaths(): string[] {
+  * Check if a path is a valid Steam installation
+  */
+ export function isValidSteamPath(steamPath: string): boolean {
+-  const libraryFoldersPath = path.join(steamPath, "config", "libraryfolders.vdf");
+-  try {
+-    fs.statSync(libraryFoldersPath);
+-    return true;
+-  } catch {
+-    return false;
+-  }
++  return ["config", "steamapps"].some((directory) =>
++    fs.existsSync(path.join(steamPath, directory, "libraryfolders.vdf")),
++  );
+ }
+ 
+ /**

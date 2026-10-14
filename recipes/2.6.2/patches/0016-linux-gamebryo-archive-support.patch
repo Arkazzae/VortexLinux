@@ -1,0 +1,178 @@
+diff --git a/extensions/gamebryo-archive-support/package.json b/extensions/gamebryo-archive-support/package.json
+index e683caf..c28e757 100644
+--- a/extensions/gamebryo-archive-support/package.json
++++ b/extensions/gamebryo-archive-support/package.json
+@@ -4,7 +4,7 @@
+   "description": "Support for Gamebryo/Bethesda archives (BSA and BA2)",
+   "scripts": {
+     "_build": "node build.mjs && pnpm extractInfo",
+-    "build": "node -e \"if(process.platform==='win32')process.exit(1)\" || (pnpm run _build)",
++    "build": "pnpm run _build",
+     "typecheck": "pnpm tsc",
+     "test": "pnpm exec vitest run"
+   },
+diff --git a/extensions/gamebryo-archive-support/src/archivePath.ts b/extensions/gamebryo-archive-support/src/archivePath.ts
+new file mode 100644
+index 0000000..fb8dbc5
+--- /dev/null
++++ b/extensions/gamebryo-archive-support/src/archivePath.ts
+@@ -0,0 +1,38 @@
++import * as path from "node:path";
++
++function unsafeArchivePath(archivePath: string): Error {
++  return new Error(`Unsafe archive path: ${archivePath}`);
++}
++
++/**
++ * Convert the Windows-style paths stored in BSA/BA2 archives to a native,
++ * relative output path without allowing an archive entry to escape its target.
++ */
++export function resolveArchiveOutputPath(outputPath: string, archivePath: string): string {
++  const portablePath = archivePath.replace(/\\/g, "/");
++  const segments = portablePath.split("/");
++  if (
++    portablePath.startsWith("/") ||
++    /^[A-Za-z]:/.test(portablePath) ||
++    segments.some(
++      (segment) =>
++        segment.length === 0 || segment === "." || segment === ".." || segment.includes("\0"),
++    )
++  ) {
++    throw unsafeArchivePath(archivePath);
++  }
++
++  const outputRoot = path.resolve(outputPath);
++  const resolvedPath = path.resolve(outputRoot, ...segments);
++  const relativePath = path.relative(outputRoot, resolvedPath);
++  if (
++    relativePath.length === 0 ||
++    relativePath === ".." ||
++    relativePath.startsWith(`..${path.sep}`) ||
++    path.isAbsolute(relativePath)
++  ) {
++    throw unsafeArchivePath(archivePath);
++  }
++
++  return resolvedPath;
++}
+diff --git a/extensions/gamebryo-archive-support/src/ba2.ts b/extensions/gamebryo-archive-support/src/ba2.ts
+index c4c8253..37fc946 100644
+--- a/extensions/gamebryo-archive-support/src/ba2.ts
++++ b/extensions/gamebryo-archive-support/src/ba2.ts
+@@ -3,6 +3,8 @@ import * as fs from "fs";
+ import * as path from "path";
+ import { inflateSync } from "zlib";
+ 
++import { resolveArchiveOutputPath } from "./archivePath";
++
+ const BA2_MAGIC = "BTDX";
+ const HEADER_SIZE = 24;
+ const GNRL_ENTRY_SIZE = 36;
+@@ -135,7 +137,7 @@ export class BA2Archive {
+     for (let i = 0; i < entries.length; i++) {
+       const entry = entries[i];
+       const name = this.fileList[i];
+-      const outFile = path.join(outputPath, name);
++      const outFile = resolveArchiveOutputPath(outputPath, name);
+ 
+       await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
+ 
+@@ -166,7 +168,7 @@ export class BA2Archive {
+     for (let i = 0; i < entries.length; i++) {
+       const tex = entries[i];
+       const name = this.fileList[i];
+-      const outFile = path.join(outputPath, name);
++      const outFile = resolveArchiveOutputPath(outputPath, name);
+ 
+       await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
+ 
+diff --git a/extensions/gamebryo-archive-support/src/bsa.ts b/extensions/gamebryo-archive-support/src/bsa.ts
+index d6730c7..8c11bde 100644
+--- a/extensions/gamebryo-archive-support/src/bsa.ts
++++ b/extensions/gamebryo-archive-support/src/bsa.ts
+@@ -4,6 +4,8 @@ import { inflateSync } from "zlib";
+ 
+ import * as lz4js from "lz4js";
+ 
++import { resolveArchiveOutputPath } from "./archivePath";
++
+ // LZ4 frame magic number
+ const LZ4_FRAME_MAGIC = 0x184d2204;
+ 
+@@ -193,7 +195,7 @@ export class BSAArchive {
+         offset += 1 + nameLen;
+       }
+ 
+-      const outFile = path.join(outputPath, file.name);
++      const outFile = resolveArchiveOutputPath(outputPath, file.name);
+       await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
+ 
+       if (this.isCompressed(file)) {
+@@ -242,7 +244,7 @@ export class BSAArchive {
+           offset += 1 + nameLen;
+         }
+ 
+-        const outFile = path.join(outputPath, file.fullPath);
++        const outFile = resolveArchiveOutputPath(outputPath, file.fullPath);
+         await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
+ 
+         if (this.isCompressed(file)) {
+diff --git a/extensions/gamebryo-archive-support/src/linux.smoke.test.ts b/extensions/gamebryo-archive-support/src/linux.smoke.test.ts
+new file mode 100644
+index 0000000..dc28b78
+--- /dev/null
++++ b/extensions/gamebryo-archive-support/src/linux.smoke.test.ts
+@@ -0,0 +1,53 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { describe, expect, it } from "vitest";
++
++import { resolveArchiveOutputPath } from "./archivePath";
++import { loadBA2 } from "./ba2";
++import { loadBSA } from "./bsa";
++
++const TEST_DATA = path.resolve(__dirname, "..", "test-data");
++
++describe.runIf(process.platform === "linux")("Gamebryo archive support on Linux", () => {
++  it("reads a Fallout 4 BA2 archive without native addons", async () => {
++    const archive = await loadBA2(path.join(TEST_DATA, "test-gnrl.ba2"));
++
++    expect(archive.type).toBe("general");
++    expect(archive.fileList.length).toBeGreaterThan(0);
++  });
++
++  it("reads and verifies a Skyrim SE BSA archive without native addons", async () => {
++    const archive = await loadBSA(path.join(TEST_DATA, "test-v105.bsa"), true);
++
++    expect(archive.version).toBe(0x69);
++    expect(archive.fileList.length).toBeGreaterThan(0);
++  });
++
++  it("extracts Windows-style archive paths as native directories", async () => {
++    const outputPath = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-gamebryo-linux-"));
++    try {
++      const archive = await loadBSA(path.join(TEST_DATA, "test-v105.bsa"));
++      await archive.extractAll(outputPath);
++
++      const extractedPath = path.join(outputPath, "meshes", "weapons", "sword.nif");
++      expect(fs.statSync(extractedPath).isFile()).toBe(true);
++      expect(fs.readdirSync(outputPath)).not.toContain("meshes\\weapons\\sword.nif");
++    } finally {
++      fs.rmSync(outputPath, { force: true, recursive: true });
++    }
++  });
++
++  it("rejects traversal and absolute archive paths", () => {
++    expect(() => resolveArchiveOutputPath("/tmp/output", "..\\escape.txt")).toThrow(
++      "Unsafe archive path",
++    );
++    expect(() => resolveArchiveOutputPath("/tmp/output", "/absolute.txt")).toThrow(
++      "Unsafe archive path",
++    );
++    expect(() => resolveArchiveOutputPath("/tmp/output", "C:\\absolute.txt")).toThrow(
++      "Unsafe archive path",
++    );
++  });
++});

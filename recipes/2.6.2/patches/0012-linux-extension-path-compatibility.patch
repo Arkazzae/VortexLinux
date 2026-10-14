@@ -1,0 +1,150 @@
+diff --git a/src/renderer/src/util/monkeyPatching.ts b/src/renderer/src/util/monkeyPatching.ts
+index 8175347..a9e516b 100644
+--- a/src/renderer/src/util/monkeyPatching.ts
++++ b/src/renderer/src/util/monkeyPatching.ts
+@@ -1,6 +1,6 @@
+ import type * as pathT from "path";
+ 
+-import { unknownToError } from "@vortex/shared";
++import { patchPathCompatibility } from "./pathCompatibility";
+ 
+ /**
+  * Monkey patching is obviously considered evil but there may be cases where the alternative
+@@ -124,28 +124,7 @@ function applyMonkeyPatches() {
+   );
+ 
+   const path: typeof pathT = require("path");
+-  const oldJoin = path.join;
+-  const oldResolve = path.resolve;
+-  // tslint:disable-next-line:only-arrow-functions
+-  path.join = function (...paths: string[]) {
+-    try {
+-      return oldJoin(...paths);
+-    } catch (unknownError) {
+-      const err = unknownToError(unknownError);
+-      err["paths"] = paths;
+-      throw err;
+-    }
+-  };
+-
+-  path.resolve = function (...paths: string[]) {
+-    try {
+-      return oldResolve(...paths);
+-    } catch (unknownError) {
+-      const err = unknownToError(unknownError);
+-      err["paths"] = paths;
+-      throw err;
+-    }
+-  };
++  patchPathCompatibility(path);
+ }
+ 
+ applyMonkeyPatches();
+diff --git a/src/renderer/src/util/pathCompatibility.test.ts b/src/renderer/src/util/pathCompatibility.test.ts
+new file mode 100644
+index 0000000..5998c33
+--- /dev/null
++++ b/src/renderer/src/util/pathCompatibility.test.ts
+@@ -0,0 +1,50 @@
++import * as path from "node:path";
++
++import { describe, expect, it } from "vitest";
++
++import { extensionPathInput, patchPathCompatibility } from "./pathCompatibility";
++
++function linuxPath(): Pick<typeof path, "join" | "normalize" | "resolve"> {
++  return {
++    join: path.posix.join,
++    normalize: path.posix.normalize,
++    resolve: path.posix.resolve,
++  };
++}
++
++describe("extension path compatibility", () => {
++  it("translates Windows-authored separators only on Linux", () => {
++    expect(extensionPathInput("tools\\redmod\\bin\\redMod.exe", "linux")).toBe(
++      "tools/redmod/bin/redMod.exe",
++    );
++    expect(extensionPathInput("tools\\redmod\\bin\\redMod.exe", "win32")).toBe(
++      "tools\\redmod\\bin\\redMod.exe",
++    );
++  });
++
++  it("joins Windows-authored extension paths under a native game directory", () => {
++    const patched = linuxPath();
++    patchPathCompatibility(patched, "linux");
++
++    expect(patched.join("/games/Cyberpunk 2077", "tools\\redmod\\bin\\redMod.exe")).toBe(
++      "/games/Cyberpunk 2077/tools/redmod/bin/redMod.exe",
++    );
++  });
++
++  it("normalizes Windows-authored installer layouts for native comparisons", () => {
++    const patched = linuxPath();
++    patchPathCompatibility(patched, "linux");
++
++    expect(patched.normalize("engine\\tools\\scc.exe")).toBe("engine/tools/scc.exe");
++    expect(patched.normalize("r6/config/cybercmd/scc.toml")).toBe("r6/config/cybercmd/scc.toml");
++  });
++
++  it("normalizes mixed separators before resolving a path", () => {
++    const patched = linuxPath();
++    patchPathCompatibility(patched, "linux");
++
++    expect(patched.resolve("/games/Cyberpunk 2077", "r6\\cache/../scripts")).toBe(
++      "/games/Cyberpunk 2077/r6/scripts",
++    );
++  });
++});
+diff --git a/src/renderer/src/util/pathCompatibility.ts b/src/renderer/src/util/pathCompatibility.ts
+new file mode 100644
+index 0000000..6def0f9
+--- /dev/null
++++ b/src/renderer/src/util/pathCompatibility.ts
+@@ -0,0 +1,46 @@
++import type * as pathT from "path";
++
++import { unknownToError } from "@vortex/shared";
++
++type PatchablePath = Pick<typeof pathT, "join" | "normalize" | "resolve">;
++
++/**
++ * Community extensions were historically authored for the Windows-only
++ * Vortex runtime and commonly embed backslashes in relative path fragments.
++ * Native Linux path helpers treat those backslashes as ordinary filename
++ * characters. Translate them at the path API boundary so the extensions can
++ * keep producing native host paths without knowing which host Vortex uses.
++ */
++export function extensionPathInput(input: string, platform = process.platform): string {
++  return platform === "linux" ? input.replaceAll("\\", "/") : input;
++}
++
++export function patchPathCompatibility(path: PatchablePath, platform = process.platform): void {
++  const oldJoin = path.join;
++  const oldNormalize = path.normalize;
++  const oldResolve = path.resolve;
++
++  path.join = function (...paths: string[]) {
++    try {
++      return oldJoin(...paths.map((input) => extensionPathInput(input, platform)));
++    } catch (unknownError) {
++      const err = unknownToError(unknownError);
++      err["paths"] = paths;
++      throw err;
++    }
++  };
++
++  path.normalize = function (input: string) {
++    return oldNormalize(extensionPathInput(input, platform));
++  };
++
++  path.resolve = function (...paths: string[]) {
++    try {
++      return oldResolve(...paths.map((input) => extensionPathInput(input, platform)));
++    } catch (unknownError) {
++      const err = unknownToError(unknownError);
++      err["paths"] = paths;
++      throw err;
++    }
++  };
++}
