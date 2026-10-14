@@ -218,7 +218,10 @@ jobs:
           (
             github.ref == 'refs/heads/master' &&
             (
-              github.event_name == 'push' ||
+              (
+                github.event_name == 'push' &&
+                needs.prepare-release.outputs.release_needed == 'true'
+              ) ||
               (
                 github.event_name == 'schedule' &&
                 needs.prepare-release.outputs.release_needed == 'true'
