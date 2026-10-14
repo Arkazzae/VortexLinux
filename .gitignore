@@ -7,3 +7,4 @@ pkg/
 dist/
 vortex/
 __pycache__/
+design/hero/
