@@ -1,10 +1,13 @@
 diff --git a/src/renderer/src/util/fsAtomic.test.ts b/src/renderer/src/util/fsAtomic.test.ts
-index 3d23f7f..ae7e3a2 100644
+index 5e9cbbe57..783b7135f 100644
 --- a/src/renderer/src/util/fsAtomic.test.ts
 +++ b/src/renderer/src/util/fsAtomic.test.ts
-@@ -17,7 +17,8 @@ vi.mock("tmp", async (importOriginal) => {
-   };
- });
+@@ -2,9 +2,10 @@ import * as nodeFs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+ 
+-import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  
 -import { copyFileAtomic } from "./fsAtomic";
 +import { setCompatibilityGameProvider } from "./compatibilityPaths";
@@ -12,7 +15,7 @@ index 3d23f7f..ae7e3a2 100644
  
  describe("copyFileAtomic", () => {
    let dir: string;
-@@ -76,3 +77,147 @@ describe("copyFileAtomic", () => {
+@@ -50,3 +51,147 @@ describe("copyFileAtomic", () => {
      expect(nodeFs.readdirSync(dir)).toEqual(["dest.txt"]);
    });
  });
@@ -161,7 +164,7 @@ index 3d23f7f..ae7e3a2 100644
 +  });
 +});
 diff --git a/src/renderer/src/util/fsAtomic.ts b/src/renderer/src/util/fsAtomic.ts
-index ce40a2f..45c82d1 100644
+index 7826e8bad..8e4085243 100644
 --- a/src/renderer/src/util/fsAtomic.ts
 +++ b/src/renderer/src/util/fsAtomic.ts
 @@ -6,10 +6,15 @@ import { file } from "tmp";
@@ -182,11 +185,11 @@ index ce40a2f..45c82d1 100644
  
  function writeFileAtomicImpl(
 @@ -99,6 +104,8 @@ export function copyFileAtomic(srcPath: string, destPath: string): PromiseBB<voi
-   let cleanup: (next?: (err?: Error) => void) => void;
+   let cleanup: () => void;
    let tmpPath: string;
-   return new PromiseBB<void>((resolve, reject) => {
+   return new PromiseBB((resolve, reject) => {
 +    srcPath = resolveCaseInsensitiveSync(srcPath);
 +    destPath = resolveCaseInsensitiveSync(destPath);
-     // the copy only ever works on the temp PATH; discardDescriptor makes tmp close its
-     // descriptor immediately, so no descriptor is held (or ever double-closed) here
      file(
+       { template: `${destPath}.XXXXXX.tmp` },
+       (err: any, genPath: string, fd: number, cleanupCB: () => void) => {

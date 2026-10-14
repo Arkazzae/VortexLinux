@@ -17,5 +17,6 @@ done
 for patch in "$REPOSITORY_ROOT"/patches/[0-9][0-9][0-9][0-9]-*.patch; do
   install -m644 "$patch" "$build_directory/$(basename -- "$patch")"
 done
+install -m644 "$REPOSITORY_ROOT/scripts/test-loot.cjs" "$build_directory/test-loot.cjs"
 
 printf 'Prepared Arch build directory: %s\n' "$build_directory"

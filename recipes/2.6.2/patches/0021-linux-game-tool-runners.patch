@@ -1,8 +1,8 @@
 diff --git a/src/renderer/src/ExtensionManager.ts b/src/renderer/src/ExtensionManager.ts
-index 6f1c70b..ee7a2f8 100644
+index c53b7429e..460c8e7ea 100644
 --- a/src/renderer/src/ExtensionManager.ts
 +++ b/src/renderer/src/ExtensionManager.ts
-@@ -88,7 +88,11 @@ import type {
+@@ -83,7 +83,11 @@ import type {
  import { getApplication } from "./util/application";
  import { Archive } from "./util/archives";
  import { fileMD5 } from "./util/checksum";
@@ -15,7 +15,7 @@ index 6f1c70b..ee7a2f8 100644
  import { COMPANY_ID } from "./util/constants";
  import {
    MissingDependency,
-@@ -105,6 +109,7 @@ import getVortexPath from "./util/getVortexPath";
+@@ -100,6 +104,7 @@ import getVortexPath from "./util/getVortexPath";
  import type { i18n } from "./util/i18n";
  import { TString } from "./util/i18n";
  import lazyRequire from "./util/lazyRequire";
@@ -23,7 +23,7 @@ index 6f1c70b..ee7a2f8 100644
  import { showError } from "./util/message";
  import { deregisterProtocolHandler, registerProtocolHandler } from "./util/protocolRegistration";
  import runElevatedCustomTool from "./util/runElevatedCustomTool";
-@@ -2344,6 +2349,7 @@ class ExtensionManager {
+@@ -2294,6 +2299,7 @@ class ExtensionManager {
      if (!truthy(executable)) {
        return PromiseBB.reject(new ProcessCanceled("Executable not set"));
      }
@@ -31,7 +31,7 @@ index 6f1c70b..ee7a2f8 100644
      const interpreter = this.mInterpreters[path.extname(executable).toLowerCase()];
      if (interpreter !== undefined) {
        try {
-@@ -2357,7 +2363,7 @@ class ExtensionManager {
+@@ -2307,7 +2313,7 @@ class ExtensionManager {
        }
      }
  
@@ -40,7 +40,7 @@ index 6f1c70b..ee7a2f8 100644
  
      // Detect if executable is a script file that requires shell: true
      // Common script extensions that need shell interpretation
-@@ -2374,7 +2380,7 @@ class ExtensionManager {
+@@ -2324,7 +2330,7 @@ class ExtensionManager {
      // I think the key is called "Path" on windows but I'm not willing to bet this is consistent
      // across all language variants and versions
      const pathEnvName = Object.keys(process.env).find((key) => key.toLowerCase() === "path");
@@ -49,7 +49,7 @@ index 6f1c70b..ee7a2f8 100644
        ...filteredEnvironment(),
        [pathEnvName]: process.env["PATH_ORIG"] || process.env["PATH"],
        ...options.env,
-@@ -2390,7 +2396,15 @@ class ExtensionManager {
+@@ -2340,7 +2346,15 @@ class ExtensionManager {
        this.applyStartHooks({ executable, args, options })
          .then((updatedParameters) => {
            ({ executable, args, options } = updatedParameters);
@@ -66,7 +66,7 @@ index 6f1c70b..ee7a2f8 100644
          })
          .then(
            () =>
-@@ -2417,7 +2431,9 @@ class ExtensionManager {
+@@ -2367,7 +2381,9 @@ class ExtensionManager {
  
                  const child = spawn(
                    runExe,
@@ -78,18 +78,18 @@ index 6f1c70b..ee7a2f8 100644
                  );
                  if (truthy(child["exitCode"])) {
 diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
-index b02a209..338e8f7 100644
+index dec52edfc..2da89c29b 100644
 --- a/src/renderer/src/util/StarterInfo.ts
 +++ b/src/renderer/src/util/StarterInfo.ts
 @@ -25,7 +25,6 @@ import {
- } from "./CustomErrors";
  import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
+ import GameStoreHelper from "./GameStoreHelper";
  import getVortexPath from "./getVortexPath";
 -import { isWindowsExecutable } from "./linux/proton";
  import { resolvePlatformPath } from "./nativeExecutable";
  import type { Steam, ISteamEntry } from "./Steam";
  import { getSafe } from "./storeHelper";
-@@ -109,18 +108,6 @@ async function findSteamEntry(info: IStarterInfo): Promise<ISteamEntry | undefin
+@@ -108,18 +107,6 @@ async function findSteamEntry(info: IStarterInfo): Promise<ISteamEntry | undefin
    }
  }
  
@@ -108,7 +108,7 @@ index b02a209..338e8f7 100644
  /**
   * wrapper for information about a game or tool, combining static and runtime/discovery information
   * for the purpose of actually starting them in a uniform way.
-@@ -287,36 +274,6 @@ class StarterInfo implements IStarterInfo {
+@@ -283,36 +270,6 @@ class StarterInfo implements IStarterInfo {
        return;
      }
  
@@ -125,7 +125,7 @@ index b02a209..338e8f7 100644
 -        }
 -      };
 -
--      const steamStore = storeLookup.getGameStore(getGameStoresSafe(), "steam") as Steam;
+-      const steamStore = GameStoreHelper.getGameStore("steam") as Steam;
 -      return steamStore.runToolWithProton(
 -        api,
 -        info.exePath,
@@ -146,7 +146,7 @@ index b02a209..338e8f7 100644
        .runExecutable(info.exePath, info.commandLine, {
          cwd: info.workingDirectory || path.dirname(info.exePath),
 diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
-index 058df74..08729b3 100644
+index 058df7416..08729b3b9 100644
 --- a/src/renderer/src/util/compatibilityPaths.ts
 +++ b/src/renderer/src/util/compatibilityPaths.ts
 @@ -31,6 +31,10 @@ export function registerCompatibilityStore(store: string, resolver: PrefixResolv
@@ -162,7 +162,7 @@ index 058df74..08729b3 100644
    const key = JSON.stringify([
 diff --git a/src/renderer/src/util/linux/gameTools.test.ts b/src/renderer/src/util/linux/gameTools.test.ts
 new file mode 100644
-index 0000000..3e4ead4
+index 000000000..3e4ead464
 --- /dev/null
 +++ b/src/renderer/src/util/linux/gameTools.test.ts
 @@ -0,0 +1,171 @@
@@ -339,7 +339,7 @@ index 0000000..3e4ead4
 +});
 diff --git a/src/renderer/src/util/linux/gameTools.ts b/src/renderer/src/util/linux/gameTools.ts
 new file mode 100644
-index 0000000..9fa7e21
+index 000000000..9fa7e21f6
 --- /dev/null
 +++ b/src/renderer/src/util/linux/gameTools.ts
 @@ -0,0 +1,88 @@
@@ -432,7 +432,7 @@ index 0000000..9fa7e21
 +  };
 +}
 diff --git a/src/renderer/src/util/linux/proton.ts b/src/renderer/src/util/linux/proton.ts
-index d6fe193..65a8d0e 100644
+index 8b567d5cd..7a6e2b5d7 100644
 --- a/src/renderer/src/util/linux/proton.ts
 +++ b/src/renderer/src/util/linux/proton.ts
 @@ -1,9 +1,9 @@
@@ -743,11 +743,10 @@ index d6fe193..65a8d0e 100644
  export function buildProtonEnvironment(
    compatDataPath: string,
    steamPath: string,
-@@ -248,17 +139,10 @@ export function buildProtonEnvironment(
-     LD_PRELOAD: preloads.join(":"),
+@@ -244,16 +135,10 @@ export function buildProtonEnvironment(
    };
  }
--
+ 
 -/**
 - * Build the command to run an executable through Proton
 - */
@@ -763,7 +762,7 @@ index d6fe193..65a8d0e 100644
 +  return { executable: path.join(protonPath, "proton"), args: ["run", exePath, ...args] };
  }
 diff --git a/src/renderer/src/util/linux/steamPaths.ts b/src/renderer/src/util/linux/steamPaths.ts
-index 0aea742..dd42a48 100644
+index 0aea742ea..dd42a48a5 100644
 --- a/src/renderer/src/util/linux/steamPaths.ts
 +++ b/src/renderer/src/util/linux/steamPaths.ts
 @@ -16,13 +16,9 @@ export function getLinuxSteamPaths(): string[] {

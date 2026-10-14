@@ -1,9 +1,9 @@
-diff --git a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.linux.test.ts b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.linux.test.ts
+diff --git a/src/renderer/src/extensions/gameversion_management/util/getGameVersion.linux.test.ts b/src/renderer/src/extensions/gameversion_management/util/getGameVersion.linux.test.ts
 new file mode 100644
-index 0000000..e31cf64
+index 0000000..b0a5a09
 --- /dev/null
-+++ b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.linux.test.ts
-@@ -0,0 +1,99 @@
++++ b/src/renderer/src/extensions/gameversion_management/util/getGameVersion.linux.test.ts
+@@ -0,0 +1,102 @@
 +import * as fs from "node:fs";
 +import * as os from "node:os";
 +import * as path from "node:path";
@@ -11,8 +11,8 @@ index 0000000..e31cf64
 +import { afterEach, beforeEach, describe, expect, it } from "vitest";
 +
 +import type { IGame } from "../../../types/IGame";
-+import type { IDiscoveryResult } from "../types/IDiscoveryResult";
-+import { getDotNetGameVersion, resolveGameVersion } from "./getGameVersion";
++import type { IDiscoveryResult } from "../../gamemode_management/types/IDiscoveryResult";
++import { getDotNetGameVersion, getExecGameVersion, testExecProvider } from "./getGameVersion";
 +
 +describe.runIf(process.platform === "linux")("native .NET game version detection", () => {
 +  let gamePath: string;
@@ -47,7 +47,8 @@ index 0000000..e31cf64
 +    await expect(
 +      getDotNetGameVersion(gamePath, path.join(gamePath, "Stardew Valley")),
 +    ).resolves.toBe("1.6.15.24356");
-+    await expect(resolveGameVersion(game, discovery)).resolves.toBe("1.6.15.24356");
++    await expect(testExecProvider(game, discovery)).resolves.toBe(true);
++    await expect(getExecGameVersion(game, discovery)).resolves.toBe("1.6.15.24356");
 +  });
 +
 +  it("normalizes spaces, dots, underscores, and hyphens in application names", async () => {
@@ -75,7 +76,8 @@ index 0000000..e31cf64
 +    discovery.executable = path.join("bin", "Example Game");
 +
 +    await expect(getDotNetGameVersion(gamePath, executablePath)).resolves.toBe("2.3.4");
-+    await expect(resolveGameVersion(game, discovery)).resolves.toBe("2.3.4");
++    await expect(testExecProvider(game, discovery)).resolves.toBe(true);
++    await expect(getExecGameVersion(game, discovery)).resolves.toBe("2.3.4");
 +  });
 +
 +  it("ignores invalid, zero, and unrelated manifest versions", async () => {
@@ -91,33 +93,37 @@ index 0000000..e31cf64
 +    await expect(
 +      getDotNetGameVersion(gamePath, path.join(gamePath, "Stardew Valley")),
 +    ).resolves.toBeUndefined();
-+    await expect(resolveGameVersion(game, discovery)).resolves.toBe("0.0.0");
++    await expect(testExecProvider(game, discovery)).resolves.toBe(false);
++    await expect(getExecGameVersion(game, discovery)).resolves.toBe("0.0.0");
 +  });
 +
-+  it("does not read manifests when the executable itself is missing", async () => {
++  it("keeps the provider unavailable when the executable itself is missing", async () => {
 +    writeManifest("Stardew Valley.deps.json", {
 +      libraries: { "Stardew Valley/1.6.15.24356": {} },
 +    });
 +    discovery.executable = "missing";
 +
-+    await expect(resolveGameVersion(game, discovery)).resolves.toBe("0.0.0");
++    await expect(testExecProvider(game, discovery)).resolves.toBe(false);
 +  });
 +});
-diff --git a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
-index eb8c9f0..ce04f45 100644
---- a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
-+++ b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
-@@ -1,4 +1,5 @@
--import { stat } from "node:fs/promises";
-+import { readFile, readdir, stat } from "node:fs/promises";
-+import path from "node:path";
+diff --git a/src/renderer/src/extensions/gameversion_management/util/getGameVersion.ts b/src/renderer/src/extensions/gameversion_management/util/getGameVersion.ts
+index b0dcb4f..909b894 100644
+--- a/src/renderer/src/extensions/gameversion_management/util/getGameVersion.ts
++++ b/src/renderer/src/extensions/gameversion_management/util/getGameVersion.ts
+@@ -1,13 +1,111 @@
++import * as path from "path";
++
+ import type * as exeVersionT from "exe-version";
  
- import { getErrorMessageOrDefault } from "@vortex/shared";
- import { ProcessCanceled } from "@vortex/shared/errors";
-@@ -11,6 +12,103 @@ import { resolvePlatformPath } from "../../../util/nativeExecutable";
  import type { IGame } from "../../../types/IGame";
- import type { IDiscoveryResult } from "../types/IDiscoveryResult";
+-import { statAsync } from "../../../util/fs";
++import { readFileAsync, readdirAsync, statAsync } from "../../../util/fs";
+ import lazyRequire from "../../../util/lazyRequire";
+ import { log } from "../../../util/log";
+ import { resolveNativeExecutable, resolvePlatformPath } from "../../../util/nativeExecutable";
+ import type { IDiscoveryResult } from "../../gamemode_management/types/IDiscoveryResult";
  
+ const exeVersion: typeof exeVersionT = lazyRequire(() => require("exe-version"));
 +const UNKNOWN_VERSION = "0.0.0";
 +
 +function normalizedApplicationName(input: string): string {
@@ -163,7 +169,7 @@ index eb8c9f0..ce04f45 100644
 +  for (const [directoryIndex, manifestDirectory] of manifestDirectories.entries()) {
 +    let manifests: string[];
 +    try {
-+      manifests = (await readdir(manifestDirectory))
++      manifests = (await readdirAsync(manifestDirectory))
 +        .filter((fileName) => fileName.toLowerCase().endsWith(".deps.json"))
 +        .sort((lhs, rhs) => lhs.localeCompare(rhs));
 +    } catch {
@@ -173,7 +179,7 @@ index eb8c9f0..ce04f45 100644
 +    for (const manifest of manifests) {
 +      const manifestName = normalizedApplicationName(manifest.slice(0, -".deps.json".length));
 +      try {
-+        const contents = await readFile(path.join(manifestDirectory, manifest), "utf8");
++        const contents = await readFileAsync(path.join(manifestDirectory, manifest), "utf8");
 +        const parsed = JSON.parse(contents);
 +        const libraries = parsed?.libraries;
 +        if (libraries === null || typeof libraries !== "object" || Array.isArray(libraries)) {
@@ -208,31 +214,56 @@ index eb8c9f0..ce04f45 100644
 +
 +function executableVersion(executablePath: string): string {
 +  try {
-+    const version = exeVersion(executablePath);
++    const version = exeVersion.default(executablePath);
 +    return knownVersion(version) ? version : UNKNOWN_VERSION;
 +  } catch {
 +    return UNKNOWN_VERSION;
 +  }
 +}
-+
- export type GameVersionResolver = (game: IGame, discovery: IDiscoveryResult) => Promise<string>;
  
- async function fromExtension(game: IGame, discovery: IDiscoveryResult): Promise<string> {
-@@ -22,10 +120,15 @@ async function fromExecutable(game: IGame, discovery: IDiscoveryResult): Promise
- 
+ export async function testExtProvider(game: IGame, discovery: IDiscoveryResult): Promise<boolean> {
+   return Promise.resolve(game.getGameVersion !== undefined);
+@@ -41,12 +139,18 @@ export async function testExecProvider(game: IGame, discovery: IDiscoveryResult)
+   const exePath = resolvePlatformPath(discovery.path, exeName);
    try {
-     await stat(exePath);
--    return exeVersion(exePath);
-   } catch {
--    return "0.0.0";
-+    return UNKNOWN_VERSION;
-+  }
-+
-+  const version = executableVersion(exePath);
-+  if (version !== UNKNOWN_VERSION || process.platform !== "linux") {
-+    return version;
+     await statAsync(exePath);
+-    const version: string = exeVersion.default(exePath);
+-    return version === "0.0.0" ? Promise.resolve(false) : Promise.resolve(true);
+   } catch (err) {
+     log("error", "unable to test executable version fields", err);
+     return Promise.resolve(false);
    }
-+  return (await getDotNetGameVersion(discovery.path, exePath)) ?? UNKNOWN_VERSION;
++
++  if (executableVersion(exePath) !== UNKNOWN_VERSION) {
++    return Promise.resolve(true);
++  }
++  if (process.platform !== "linux") {
++    return Promise.resolve(false);
++  }
++  return (await getDotNetGameVersion(discovery.path, exePath)) !== undefined;
  }
  
- export const resolveGameVersion: GameVersionResolver = async (game, discovery) => {
+ export async function getExecGameVersion(
+@@ -54,13 +158,16 @@ export async function getExecGameVersion(
+   discovery: IDiscoveryResult,
+ ): Promise<string> {
+   if (discovery?.path === undefined) {
+-    return Promise.resolve("0.0.0");
++    return Promise.resolve(UNKNOWN_VERSION);
+   }
+-  const exePath = resolvePlatformPath(discovery.path, discovery.executable || game.executable());
+-  try {
+-    const version: string = exeVersion.default(exePath);
++  const exeName = resolveNativeExecutable(
++    discovery.path,
++    discovery.executable || game.executable(),
++  );
++  const exePath = resolvePlatformPath(discovery.path, exeName);
++  const version = executableVersion(exePath);
++  if (version !== UNKNOWN_VERSION || process.platform !== "linux") {
+     return Promise.resolve(version);
+-  } catch (err) {
+-    return Promise.resolve("0.0.0");
+   }
++  return Promise.resolve((await getDotNetGameVersion(discovery.path, exePath)) ?? UNKNOWN_VERSION);
+ }

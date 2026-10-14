@@ -1,5 +1,5 @@
 diff --git a/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.test.ts b/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.test.ts
-index 6500920..8779eb1 100644
+index 650092028..8779eb164 100644
 --- a/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.test.ts
 +++ b/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.test.ts
 @@ -127,6 +127,37 @@ it("dispatches setToolStopped when no matching process exists", async () => {
@@ -65,7 +65,7 @@ index 6500920..8779eb1 100644
    const state = buildState({
      tools: {},
 diff --git a/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.ts b/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.ts
-index 61766c8..2fe290f 100644
+index 61766c86a..2fe290f20 100644
 --- a/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.ts
 +++ b/src/renderer/src/extensions/gamemode_management/util/ProcessMonitor.ts
 @@ -14,6 +14,8 @@ import { setdefault } from "../../../util/util";
@@ -117,9 +117,147 @@ index 61766c8..2fe290f 100644
        // Step 6g: Fallback - name-only match when ALL candidates lack path info
        // This handles Windows where ps-list often cannot retrieve executable paths.
        // Warning: basename collisions (e.g., multiple "launcher.exe") cause false positives.
+diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
+index 67f9eabad..dec52edfc 100644
+--- a/src/renderer/src/util/StarterInfo.ts
++++ b/src/renderer/src/util/StarterInfo.ts
+@@ -69,46 +69,57 @@ type OnShowErrorFunc = (
+   allowReport?: boolean,
+ ) => void;
+ 
+-/**
+- * Check if a game or tool should run through Proton on Linux.
+- * Returns the matching Steam game entry if Proton should be used, undefined otherwise.
+- *
+- * This enables running Windows executables directly through Proton rather than
+- * via `steam -applaunch`, allowing custom command-line arguments and running
+- * different executables (like mod tools) with the game's Proton prefix.
+- */
+-async function shouldRunWithProton(
++function isPathInside(root: string, candidate: string): boolean {
++  const relative = path.relative(root.toLocaleLowerCase(), candidate.toLocaleLowerCase());
++  return (
++    relative === "" ||
++    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
++  );
++}
++
++export function findSteamEntryForStarter(
+   info: IStarterInfo,
+-  api: IExtensionApi,
+-): Promise<ISteamEntry | undefined> {
+-  if (process.platform === "win32") {
+-    return undefined;
+-  }
+-  if (!isWindowsExecutable(info.exePath)) {
++  games: ISteamEntry[],
++  platform: NodeJS.Platform = process.platform,
++): ISteamEntry | undefined {
++  if (platform === "win32" || info.store !== "steam") {
+     return undefined;
+   }
+-  if (info.store !== "steam") {
++
++  const candidates = [info.workingDirectory, info.exePath].filter(
++    (candidate): candidate is string => candidate?.length > 0,
++  );
++  return games
++    .filter((game) => candidates.some((candidate) => isPathInside(game.gamePath, candidate)))
++    .sort((lhs, rhs) => rhs.gamePath.length - lhs.gamePath.length)[0];
++}
++
++async function findSteamEntry(info: IStarterInfo): Promise<ISteamEntry | undefined> {
++  if (process.platform === "win32" || info.store !== "steam") {
+     return undefined;
+   }
+ 
+   try {
+     const steamStore = GameStoreHelper.getGameStore("steam") as Steam;
+-    const games = await steamStore.allGames();
+-
+-    // Find the game entry that matches this executable's location
+-    return games.find(
+-      (g) =>
+-        info.workingDirectory?.toLowerCase().startsWith(g.gamePath.toLowerCase()) ||
+-        info.exePath.toLowerCase().startsWith(g.gamePath.toLowerCase()),
+-    );
++    return findSteamEntryForStarter(info, await steamStore.allGames());
+   } catch (err: any) {
+-    log("debug", "Could not check for Proton execution", {
+-      error: err?.message,
+-    });
++    log("debug", "Could not resolve Steam game entry", { error: err?.message });
+     return undefined;
+   }
+ }
+ 
++/**
++ * Check if a tool should run through the matching Steam game's Proton prefix.
++ * Full games must be handed to Steam so it can apply the selected compatibility
++ * tool, launch options, DRM and Steam Runtime environment.
++ */
++async function shouldRunWithProton(info: IStarterInfo): Promise<ISteamEntry | undefined> {
++  if (info.isGame || !isWindowsExecutable(info.exePath)) {
++    return undefined;
++  }
++  return findSteamEntry(info);
++}
++
+ /**
+  * wrapper for information about a game or tool, combining static and runtime/discovery information
+  * for the purpose of actually starting them in a uniform way.
+@@ -184,12 +195,7 @@ class StarterInfo implements IStarterInfo {
+           .then(() => {
+             // assuming that runThroughLauncher returns immediately on handing things off
+             // to the launcher
+-            const isLinuxSteamLauncher = process.platform !== "win32" && res.launcher === "steam";
+-            // Keep existing Linux Steam behavior unless running under Flatpak, where we now
+-            // emulate stop events to avoid stale running state.
+-            if (!isLinuxSteamLauncher || process.env.IS_FLATPAK === "true") {
+-              onSpawned();
+-            }
++            onSpawned();
+             if (["hide", "hide_recover"].includes(info.onStart)) {
+               void hideWindow();
+             } else if (info.onStart === "close") {
+@@ -253,8 +259,32 @@ class StarterInfo implements IStarterInfo {
+       }
+     };
+ 
+-    // Check if game/tool should run through Proton on Linux
+-    const protonGameEntry = await shouldRunWithProton(info, api);
++    const steamGameEntry = info.isGame ? await findSteamEntry(info) : undefined;
++    if (steamGameEntry !== undefined) {
++      const steamStore = GameStoreHelper.getGameStore("steam") as Steam;
++      try {
++        await steamStore.launchGame(
++          { appId: steamGameEntry.appid, parameters: info.commandLine },
++          api,
++        );
++        log("info", "handed game launch to Steam", {
++          appid: steamGameEntry.appid,
++          gameId: info.gameId,
++        });
++        onSpawned();
++        if (["hide", "hide_recover"].includes(info.onStart)) {
++          await hideWindow();
++        } else if (info.onStart === "close") {
++          getApplication().quit();
++        }
++      } catch (err) {
++        onShowError("Failed to start game through Steam", err, false);
++      }
++      return;
++    }
++
++    // Check if a tool should run through its matching game's Proton prefix on Linux
++    const protonGameEntry = await shouldRunWithProton(info);
+     if (protonGameEntry?.usesProton) {
+       // On Linux with Proton, we can't track when the process exits (ProcessMonitor
+       // only works on Windows), so don't set tool as running to avoid stuck spinner
 diff --git a/src/renderer/src/util/StarterInfo.linux.test.ts b/src/renderer/src/util/StarterInfo.linux.test.ts
 new file mode 100644
-index 0000000..7069782
+index 000000000..706978228
 --- /dev/null
 +++ b/src/renderer/src/util/StarterInfo.linux.test.ts
 @@ -0,0 +1,68 @@
@@ -191,139 +329,3 @@ index 0000000..7069782
 +    expect(findSteamEntryForStarter(starter(), [starfield], "win32")).toBeUndefined();
 +  });
 +});
-diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
-index 976df7b..b02a209 100644
---- a/src/renderer/src/util/StarterInfo.ts
-+++ b/src/renderer/src/util/StarterInfo.ts
-@@ -70,44 +70,55 @@ type OnShowErrorFunc = (
-   allowReport?: boolean,
- ) => void;
- 
--/**
-- * Check if a game or tool should run through Proton on Linux.
-- * Returns the matching Steam game entry if Proton should be used, undefined otherwise.
-- *
-- * This enables running Windows executables directly through Proton rather than
-- * via `steam -applaunch`, allowing custom command-line arguments and running
-- * different executables (like mod tools) with the game's Proton prefix.
-- */
--async function shouldRunWithProton(
-+function isPathInside(root: string, candidate: string): boolean {
-+  const relative = path.relative(root.toLocaleLowerCase(), candidate.toLocaleLowerCase());
-+  return (
-+    relative === "" ||
-+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-+  );
-+}
-+
-+export function findSteamEntryForStarter(
-   info: IStarterInfo,
--  api: IExtensionApi,
--): Promise<ISteamEntry | undefined> {
--  if (process.platform === "win32") {
--    return undefined;
--  }
--  if (!isWindowsExecutable(info.exePath)) {
-+  games: ISteamEntry[],
-+  platform: NodeJS.Platform = process.platform,
-+): ISteamEntry | undefined {
-+  if (platform === "win32" || info.store !== "steam") {
-     return undefined;
-   }
--  if (info.store !== "steam") {
-+
-+  const candidates = [info.workingDirectory, info.exePath].filter(
-+    (candidate): candidate is string => candidate?.length > 0,
-+  );
-+  return games
-+    .filter((game) => candidates.some((candidate) => isPathInside(game.gamePath, candidate)))
-+    .sort((lhs, rhs) => rhs.gamePath.length - lhs.gamePath.length)[0];
-+}
-+
-+async function findSteamEntry(info: IStarterInfo): Promise<ISteamEntry | undefined> {
-+  if (process.platform === "win32" || info.store !== "steam") {
-     return undefined;
-   }
- 
-   try {
-     const steamStore = storeLookup.getGameStore(getGameStoresSafe(), "steam") as Steam;
--    const games = await steamStore.allGames();
--
--    // Find the game entry that matches this executable's location
--    return games.find(
--      (g) =>
--        info.workingDirectory?.toLowerCase().startsWith(g.gamePath.toLowerCase()) ||
--        info.exePath.toLowerCase().startsWith(g.gamePath.toLowerCase()),
--    );
-+    return findSteamEntryForStarter(info, await steamStore.allGames());
-   } catch (err: any) {
--    log("debug", "Could not check for Proton execution", {
--      error: err?.message,
--    });
-+    log("debug", "Could not resolve Steam game entry", { error: err?.message });
-+    return undefined;
-+  }
-+}
-+
-+/**
-+ * Check if a tool should run through the matching Steam game's Proton prefix.
-+ * Full games must be handed to Steam so it can apply the selected compatibility
-+ * tool, launch options, DRM and Steam Runtime environment.
-+ */
-+async function shouldRunWithProton(info: IStarterInfo): Promise<ISteamEntry | undefined> {
-+  if (info.isGame || !isWindowsExecutable(info.exePath)) {
-     return undefined;
-   }
-+  return findSteamEntry(info);
- }
- 
- /**
-@@ -188,12 +199,7 @@ class StarterInfo implements IStarterInfo {
-           .then(() => {
-             // assuming that runThroughLauncher returns immediately on handing things off
-             // to the launcher
--            const isLinuxSteamLauncher = process.platform !== "win32" && res.launcher === "steam";
--            // Keep existing Linux Steam behavior unless running under Flatpak, where we now
--            // emulate stop events to avoid stale running state.
--            if (!isLinuxSteamLauncher || process.env.IS_FLATPAK === "true") {
--              onSpawned();
--            }
-+            onSpawned();
-             if (["hide", "hide_recover"].includes(info.onStart)) {
-               void hideWindow();
-             } else if (info.onStart === "close") {
-@@ -257,8 +263,32 @@ class StarterInfo implements IStarterInfo {
-       }
-     };
- 
--    // Check if game/tool should run through Proton on Linux
--    const protonGameEntry = await shouldRunWithProton(info, api);
-+    const steamGameEntry = info.isGame ? await findSteamEntry(info) : undefined;
-+    if (steamGameEntry !== undefined) {
-+      const steamStore = storeLookup.getGameStore(getGameStoresSafe(), "steam") as Steam;
-+      try {
-+        await steamStore.launchGame(
-+          { appId: steamGameEntry.appid, parameters: info.commandLine },
-+          api,
-+        );
-+        log("info", "handed game launch to Steam", {
-+          appid: steamGameEntry.appid,
-+          gameId: info.gameId,
-+        });
-+        onSpawned();
-+        if (["hide", "hide_recover"].includes(info.onStart)) {
-+          await hideWindow();
-+        } else if (info.onStart === "close") {
-+          getApplication().quit();
-+        }
-+      } catch (err) {
-+        onShowError("Failed to start game through Steam", err, false);
-+      }
-+      return;
-+    }
-+
-+    // Check if a tool should run through its matching game's Proton prefix on Linux
-+    const protonGameEntry = await shouldRunWithProton(info);
-     if (protonGameEntry?.usesProton) {
-       // On Linux with Proton, we can't track when the process exits (ProcessMonitor
-       // only works on Windows), so don't set tool as running to avoid stuck spinner

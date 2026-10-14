@@ -1,6 +1,6 @@
 diff --git a/src/renderer/src/extensions/extension_manager/dependencyNotifications.test.ts b/src/renderer/src/extensions/extension_manager/dependencyNotifications.test.ts
 new file mode 100644
-index 0000000..56034a2
+index 000000000..56034a2dc
 --- /dev/null
 +++ b/src/renderer/src/extensions/extension_manager/dependencyNotifications.test.ts
 @@ -0,0 +1,48 @@
@@ -54,7 +54,7 @@ index 0000000..56034a2
 +});
 diff --git a/src/renderer/src/extensions/extension_manager/dependencyNotifications.ts b/src/renderer/src/extensions/extension_manager/dependencyNotifications.ts
 new file mode 100644
-index 0000000..f6e3405
+index 000000000..f6e340536
 --- /dev/null
 +++ b/src/renderer/src/extensions/extension_manager/dependencyNotifications.ts
 @@ -0,0 +1,19 @@
@@ -78,7 +78,7 @@ index 0000000..f6e3405
 +  return dependent?.info?.bundled !== true;
 +}
 diff --git a/src/renderer/src/extensions/extension_manager/index.ts b/src/renderer/src/extensions/extension_manager/index.ts
-index 5a5f402..a11f7ce 100644
+index a55e3c78b..b3fa7ba07 100644
 --- a/src/renderer/src/extensions/extension_manager/index.ts
 +++ b/src/renderer/src/extensions/extension_manager/index.ts
 @@ -19,6 +19,7 @@ import makeReactive from "../../util/makeReactive";
@@ -88,18 +88,14 @@ index 5a5f402..a11f7ce 100644
 +import { isActionableDependencyFailure } from "./dependencyNotifications";
  import { ExtensionManager } from "./ExtensionManager";
  import type { IExtensionManagerProps } from "./ExtensionManager";
- import {
-@@ -176,16 +177,29 @@ function checkMissingDependencies(
+ import sessionReducer from "./reducers";
+@@ -234,16 +235,29 @@ function checkMissingDependencies(
    api: IExtensionApi,
    loadFailures: Record<string, IExtensionLoadFailure[]>,
  ): void {
 -  const missingDependencies = Object.values(loadFailures).reduce<Set<string>>((prev, failures) => {
 -    for (const failure of failures) {
 -      if (failure.id !== "dependency") continue;
--
--      const { dependencyId } = failure.args;
--      prev.add(dependencyId);
--    }
 +  const extensions = api.getLoadedExtensions();
 +  const missingDependencies = Object.entries(loadFailures).reduce<Set<string>>(
 +    (prev, [extId, failures]) => {
@@ -115,7 +111,10 @@ index 5a5f402..a11f7ce 100644
 +        ) {
 +          continue;
 +        }
-+
+ 
+-      const { dependencyId } = failure.args;
+-      prev.add(dependencyId);
+-    }
 +        prev.add(failure.args.dependencyId);
 +      }
  

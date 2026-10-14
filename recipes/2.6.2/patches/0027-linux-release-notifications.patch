@@ -1,84 +1,70 @@
 diff --git a/src/main/src/extensions/updater.test.ts b/src/main/src/extensions/updater.test.ts
-index 3ecb484..e9eadd4 100644
---- a/src/main/src/extensions/updater.test.ts
+new file mode 100644
+index 000000000..a2fb00aec
+--- /dev/null
 +++ b/src/main/src/extensions/updater.test.ts
-@@ -1,5 +1,7 @@
- import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
- 
-+const originalPlatform = process.platform;
+@@ -0,0 +1,31 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 +
- const { setupAutoUpdaterMock } = vi.hoisted(() => ({ setupAutoUpdaterMock: vi.fn() }));
- 
- vi.mock("./autoupdater", () => ({ setupAutoUpdater: setupAutoUpdaterMock }));
-@@ -9,6 +11,7 @@ import { initUpdater, isUpdaterActive } from "./updater";
- 
- beforeEach(() => {
-   vi.clearAllMocks();
-+  Object.defineProperty(process, "platform", { value: "win32" });
-   // a developer machine may have the dev-updater opt-in persisted in the user
-   // environment; tests must never depend on ambient env
-   vi.stubEnv("VORTEX_DEV_UPDATER", "");
-@@ -16,10 +19,23 @@ beforeEach(() => {
- });
- 
- afterEach(() => {
++const originalPlatform = process.platform;
++const { setupAutoUpdaterMock } = vi.hoisted(() => ({ setupAutoUpdaterMock: vi.fn() }));
++vi.mock("./autoupdater", () => ({ setupAutoUpdater: setupAutoUpdaterMock }));
++vi.mock("../logging", () => ({ log: vi.fn() }));
++
++import { initUpdater } from "./updater";
++
++beforeEach(() => vi.clearAllMocks());
++afterEach(() => {
 +  Object.defineProperty(process, "platform", { value: originalPlatform });
-   vi.unstubAllEnvs();
- });
- 
- describe("isUpdaterActive", () => {
-+  it("never starts the installer updater for Linux, even with the development opt-in", () => {
++  vi.unstubAllEnvs();
++});
++
++describe("Linux installer updater", () => {
++  it("never starts the installer updater for Linux production or development", () => {
 +    Object.defineProperty(process, "platform", { value: "linux" });
 +    for (const mode of ["production", "development"]) {
 +      vi.stubEnv("NODE_ENV", mode);
-+      vi.stubEnv("VORTEX_DEV_UPDATER", "1");
-+      for (const installType of ["regular", "managed"]) {
-+        expect(isUpdaterActive(installType)).toBe(false);
-+        initUpdater(installType);
-+      }
++      for (const installType of ["regular", "managed"]) initUpdater(installType);
 +    }
 +    expect(setupAutoUpdaterMock).not.toHaveBeenCalled();
 +  });
-   it("is on for a regular install outside development", () => {
-     expect(isUpdaterActive("regular")).toBe(true);
-   });
++  it("keeps regular Windows installs eligible for the installer updater", () => {
++    Object.defineProperty(process, "platform", { value: "win32" });
++    vi.stubEnv("NODE_ENV", "production");
++    initUpdater("regular");
++    expect(setupAutoUpdaterMock).toHaveBeenCalledWith("regular");
++  });
++});
 diff --git a/src/main/src/extensions/updater.ts b/src/main/src/extensions/updater.ts
-index 1a01d20..240b0ff 100644
+index cd8f2cfd2..0c3db3a61 100644
 --- a/src/main/src/extensions/updater.ts
 +++ b/src/main/src/extensions/updater.ts
-@@ -17,6 +17,10 @@ import { setupAutoUpdater } from "./autoupdater";
-  * rather than working it out, since only NODE_ENV is inlined into its bundle.
+@@ -15,6 +15,12 @@ import { setupAutoUpdater } from "./autoupdater";
+  * @param installType Application install type ("regular", "managed", etc.)
   */
- export function isUpdaterActive(installType: string): boolean {
+ export function initUpdater(installType: string): void {
 +  // Linux packages use release-page notifications in the renderer.
 +  if (process.platform === "linux") {
-+    return false;
++    log("info", "installer updater disabled for Linux", { installType });
++    return;
 +  }
-   // A build run from source has no uninstaller beside it, so identifyInstallType always calls it
-   // "managed". The install type therefore says nothing in development and the opt-in decides on
-   // its own; outside development it is the only thing that decides.
-@@ -47,7 +51,7 @@ export function initUpdater(installType: string): void {
-   // this is a managed install or a dev build without the opt-in
-   log("info", "updater initialized", { installType, active });
- 
--  if (!active && process.env.NODE_ENV === "development") {
-+  if (!active && process.platform !== "linux" && process.env.NODE_ENV === "development") {
-     log("debug", "Updater inactive in development, set VORTEX_DEV_UPDATER=1 to enable it");
-   }
- }
++
+   try {
+     if (installType === "regular" || process.env.NODE_ENV === "development") {
+       setupAutoUpdater(installType);
 diff --git a/src/renderer/src/extensions/updater/SettingsUpdate.tsx b/src/renderer/src/extensions/updater/SettingsUpdate.tsx
-index 528ef05..9342487 100644
+index cfffe9e1d..472a71e37 100644
 --- a/src/renderer/src/extensions/updater/SettingsUpdate.tsx
 +++ b/src/renderer/src/extensions/updater/SettingsUpdate.tsx
-@@ -15,6 +15,7 @@ import { Typography } from "../../ui/components/typography/Typography";
+@@ -14,6 +14,7 @@ import { Typography } from "../../ui/components/typography/Typography";
  import Debouncer from "../../util/Debouncer";
  import { log } from "../../util/log";
  import { setUpdateChannel } from "./actions";
 +import { LINUX_PACKAGE_VERSION } from "./linuxBuild";
- import { getUpdaterStatus } from "./updaterStatus";
  
  interface IConnectedProps {
-@@ -83,6 +84,41 @@ class SettingsUpdate extends ComponentEx<IProps, ISettingsUpdateState> {
+   updateChannel: UpdateChannel;
+@@ -78,6 +79,41 @@ class SettingsUpdate extends ComponentEx<IProps, ISettingsUpdateState> {
  
      const { checkUpdateButtonDisabled } = this.state;
  
@@ -120,7 +106,7 @@ index 528ef05..9342487 100644
      // managed or development
      if (installType === "managed") {
        // managed and not development
-@@ -172,6 +208,10 @@ class SettingsUpdate extends ComponentEx<IProps, ISettingsUpdateState> {
+@@ -162,6 +198,10 @@ class SettingsUpdate extends ComponentEx<IProps, ISettingsUpdateState> {
    }
  
    private checkNow = () => {
@@ -132,19 +118,17 @@ index 528ef05..9342487 100644
      const channel = this.props.updateChannel === "none" ? "stable" : this.props.updateChannel;
      window.api.updater.checkForUpdates(channel, true);
 diff --git a/src/renderer/src/extensions/updater/index.ts b/src/renderer/src/extensions/updater/index.ts
-index f6fb7b2..bd6aa43 100644
+index a06048ddb..94a6fa081 100644
 --- a/src/renderer/src/extensions/updater/index.ts
 +++ b/src/renderer/src/extensions/updater/index.ts
-@@ -4,6 +4,8 @@ import type { IExtensionContext } from "../../types/IExtensionContext";
- import { toUpdateChannel } from "../../types/IState";
- import { getApplication } from "../../util/application";
- import { setUpdaterSnapshot } from "./actions";
+@@ -1,4 +1,6 @@
+ import type { IExtensionContext } from "../../types/IExtensionContext";
 +import { LINUX_PACKAGE_VERSION } from "./linuxBuild";
 +import { initLinuxReleaseNotifications } from "./linuxRelease";
- import settingsReducer, { sessionReducer } from "./reducers";
+ import settingsReducer from "./reducers";
  import SettingsUpdate from "./SettingsUpdate";
- import { createUpdaterAnalytics, isTransition } from "./updaterAnalytics";
-@@ -44,6 +46,10 @@ function init(context: IExtensionContext): boolean {
+ 
+@@ -7,6 +9,10 @@ function init(context: IExtensionContext): boolean {
    context.registerSettings("Vortex", SettingsUpdate);
  
    context.once(() => {
@@ -152,12 +136,12 @@ index f6fb7b2..bd6aa43 100644
 +      initLinuxReleaseNotifications(context, LINUX_PACKAGE_VERSION);
 +      return;
 +    }
-     // main decides this (see isUpdaterActive): a managed install is updated by its launcher, and
-     // a build run from source has to opt in with VORTEX_DEV_UPDATER
-     if (!context.api.getState().app.updaterActive) {
+     if (
+       context.api.getState().app.installType !== "regular" &&
+       process.env.NODE_ENV !== "development"
 diff --git a/src/renderer/src/extensions/updater/linuxBuild.ts b/src/renderer/src/extensions/updater/linuxBuild.ts
 new file mode 100644
-index 0000000..b1499fe
+index 000000000..b1499fedb
 --- /dev/null
 +++ b/src/renderer/src/extensions/updater/linuxBuild.ts
 @@ -0,0 +1,2 @@
@@ -165,7 +149,7 @@ index 0000000..b1499fe
 +export const LINUX_PACKAGE_VERSION: string = "";
 diff --git a/src/renderer/src/extensions/updater/linuxRelease.test.ts b/src/renderer/src/extensions/updater/linuxRelease.test.ts
 new file mode 100644
-index 0000000..905e57c
+index 000000000..905e57c70
 --- /dev/null
 +++ b/src/renderer/src/extensions/updater/linuxRelease.test.ts
 @@ -0,0 +1,246 @@
@@ -417,7 +401,7 @@ index 0000000..905e57c
 +});
 diff --git a/src/renderer/src/extensions/updater/linuxRelease.ts b/src/renderer/src/extensions/updater/linuxRelease.ts
 new file mode 100644
-index 0000000..05dc6cf
+index 000000000..05dc6cfa9
 --- /dev/null
 +++ b/src/renderer/src/extensions/updater/linuxRelease.ts
 @@ -0,0 +1,222 @@
@@ -643,18 +627,3 @@ index 0000000..05dc6cf
 +    { once: true },
 +  );
 +}
-diff --git a/src/renderer/src/extensions/updater/index.test.ts b/src/renderer/src/extensions/updater/index.test.ts
-index 7d48a88..b3c41c4 100644
---- a/src/renderer/src/extensions/updater/index.test.ts
-+++ b/src/renderer/src/extensions/updater/index.test.ts
-@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
- 
- import type { IExtensionContext } from "../../types/IExtensionContext";
- 
-+// Exercise the upstream updater independently of metadata stamped by makepkg.
-+// The Linux package notification route is covered in linuxRelease.test.ts.
-+vi.mock("./linuxBuild", () => ({ LINUX_PACKAGE_VERSION: "" }));
-+
- vi.mock("../../util/application", () => ({
-   getApplication: () => ({ version: "2.6.0-beta.1" }),
- }));
