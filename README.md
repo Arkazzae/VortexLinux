@@ -2,7 +2,7 @@
 
 [![Build status](https://github.com/Arkazzae/vortex-linux/actions/workflows/upstream-compatibility.yml/badge.svg)](https://github.com/Arkazzae/vortex-linux/actions/workflows/upstream-compatibility.yml)
 
-[Vortex](https://www.nexusmods.com/about/vortex/) is the mod manager from Nexus Mods — the one most people use for Skyrim, Fallout, Starfield, Baldur's Gate 3 and a few hundred other games. It's an Electron app, so it *technically* starts on Linux. But the usual workaround is running Vortex itself inside a Wine prefix, which is slow, fragile and annoying to set up.
+[Vortex](https://www.nexusmods.com/about/vortex/) is the mod manager from Nexus Mods, used for Skyrim, Fallout, Starfield, Baldur's Gate 3 and a few hundred other games. It's an Electron app, so it *technically* starts on Linux. But the usual workaround is running Vortex itself inside a Wine prefix, which is slow, fragile and annoying to set up.
 
 This repo does the other thing: it patches Vortex to actually understand Linux, and builds it as a native app.
 
@@ -18,7 +18,7 @@ This repo does the other thing: it patches Vortex to actually understand Linux, 
 - Deploys and purges hardlinked mods without leaving stale files behind
 - Resolves Windows path casing consistently and keeps staging files safe when external changes are detected
 
-These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so not every supported game is guaranteed to work — but the base is sane now.
+These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so some games may still need fixes.
 
 ## Upstream is catching up 🎉
 
@@ -56,7 +56,7 @@ chmod +x Vortex-*.AppImage
 ./Vortex-*.AppImage
 ```
 
-The AppImage bundles the Linux .NET 9 runtime Vortex probes for at startup, plus the Windows .NET runtimes modding tools need — you don't need .NET installed system-wide. Wine you do need.
+The AppImage bundles the Linux .NET 9 runtime Vortex probes for at startup, plus the Windows .NET runtimes modding tools need, so you don't need .NET installed system-wide. Wine you do need.
 
 No FUSE 2 on your system? Run it as:
 
@@ -70,7 +70,7 @@ AppImages don't add themselves to your app menu or register as the `nxm://` hand
 
 **Launch the game once through Steam or Heroic.** Proton and the game create their real config and save directories on that first run; if you point Vortex at a prefix that doesn't exist yet, nothing will line up.
 
-**Keep staging and the game on the same filesystem.** Hardlinks can't cross filesystems. Vortex suggests a good folder under `Settings → Mods`. If you already have mods in an old staging folder, use Vortex's transfer flow — don't move or delete it by hand.
+**Keep staging and the game on the same filesystem.** Hardlinks can't cross filesystems. Vortex suggests a good folder under `Settings → Mods`. If you already have mods in an old staging folder, use Vortex's transfer flow. Don't move or delete it by hand.
 
 The selected game determines which prefix Vortex uses. Steam’s per-game Proton
 selection takes precedence over its default selection. Heroic’s game settings
@@ -106,43 +106,21 @@ Patches live in `patches/`, in the order listed by `_patches` in `PKGBUILD`.
 after changing patches or package metadata. `scripts/build-arch-package.sh`
 prepares this directory automatically.
 
-### Building an older version
+### Older Vortex versions
 
-For collections that need a particular version, the builder uses its existing
-Linux recipe and patches in a separate build directory. Local builds need Python
-3.12+, Git, Arch Linux and the selected recipe's build dependencies.
+We support **1.16.9** and **2.6.2** for collections that need an older Vortex,
+alongside the [latest release](https://github.com/Arkazzae/vortex-linux/releases/latest).
+Need another version? [Open an issue](https://github.com/Arkazzae/vortex-linux/issues/new)
+and tell us which version your collection needs.
+
+To build one, fork this repo and run **Actions → Build a selected Vortex version**,
+then download the files from the completed run. Or build locally on Arch:
 
 ```sh
-python3 scripts/build-version.py --list
 python3 scripts/build-version.py --version 2.6.2
 ```
 
-Artifacts go to `dist/versions/2.6.2/artifacts/`. Use `--help` for format selection,
-recipe inspection and choosing a packaging ref. Shallow clones need the full history.
-
-You can also run **Actions → Build a selected Vortex version** and download the workflow artifacts.
-
-Vortex 1.16.9 and 2.6.2 have maintained legacy recipes in `recipes/1.16.9/` and
-`recipes/2.6.2/`. The 2.6.2 recipe includes native Linux LOOT and builds plugin
-management together with Archive Check and Plugin Indexlock. Its AppImage check
-verifies that all three extensions initialize without dependency failures.
-Other historical recipes may need dependency updates; installed versions share
-application data.
-
-The version builder reads committed recipes and ignores local edits. To build
-changes to the 2.6.2 recipe before committing them, run its scripts directly on
-Arch with the dependencies listed in `recipes/2.6.2/.SRCINFO`:
-
-```sh
-recipes/2.6.2/scripts/build-arch-package.sh "$PWD/dist/legacy-2.6.2"
-recipes/2.6.2/scripts/build-appimage.sh \
-  "$PWD/dist/legacy-2.6.2/vortex-linux-2.6.2-x86_64.pkg.tar.zst" \
-  "$PWD/dist/legacy-2.6.2"
-recipes/2.6.2/scripts/test-appimage.sh \
-  "$PWD/dist/legacy-2.6.2/Vortex-2.6.2-x86_64.AppImage"
-```
-
-The last command needs Docker and checks the artifact in a clean Ubuntu container.
+You'll find the files in `dist/versions/2.6.2/artifacts/`.
 
 ## How it's tested
 
