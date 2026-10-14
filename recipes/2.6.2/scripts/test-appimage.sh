@@ -22,7 +22,9 @@ readonly ABSOLUTE_APPIMAGE_PATH
 
 printf 'Testing %s in a fresh %s container\n' \
   "$ABSOLUTE_APPIMAGE_PATH" "$CONTAINER_IMAGE"
-docker run --rm --platform linux/amd64 \
+# Electron 43 can exhaust Docker's default 64 MiB /dev/shm while rendering
+# the main page, terminating the renderer with SIGTRAP before UI validation.
+docker run --rm --platform linux/amd64 --shm-size=512m \
   --volume "$ABSOLUTE_APPIMAGE_PATH:/artifact/Vortex.AppImage:ro" \
   --volume "$REPOSITORY_ROOT/scripts/test-appimage-container.sh:/test-appimage-container.sh:ro" \
   --volume "$REPOSITORY_ROOT/scripts/check-appimage-ui.py:/check-appimage-ui.py:ro" \

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Vortex version with a Linux recipe (for example, 1.16.9 or 2.7.2)"
+        description: "Vortex version with a Linux recipe (for example, 1.16.9 or 2.6.2)"
         required: true
         type: string
       packaging_ref:
@@ -35,6 +35,12 @@ jobs:
     defaults:
       run:
         shell: bash
+    outputs:
+      artifact_name: vortex-linux-${{ steps.prepare.outputs.package_revision }}-${{ inputs.format }}
+      packaging_commit: ${{ steps.prepare.outputs.packaging_commit }}
+      recipe_path: ${{ steps.prepare.outputs.recipe_path }}
+      appimage_archive: ${{ steps.appimage.outputs.appimage_archive }}
+      smoke_supported: ${{ steps.smoke.outputs.supported }}
     steps:
       # Git must be present before checkout so history is available to the selector.
       - name: Install snapshot selection tools
@@ -63,6 +69,20 @@ jobs:
             arguments+=(--packaging-ref "$PACKAGING_REF")
           fi
           python3 scripts/build-version.py "${arguments[@]}"
+
+      - name: Check whether the selected recipe provides AppImage tests
+        id: smoke
+        if: ${{ inputs.format != 'arch' }}
+        env:
+          SOURCE_DIRECTORY: ${{ steps.prepare.outputs.source_directory }}
+        run: |
+          if [[ -f "$SOURCE_DIRECTORY/scripts/test-appimage.sh" ]]; then
+            echo 'supported=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'supported=false' >> "$GITHUB_OUTPUT"
+            echo 'AppImage runtime check skipped: the selected historical recipe does not provide scripts/test-appimage.sh.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Install the selected snapshot's dependencies
         env:
@@ -145,3 +165,33 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  smoke:
+    name: Check AppImage using the selected recipe
+    needs: build
+    if: ${{ inputs.format != 'arch' && needs.build.outputs.smoke_supported == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the selected packaging commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.build.outputs.packaging_commit }}
+          persist-credentials: false
+
+      - name: Download the built AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/vortex-artifacts
+
+      - name: Check the AppImage in a clean Ubuntu container
+        env:
+          RECIPE_PATH: ${{ needs.build.outputs.recipe_path }}
+          APPIMAGE_ARCHIVE: ${{ needs.build.outputs.appimage_archive }}
+          ARTIFACT_DIRECTORY: ${{ runner.temp }}/vortex-artifacts
+        run: |
+          cd "$ARTIFACT_DIRECTORY"
+          sha256sum --check "$APPIMAGE_ARCHIVE.sha256"
+          bash "$GITHUB_WORKSPACE/$RECIPE_PATH/scripts/test-appimage.sh" \
+            "$ARTIFACT_DIRECTORY/$APPIMAGE_ARCHIVE"

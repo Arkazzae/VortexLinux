@@ -114,16 +114,35 @@ Linux recipe and patches in a separate build directory. Local builds need Python
 
 ```sh
 python3 scripts/build-version.py --list
-python3 scripts/build-version.py --version 1.16.9
+python3 scripts/build-version.py --version 2.6.2
 ```
 
-Artifacts go to `dist/versions/1.16.9/artifacts/`. Use `--help` for format selection,
+Artifacts go to `dist/versions/2.6.2/artifacts/`. Use `--help` for format selection,
 recipe inspection and choosing a packaging ref. Shallow clones need the full history.
 
 You can also run **Actions → Build a selected Vortex version** and download the workflow artifacts.
 
-Vortex 1.16.9 has a separate legacy recipe in `recipes/1.16.9/`.
-Historical recipes may need dependency updates; installed versions share application data.
+Vortex 1.16.9 and 2.6.2 have maintained legacy recipes in `recipes/1.16.9/` and
+`recipes/2.6.2/`. The 2.6.2 recipe includes native Linux LOOT and builds plugin
+management together with Archive Check and Plugin Indexlock. Its AppImage check
+verifies that all three extensions initialize without dependency failures.
+Other historical recipes may need dependency updates; installed versions share
+application data.
+
+The version builder reads committed recipes and ignores local edits. To build
+changes to the 2.6.2 recipe before committing them, run its scripts directly on
+Arch with the dependencies listed in `recipes/2.6.2/.SRCINFO`:
+
+```sh
+recipes/2.6.2/scripts/build-arch-package.sh "$PWD/dist/legacy-2.6.2"
+recipes/2.6.2/scripts/build-appimage.sh \
+  "$PWD/dist/legacy-2.6.2/vortex-linux-2.6.2-x86_64.pkg.tar.zst" \
+  "$PWD/dist/legacy-2.6.2"
+recipes/2.6.2/scripts/test-appimage.sh \
+  "$PWD/dist/legacy-2.6.2/Vortex-2.6.2-x86_64.AppImage"
+```
+
+The last command needs Docker and checks the artifact in a clean Ubuntu container.
 
 ## How it's tested
 
