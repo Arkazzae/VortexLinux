@@ -1,0 +1,25 @@
+diff --git a/extensions/fomod-installer/global.json b/extensions/fomod-installer/global.json
+index c049535..f657889 100644
+--- a/extensions/fomod-installer/global.json
++++ b/extensions/fomod-installer/global.json
+@@ -1,6 +1,6 @@
+ {
+   "sdk": {
+     "version": "9.0.100",
+-    "rollForward": "minor"
++    "rollForward": "latestMajor"
+   }
+ }
+diff --git a/extensions/fomod-installer/src/ModInstaller.IPC.TypeScript/src/BaseIPCConnection.ts b/extensions/fomod-installer/src/ModInstaller.IPC.TypeScript/src/BaseIPCConnection.ts
+index 26cb681..d8301bb 100644
+--- a/extensions/fomod-installer/src/ModInstaller.IPC.TypeScript/src/BaseIPCConnection.ts
++++ b/extensions/fomod-installer/src/ModInstaller.IPC.TypeScript/src/BaseIPCConnection.ts
+@@ -449,7 +449,7 @@ export abstract class BaseIPCConnection {
+    * Find the executable in various possible locations
+    */
+   private async findExecutable(): Promise<string> {
+-    const possiblePaths = this.getExecutablePaths('ModInstallerIPC.exe');
++    const possiblePaths = this.getExecutablePaths(process.platform === 'win32' ? 'ModInstallerIPC.exe' : 'ModInstallerIPC');
+ 
+     // Check each path
+     for (const testPath of possiblePaths) {

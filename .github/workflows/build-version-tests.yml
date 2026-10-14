@@ -1,0 +1,52 @@
+name: Version builder tests
+
+on:
+  push:
+    paths:
+      - "scripts/build-version.py"
+      - "tests/test_build_version.py"
+      - "tests/test_legacy_appimage_ui.py"
+      - "recipes/**"
+      - ".github/workflows/build-version*.yml"
+  pull_request:
+    paths:
+      - "scripts/build-version.py"
+      - "tests/test_build_version.py"
+      - "tests/test_legacy_appimage_ui.py"
+      - "recipes/**"
+      - ".github/workflows/build-version*.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test version selection and isolated builds
+        run: python3 -m unittest discover -s tests -p 'test_build_version.py' -v
+      - name: Test legacy extension startup checks
+        run: python3 -m unittest discover -s tests -p 'test_legacy_appimage_ui.py' -v
+      - name: Check maintained legacy recipe exports
+        run: |
+          for version in 1.16.9 2.6.2; do
+            output_directory="$RUNNER_TEMP/legacy-recipe-$version"
+            python3 scripts/build-version.py --version "$version" --format both \
+              --prepare-only --output-dir "$output_directory"
+            python3 - "$output_directory/build-manifest.json" "$version" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          manifest_path = Path(sys.argv[1])
+          version = sys.argv[2]
+          manifest = json.loads(manifest_path.read_text())
+          assert manifest['recipe_path'] == f'recipes/{version}', manifest
+          assert manifest['package_version'] == version, manifest
+          source = manifest_path.parent / 'source'
+          assert (source / 'scripts/build-arch-package.sh').is_file()
+          assert (source / 'scripts/build-appimage.sh').is_file()
+          PY
+          done

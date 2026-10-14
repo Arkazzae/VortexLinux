@@ -1,0 +1,698 @@
+diff --git a/src/extensions/extension_manager/dependencyNotifications.test.ts b/src/extensions/extension_manager/dependencyNotifications.test.ts
+new file mode 100644
+index 0000000..2250dcb
+--- /dev/null
++++ b/src/extensions/extension_manager/dependencyNotifications.test.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from "vitest";
++
++import type { IRegisteredExtension } from "../../util/ExtensionManager";
++import { isActionableDependencyFailure } from "./dependencyNotifications";
++
++function extension(name: string, bundled: boolean): IRegisteredExtension {
++  return {
++    dynamic: true,
++    info: {
++      author: "Test",
++      bundled,
++      description: "Test extension",
++      id: name,
++      name,
++      version: "1.0.0",
++    },
++    initFunc: undefined,
++    name,
++    namespace: name,
++    path: `/extensions/${name}`,
++  };
++}
++
++describe("dependency notifications", () => {
++  it("does not offer to install a dependency omitted from a platform build", () => {
++    const extensions = [extension("bundled-consumer", true)];
++    expect(
++      isActionableDependencyFailure("linux", extensions, "bundled-consumer", "omitted-provider"),
++    ).toBe(false);
++  });
++
++  it("keeps missing third-party dependencies actionable", () => {
++    const extensions = [extension("community-consumer", false)];
++    expect(
++      isActionableDependencyFailure("linux", extensions, "community-consumer", "missing-provider"),
++    ).toBe(true);
++  });
++
++  it("keeps version mismatches and Windows dependencies actionable", () => {
++    const extensions = [extension("bundled-consumer", true), extension("provider", true)];
++    expect(isActionableDependencyFailure("linux", extensions, "bundled-consumer", "provider")).toBe(
++      true,
++    );
++    expect(
++      isActionableDependencyFailure("win32", extensions, "bundled-consumer", "missing-provider"),
++    ).toBe(true);
++  });
++});
+diff --git a/src/extensions/extension_manager/dependencyNotifications.ts b/src/extensions/extension_manager/dependencyNotifications.ts
+new file mode 100644
+index 0000000..616f1b4
+--- /dev/null
++++ b/src/extensions/extension_manager/dependencyNotifications.ts
+@@ -0,0 +1,19 @@
++import type { IRegisteredExtension } from "../../util/ExtensionManager";
++
++function matches(extension: IRegisteredExtension, id: string): boolean {
++  return extension.name === id || extension.info?.id === id || extension.info?.name === id;
++}
++
++export function isActionableDependencyFailure(
++  platform: NodeJS.Platform,
++  extensions: IRegisteredExtension[],
++  dependentId: string,
++  dependencyId: string,
++): boolean {
++  if (platform === "win32" || extensions.some((extension) => matches(extension, dependencyId))) {
++    return true;
++  }
++
++  const dependent = extensions.find((extension) => matches(extension, dependentId));
++  return dependent?.info?.bundled !== true;
++}
+diff --git a/src/extensions/extension_manager/index.ts b/src/extensions/extension_manager/index.ts
+index 53394bd..fc1d59d 100644
+--- a/src/extensions/extension_manager/index.ts
++++ b/src/extensions/extension_manager/index.ts
+@@ -1,3 +1,4 @@
++import { isActionableDependencyFailure } from "./dependencyNotifications";
+ /* eslint-disable */
+ import {
+   IExtensionApi,
+@@ -257,7 +258,9 @@ function checkMissingDependencies(
+   const missingDependencies = Object.keys(loadFailures).reduce(
+     (prev, extId) => {
+       const deps = loadFailures[extId].filter(
+-        (fail) => fail.id === "dependency",
++        (fail) => fail.id === "dependency" && isActionableDependencyFailure(
++          process.platform, api.getLoadedExtensions(), extId, fail.args.dependencyId,
++        ),
+       );
+       deps.forEach((dep) => {
+         const depId = dep.args.dependencyId;
+diff --git a/src/extensions/firststeps_dashlet/todos.tsx b/src/extensions/firststeps_dashlet/todos.tsx
+index f7036bf..d19f0fa 100644
+--- a/src/extensions/firststeps_dashlet/todos.tsx
++++ b/src/extensions/firststeps_dashlet/todos.tsx
+@@ -10,7 +10,7 @@ import { IToDo } from "./IToDo";
+ 
+ import { TFunction } from "i18next";
+ import * as React from "react";
+-import * as winapi from "winapi-bindings";
++import { getDiskSpace, getVolumePath } from "../../util/volume";
+ 
+ const ONE_GB = 1024 * 1024 * 1024;
+ const MIN_DISK_SPACE = 200 * ONE_GB;
+@@ -28,7 +28,7 @@ function minDiskSpace(required: number, key: string) {
+       try {
+         freeSpace[key] = {
+           path: checkPath,
+-          free: winapi.GetDiskFreeSpaceEx(checkPath).freeToCaller,
++          free: getDiskSpace(checkPath).freeToCaller,
+         };
+       } catch (err) {
+         return false;
+@@ -96,7 +96,7 @@ function todos(api: IExtensionApi): IToDo[] {
+       text: "Downloads are on drive",
+       value: (t: TFunction, props: any) => {
+         try {
+-          return winapi.GetVolumePathName(props.dlPath);
++          return getVolumePath(props.dlPath);
+         } catch (err) {
+           err.dlPath = props.dlPath;
+           throw err;
+@@ -129,7 +129,7 @@ function todos(api: IExtensionApi): IToDo[] {
+           if (props.instPath === undefined) {
+             return t("<No staging folder>");
+           }
+-          return winapi.GetVolumePathName(props.instPath);
++          return getVolumePath(props.instPath);
+         } catch (err) {
+           return t("<Invalid Drive>");
+         }
+diff --git a/src/extensions/updater/SettingsUpdate.tsx b/src/extensions/updater/SettingsUpdate.tsx
+index 7458fdb..ad1b873 100644
+--- a/src/extensions/updater/SettingsUpdate.tsx
++++ b/src/extensions/updater/SettingsUpdate.tsx
+@@ -1,3 +1,4 @@
++import { LINUX_PACKAGE_VERSION } from "./linuxBuild";
+ import More from "../../renderer/controls/More";
+ import { UPDATE_CHANNELS, UpdateChannel, IState } from "../../types/IState";
+ import {
+@@ -108,6 +109,31 @@ class SettingsUpdate extends ComponentEx<IProps, ISettingsUpdateState> {
+       return null;
+     };
+ 
++    if (process.platform === "linux" && LINUX_PACKAGE_VERSION !== "") {
++      return (
++        <FormGroup controlId="linuxUpdateNotifications">
++          <div className="flex flex-col items-start gap-y-2">
++            <p>
++              {t("Vortex for Linux {{version}}", { replace: { version: LINUX_PACKAGE_VERSION } })}
++            </p>
++            <p>
++              {t(
++                "This version is kept for collection compatibility. Choose any newer build manually from GitHub Releases.",
++              )}
++            </p>
++            <div className="flex items-center gap-x-2">
++              <Button
++                disabled={checkUpdateButtonDisabled}
++                onClick={this.manualUpdateCheck}
++              >
++                {t("View release information")}
++              </Button>
++            </div>
++          </div>
++        </FormGroup>
++      );
++    }
++
+     // managed or development
+     if (installType === "managed") {
+       // managed and not development
+@@ -185,6 +211,10 @@ class SettingsUpdate extends ComponentEx<IProps, ISettingsUpdateState> {
+   }
+ 
+   private checkNow = () => {
++    if (process.platform === "linux" && LINUX_PACKAGE_VERSION !== "") {
++      this.context.api.events.emit("check-linux-updates");
++      return;
++    }
+     // send what updateChannel you are on, unless it's none, then send stable. manual check as well
+     ipcRenderer.send(
+       "check-for-updates",
+diff --git a/src/extensions/updater/index.ts b/src/extensions/updater/index.ts
+index 93fe72b..2d3842d 100644
+--- a/src/extensions/updater/index.ts
++++ b/src/extensions/updater/index.ts
+@@ -1,3 +1,5 @@
++import { LINUX_PACKAGE_VERSION } from "./linuxBuild";
++import { initLinuxReleaseNotifications } from "./linuxRelease";
+ import { IExtensionContext } from "../../types/IExtensionContext";
+ import { log } from "../../util/log";
+ import settingsReducer from "./reducers";
+@@ -12,6 +14,7 @@ function init(context: IExtensionContext): boolean {
+   context.registerSettings("Vortex", SettingsUpdate);
+ 
+   context.onceMain(() => {
++    if (process.platform === "linux") return;
+     try {
+       if (
+         context.api.getState().app.installType === "regular" ||
+@@ -31,6 +34,10 @@ function init(context: IExtensionContext): boolean {
+   });
+ 
+   context.once(() => {
++    if (process.platform === "linux" && LINUX_PACKAGE_VERSION !== "") {
++      initLinuxReleaseNotifications(context, LINUX_PACKAGE_VERSION);
++      return;
++    }
+     if (
+       context.api.getState().app.installType !== "regular" &&
+       process.env.NODE_ENV !== "development"
+diff --git a/src/extensions/updater/linuxBuild.ts b/src/extensions/updater/linuxBuild.ts
+new file mode 100644
+index 0000000..b1499fe
+--- /dev/null
++++ b/src/extensions/updater/linuxBuild.ts
+@@ -0,0 +1,2 @@
++// Stamped with pkgver-pkgrel by the Linux PKGBUILD before bundling.
++export const LINUX_PACKAGE_VERSION: string = "";
+diff --git a/src/extensions/updater/linuxRelease.test.ts b/src/extensions/updater/linuxRelease.test.ts
+new file mode 100644
+index 0000000..68284f7
+--- /dev/null
++++ b/src/extensions/updater/linuxRelease.test.ts
+@@ -0,0 +1,250 @@
++import { EventEmitter } from "node:events";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import type { IExtensionApi, IExtensionContext } from "../../types/IExtensionContext";
++import type { INotification } from "../../types/INotification";
++import init from "./index";
++import {
++  createLinuxReleaseChecker,
++  fetchLinuxRelease,
++  initLinuxReleaseNotifications,
++  isNewerLinuxVersion,
++} from "./linuxRelease";
++
++vi.mock("../../util/log", () => ({ log: vi.fn() }));
++vi.mock("./linuxBuild", () => ({ LINUX_PACKAGE_VERSION: "2.7.1-1" }));
++vi.mock("./SettingsUpdate", () => ({ default: () => null }));
++vi.mock("./autoupdater", () => ({ default: vi.fn() }));
++const { openUrl } = vi.hoisted(() => ({ openUrl: vi.fn() }));
++vi.mock("../../util/opn", () => ({ default: openUrl }));
++
++const fetchMock = vi.fn();
++const release = (tag = "v2.7.1-2") => ({
++  tag_name: tag,
++  draft: false,
++  prerelease: false,
++  html_url: "https://untrusted.example/download.exe",
++  assets: [{ name: "Vortex-2.7.1-x86_64.AppImage" }],
++});
++const respond = (body: unknown, status = 200) => {
++  fetchMock.mockResolvedValue({ ok: status === 200, status, json: async () => body });
++};
++
++function makeApi(channel = "stable") {
++  const state = { settings: { update: { channel } } };
++  const sendNotification = vi.fn<(notification: INotification) => void>();
++  const dismissNotification = vi.fn();
++  const onStateChange = vi.fn();
++  const events = new EventEmitter();
++  const api = {
++    getState: () => state,
++    sendNotification,
++    dismissNotification,
++    onStateChange,
++    events,
++  } as unknown as IExtensionApi;
++  return { api, state, sendNotification, dismissNotification, onStateChange, events };
++}
++
++beforeEach(() => {
++  vi.useFakeTimers();
++  vi.clearAllMocks();
++  vi.stubGlobal("fetch", fetchMock);
++  respond(release());
++});
++
++afterEach(() => {
++  window.dispatchEvent(new Event("beforeunload"));
++  vi.unstubAllGlobals();
++  vi.useRealTimers();
++});
++
++describe("Linux package versions", () => {
++  it.each([
++    ["2.7.1-2", "2.7.1-1", true],
++    ["v2.7.1-10", "2.7.1-9", true],
++    ["2.7.2-1", "2.7.1-99", false],
++    ["2.10.0-1", "2.9.9-9", false],
++    ["2.8.0-1", "1.16.9-1", false],
++    ["1.16.9-2", "1.16.9-1", true],
++    ["2.7.1-1", "2.7.1-1", false],
++    ["2.7.1-1", "2.7.1-2", false],
++    ["2.7.0-99", "2.7.1-1", false],
++    ["2.8.0-beta.1", "2.7.1-1", false],
++    ["2.8.0-1", "", false],
++    ["2.7.1-9007199254740993", "2.7.1-1", false],
++  ])("compares %s against %s", (candidate, installed, expected) => {
++    expect(isNewerLinuxVersion(candidate, installed)).toBe(expected);
++  });
++});
++
++describe("GitHub releases", () => {
++  it("uses only this project's API and constructs the release-page URL from a valid tag", async () => {
++    expect(await fetchLinuxRelease()).toEqual({
++      version: "2.7.1-2",
++      url: "https://github.com/Arkazzae/vortex-linux/releases/tag/v2.7.1-2",
++    });
++    expect(fetchMock).toHaveBeenCalledWith(
++      "https://api.github.com/repos/Arkazzae/vortex-linux/releases/latest",
++      expect.objectContaining({ credentials: "omit", signal: expect.any(AbortSignal) }),
++    );
++  });
++
++  it.each([
++    { draft: true },
++    { prerelease: true },
++    { tag_name: "v2.8.0-beta.1" },
++    { assets: [] },
++    { tag_name: "../../other" },
++    { assets: [{ name: "vortex-setup-2.8.0.exe" }] },
++  ])("ignores ineligible releases: %j", async (override) => {
++    respond({ ...release(), ...override });
++    expect(await fetchLinuxRelease()).toBeUndefined();
++  });
++
++  it("accepts an Arch package and handles repositories with no release", async () => {
++    respond({ ...release(), assets: [{ name: "vortex-linux-2.7.1-x86_64.pkg.tar.zst" }] });
++    expect(await fetchLinuxRelease()).toBeDefined();
++    respond({}, 404);
++    expect(await fetchLinuxRelease()).toBeUndefined();
++  });
++
++  it.each([null, [], {}, { tag_name: "v2.7.1-2" }])(
++    "rejects malformed responses: %j",
++    async (body) => {
++      respond(body);
++      await expect(fetchLinuxRelease()).rejects.toThrow("Invalid GitHub release response");
++    },
++  );
++});
++
++describe("release notifications", () => {
++  it("keeps automatic updates disabled when initializing a collection-pinned Linux build", async () => {
++    const { api } = makeApi();
++    const callbacks: Array<() => void> = [];
++    const context = {
++      api,
++      registerReducer: vi.fn(),
++      registerSettings: vi.fn(),
++      once: (callback: () => void) => callbacks.push(callback),
++      onceMain: (callback: () => void) => callbacks.push(callback),
++    } as unknown as IExtensionContext;
++    const originalPlatform = process.platform;
++    Object.defineProperty(process, "platform", { value: "linux" });
++    try {
++      init(context);
++      callbacks.forEach((callback) => callback());
++      await vi.advanceTimersByTimeAsync(5000);
++      expect(fetchMock).not.toHaveBeenCalled();
++    } finally {
++      Object.defineProperty(process, "platform", { value: originalPlatform });
++    }
++  });
++
++  it("lets a manual check share an in-flight background request and receive its result", async () => {
++    const { api, sendNotification } = makeApi();
++    let finish!: (response: unknown) => void;
++    fetchMock.mockReturnValueOnce(
++      new Promise((resolve) => {
++        finish = resolve;
++      }),
++    );
++    const check = createLinuxReleaseChecker(api, "2.7.1-2");
++    const pending = check();
++    await check(true);
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    finish({ ok: true, status: 200, json: async () => release() });
++    await pending;
++    expect(sendNotification).toHaveBeenLastCalledWith(expect.objectContaining({ type: "success" }));
++  });
++
++  it("opens the exact release page only when clicked, without repeating a dismissed notification", async () => {
++    const { api, sendNotification } = makeApi();
++    const check = createLinuxReleaseChecker(api, "2.7.1-1");
++    await check();
++    expect(openUrl).not.toHaveBeenCalled();
++    const notification = sendNotification.mock.calls[0][0];
++    expect(notification.replace).toEqual({ version: "2.7.1-2" });
++    expect(notification.actions).toHaveLength(1);
++    expect(notification.actions![0].title).toBe("View release");
++    notification.actions![0].action(vi.fn());
++    expect(openUrl).toHaveBeenCalledWith(
++      "https://github.com/Arkazzae/vortex-linux/releases/tag/v2.7.1-2",
++    );
++    await vi.advanceTimersByTimeAsync(4 * 60 * 60 * 1000);
++    await check();
++    expect(sendNotification).toHaveBeenCalledTimes(1);
++    respond(release("v2.7.1-3"));
++    await vi.advanceTimersByTimeAsync(60000);
++    await check();
++    expect(sendNotification).toHaveBeenCalledTimes(2);
++  });
++
++  it("respects disabled notifications but still allows a manual check", async () => {
++    const { api, sendNotification } = makeApi("none");
++    const check = createLinuxReleaseChecker(api, "2.7.1-1");
++    await check();
++    expect(fetchMock).not.toHaveBeenCalled();
++    await check(true);
++    expect(sendNotification).toHaveBeenLastCalledWith(
++      expect.objectContaining({ id: "vortex-linux-update-available" }),
++    );
++  });
++
++  it("does not offer the installed release or a downgrade, and reports a manual result", async () => {
++    const { api, sendNotification } = makeApi();
++    await createLinuxReleaseChecker(api, "2.8.0-1")();
++    expect(sendNotification).not.toHaveBeenCalled();
++    await createLinuxReleaseChecker(api, "2.7.1-2")(true);
++    expect(sendNotification).toHaveBeenLastCalledWith(expect.objectContaining({ type: "success" }));
++  });
++
++  it("keeps offline and rate-limit failures quiet in the background and visible for manual checks", async () => {
++    const { api, sendNotification } = makeApi();
++    fetchMock.mockRejectedValueOnce(new Error("offline"));
++    await createLinuxReleaseChecker(api, "2.7.1-1")();
++    expect(sendNotification).not.toHaveBeenCalled();
++    respond({}, 403);
++    await createLinuxReleaseChecker(api, "2.7.1-1")(true);
++    expect(sendNotification).toHaveBeenLastCalledWith(expect.objectContaining({ type: "warning" }));
++  });
++
++  it("throttles repeated checks and ignores a background response after notifications are disabled", async () => {
++    const { api, state, sendNotification } = makeApi();
++    let finish!: (response: unknown) => void;
++    fetchMock.mockReturnValueOnce(
++      new Promise((resolve) => {
++        finish = resolve;
++      }),
++    );
++    const check = createLinuxReleaseChecker(api, "2.7.1-1");
++    const pending = check();
++    await check();
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    state.settings.update.channel = "none";
++    finish({ ok: true, status: 200, json: async () => release() });
++    await pending;
++    expect(sendNotification).not.toHaveBeenCalled();
++    await check(true);
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++  });
++
++  it("only explains manual updates on request and never polls for another upstream version", async () => {
++    const { api, events, sendNotification, onStateChange } = makeApi();
++    initLinuxReleaseNotifications({ api } as IExtensionContext, "1.16.9-1");
++    await vi.advanceTimersByTimeAsync(8 * 60 * 60 * 1000);
++    expect(fetchMock).not.toHaveBeenCalled();
++    expect(sendNotification).not.toHaveBeenCalled();
++    expect(onStateChange).not.toHaveBeenCalled();
++    events.emit("check-linux-updates");
++    expect(sendNotification).toHaveBeenCalledWith(expect.objectContaining({
++      type: "info", replace: { version: "1.16.9" },
++    }));
++    expect(openUrl).not.toHaveBeenCalled();
++    sendNotification.mock.calls[0][0].actions![0].action(vi.fn());
++    expect(openUrl).toHaveBeenCalledWith("https://github.com/Arkazzae/vortex-linux/releases");
++    expect(fetchMock).not.toHaveBeenCalled();
++    expect(vi.getTimerCount()).toBe(0);
++  });
++});
+diff --git a/src/extensions/updater/linuxRelease.ts b/src/extensions/updater/linuxRelease.ts
+new file mode 100644
+index 0000000..267a81e
+--- /dev/null
++++ b/src/extensions/updater/linuxRelease.ts
+@@ -0,0 +1,208 @@
++import { log } from "../../util/log";
++import opn from "../../util/opn";
++import type { IExtensionApi, IExtensionContext } from "../../types/IExtensionContext";
++
++export const LINUX_RELEASES_URL = "https://github.com/Arkazzae/vortex-linux/releases";
++const RELEASE_API = "https://api.github.com/repos/Arkazzae/vortex-linux/releases/latest";
++const UPDATE_NOTIFICATION = "vortex-linux-update-available";
++const CHECK_NOTIFICATION = "vortex-linux-update-check";
++
++interface IPackageVersion {
++  upstream: number[];
++  revision: number;
++}
++
++interface ILinuxRelease {
++  version: string;
++  url: string;
++}
++
++function parseVersion(value: string): IPackageVersion | undefined {
++  const match = /^v?(\d+(?:\.\d+){1,3})-([1-9]\d*)$/.exec(value);
++  if (match === null) {
++    return undefined;
++  }
++  const upstream = match[1].split(".").map(Number);
++  const revision = Number(match[2]);
++  return [...upstream, revision].every(Number.isSafeInteger) ? { upstream, revision } : undefined;
++}
++
++export function isNewerLinuxVersion(candidate: string, installed: string): boolean {
++  const next = parseVersion(candidate);
++  const current = parseVersion(installed);
++  if (next === undefined || current === undefined) {
++    return false;
++  }
++  for (let index = 0; index < Math.max(next.upstream.length, current.upstream.length); index++) {
++    const difference = (next.upstream[index] ?? 0) - (current.upstream[index] ?? 0);
++    if (difference !== 0) {
++      return false; // Collection builds stay on their selected upstream version.
++    }
++  }
++  return next.revision > current.revision;
++}
++
++export async function fetchLinuxRelease(): Promise<ILinuxRelease | undefined> {
++  const response = await fetch(RELEASE_API, {
++    headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
++    credentials: "omit",
++    signal: AbortSignal.timeout(15000),
++  });
++  if (response.status === 404) {
++    return undefined; // No published stable release yet.
++  }
++  if (!response.ok) {
++    throw new Error(`GitHub release check failed (${response.status})`);
++  }
++  const release: unknown = await response.json();
++  if (release === null || typeof release !== "object") {
++    throw new Error("Invalid GitHub release response");
++  }
++  const data = release as Record<string, unknown>;
++  if (
++    typeof data.tag_name !== "string" ||
++    typeof data.draft !== "boolean" ||
++    typeof data.prerelease !== "boolean" ||
++    !Array.isArray(data.assets)
++  ) {
++    throw new Error("Invalid GitHub release response");
++  }
++  if (data.draft || data.prerelease || parseVersion(data.tag_name) === undefined) {
++    return undefined;
++  }
++  const hasLinuxPackage = data.assets.some((asset: unknown) => {
++    if (asset === null || typeof asset !== "object" || !("name" in asset)) {
++      return false;
++    }
++    return (
++      typeof asset.name === "string" &&
++      /^(?:Vortex-.+-x86_64\.AppImage|vortex-linux-.+-x86_64\.pkg\.tar\.zst)$/.test(asset.name)
++    );
++  });
++  if (!hasLinuxPackage) {
++    return undefined;
++  }
++  return {
++    version: data.tag_name.replace(/^v/, ""),
++    // Construct the destination ourselves; never open a URL supplied by the response.
++    url: `${LINUX_RELEASES_URL}/tag/${encodeURIComponent(data.tag_name)}`,
++  };
++}
++
++export function createLinuxReleaseChecker(api: IExtensionApi, installed: string) {
++  let checking = false;
++  let manualRequested = false;
++  let lastCheck = -Infinity;
++  let announcedVersion: string | undefined;
++  const enabled = () => api.getState().settings.update.channel !== "none";
++  const showChecking = () =>
++    api.sendNotification({
++      id: CHECK_NOTIFICATION,
++      type: "activity",
++      message: "Checking for updates...",
++    });
++
++  return async (manual = false): Promise<void> => {
++    if (checking) {
++      if (manual) {
++        manualRequested = true;
++        showChecking();
++      }
++      return;
++    }
++    if (!manual && !enabled()) {
++      return;
++    }
++    // Includes manual presses and channel changes, so they cannot flood GitHub.
++    if (Date.now() - lastCheck < 60000) {
++      if (manual) {
++        api.sendNotification({
++          id: CHECK_NOTIFICATION,
++          type: "info",
++          displayMS: 5000,
++          message: "Please wait a minute before checking for updates again.",
++        });
++      }
++      return;
++    }
++    checking = true;
++    manualRequested = manual;
++    lastCheck = Date.now();
++    if (manual) {
++      showChecking();
++    }
++    try {
++      const release = await fetchLinuxRelease();
++      // A user may turn notifications off while the request is in flight.
++      if (!manualRequested && !enabled()) {
++        return;
++      }
++      if (manualRequested) {
++        api.dismissNotification(CHECK_NOTIFICATION);
++      }
++      if (release !== undefined && isNewerLinuxVersion(release.version, installed)) {
++        if (manualRequested || announcedVersion !== release.version) {
++          announcedVersion = release.version;
++          api.sendNotification({
++            id: UPDATE_NOTIFICATION,
++            type: "info",
++            message: "Vortex for Linux {{version}} is available",
++            replace: { version: release.version },
++            actions: [
++              {
++                title: "View release",
++                action: () => {
++                  void opn(release.url);
++                },
++              },
++            ],
++          });
++        }
++      } else {
++        announcedVersion = undefined;
++        api.dismissNotification(UPDATE_NOTIFICATION);
++        if (manualRequested) {
++          api.sendNotification({
++            id: CHECK_NOTIFICATION,
++            type: "success",
++            displayMS: 5000,
++            message: "No newer Vortex for Linux release is available.",
++          });
++        }
++      }
++    } catch (error) {
++      log("warn", "Linux release check failed", { error });
++      if (manualRequested) {
++        api.sendNotification({
++          id: CHECK_NOTIFICATION,
++          type: "warning",
++          message: "Could not check for updates. Please try again later or visit GitHub Releases.",
++          actions: [
++            {
++              title: "View releases",
++              action: () => {
++                void opn(LINUX_RELEASES_URL);
++              },
++            },
++          ],
++        });
++      }
++    } finally {
++      checking = false;
++    }
++  };
++}
++
++export function initLinuxReleaseNotifications(context: IExtensionContext, installed: string): void {
++  // This recipe is selected for collection compatibility. Keep upgrades manual
++  // instead of offering the current mainline release when the renderer starts.
++  context.api.events.on("check-linux-updates", () => {
++    context.api.sendNotification({
++      id: CHECK_NOTIFICATION,
++      type: "info",
++      message: "This build stays on Vortex {{version}} for collection compatibility. Check GitHub Releases for matching builds.",
++      replace: { version: installed.replace(/-[0-9]+$/, "") },
++      actions: [{ title: "View releases", action: () => { void opn(LINUX_RELEASES_URL); } }],
++    });
++  });
++}

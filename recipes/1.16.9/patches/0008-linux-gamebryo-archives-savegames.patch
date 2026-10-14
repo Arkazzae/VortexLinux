@@ -1,0 +1,2940 @@
+diff --git a/extensions/gamebryo-ba2-support/package.json b/extensions/gamebryo-ba2-support/package.json
+index f7ad5c3..efa111f 100644
+--- a/extensions/gamebryo-ba2-support/package.json
++++ b/extensions/gamebryo-ba2-support/package.json
+@@ -7,8 +7,7 @@
+     "tsc": "tsc -p .",
+     "webpack": "node ./node_modules/webpack/bin/webpack --config webpack.config.js --progress --profile --color",
+     "clear": "rm-local-modules",
+-    "copy_ba2tk": "copyfiles -f ./node_modules/ba2tk/build/Release/ba2tk.node ./dist",
+-    "build": "npm run tsc && npm run webpack && npm run copy_ba2tk && extractInfo",
++    "build": "npm run webpack && extractInfo",
+     "installDev": "copyfiles -u 1 dist/**/* ../../out/bundledPlugins/gamebryo-ba2-support",
+     "buildDev": "npm run build && npm run installDev"
+   },
+@@ -17,7 +16,6 @@
+   "devDependencies": {
+     "@types/i18next": "^8.4.0",
+     "@types/rimraf": "^0.0.28",
+-    "ba2tk": "Nexus-Mods/node-ba2tk",
+     "bluebird": "^3.5.1",
+     "copyfiles": "^2.1.1",
+     "rimraf": "^2.6.1",
+@@ -25,6 +23,10 @@
+     "ts-loader": "^9.4.2",
+     "vortex-api": "Nexus-Mods/vortex-api",
+     "webpack": "^5.75.0",
+-    "webpack-cli": "^5.0.1"
++    "webpack-cli": "^5.0.1",
++    "@types/node": "22.18.8"
++  },
++  "resolutions": {
++    "@types/node": "22.18.8"
+   }
+ }
+diff --git a/extensions/gamebryo-ba2-support/src/index.ts b/extensions/gamebryo-ba2-support/src/index.ts
+index aa95e40..8792201 100644
+--- a/extensions/gamebryo-ba2-support/src/index.ts
++++ b/extensions/gamebryo-ba2-support/src/index.ts
+@@ -1,8 +1,8 @@
+-import loadBA2, {BA2Archive} from 'ba2tk';
++import { loadBA2, BA2Archive } from './ba2';
+ import Promise from 'bluebird';
+ import { types, util } from 'vortex-api';
+ 
+-const loadBA2async = Promise.promisify(loadBA2);
++const loadBA2async = (fileName: string) => Promise.resolve(loadBA2(fileName));
+ 
+ class BA2Handler implements types.IArchiveHandler {
+   private mBA2: BA2Archive;
+@@ -16,7 +16,7 @@ class BA2Handler implements types.IArchiveHandler {
+       // being a windows-only game (on PC) I think it's safe to say BA2s
+       // should be treated as case-insensitive
+       let query = archPath.toLowerCase().replace(/\//g, '\\');
+-      if (!query.endsWith('\\')) {
++      if (query.length > 0 && !query.endsWith('\\')) {
+         query = query + '\\';
+       }
+       const files: string[] = [];
+@@ -42,14 +42,7 @@ class BA2Handler implements types.IArchiveHandler {
+   }
+ 
+   public extractAll(outputPath: string): Promise<void> {
+-    return new Promise<void>((resolve, reject) => {
+-      this.mBA2.extractAll(outputPath, (readErr) => {
+-        if (readErr !== null) {
+-          reject(readErr);
+-        }
+-        resolve();
+-      });
+-    });
++    return Promise.resolve(this.mBA2.extractAll(outputPath));
+   }
+ 
+   public readFile(filePath: string): NodeJS.ReadableStream {
+diff --git a/extensions/gamebryo-ba2-support/tsconfig.json b/extensions/gamebryo-ba2-support/tsconfig.json
+index dcda581..9896556 100644
+--- a/extensions/gamebryo-ba2-support/tsconfig.json
++++ b/extensions/gamebryo-ba2-support/tsconfig.json
+@@ -1,6 +1,6 @@
+ {
+   "compilerOptions": {
+-    "target": "es6",
++    "target": "ES2020",
+     "module": "commonjs",
+     "moduleResolution": "node",
+     "noImplicitAny": false,
+@@ -13,9 +13,9 @@
+     "skipLibCheck": true,
+     "esModuleInterop": true
+   },
+-    "exclude": [
+-      "node_modules"
+-    ],
++  "exclude": [
++    "node_modules"
++  ],
+   "files": [
+     "src/index.ts"
+   ]
+diff --git a/extensions/gamebryo-ba2-support/yarn.lock b/extensions/gamebryo-ba2-support/yarn.lock
+index e565965..3e4d48d 100644
+--- a/extensions/gamebryo-ba2-support/yarn.lock
++++ b/extensions/gamebryo-ba2-support/yarn.lock
+@@ -109,10 +109,12 @@
+   resolved "https://registry.yarnpkg.com/@types/json-schema/-/json-schema-7.0.11.tgz#d421b6c527a3037f7c84433fd2c4229e016863d3"
+   integrity sha512-wOuvG1SN4Us4rez+tylwwwCV1psiNVOkJeM3AUWUNWg/jDQY2+HE/444y5gc+jBmRqASOm2Oeh5c1axHobwRKQ==
+ 
+-"@types/node@*":
+-  version "18.16.0"
+-  resolved "https://registry.yarnpkg.com/@types/node/-/node-18.16.0.tgz#4668bc392bb6938637b47e98b1f2ed5426f33316"
+-  integrity sha512-BsAaKhB+7X+H4GnSjGhJG9Qi8Tw+inU9nJDwmD5CgOmBLEI6ArdhikpLX7DjbjDRDTbqZzU2LSQNZg8WGPiSZQ==
++"@types/node@*", "@types/node@22.18.8":
++  version "22.18.8"
++  resolved "https://registry.yarnpkg.com/@types/node/-/node-22.18.8.tgz#738d9dafa38f6e0c467687c158f8e1ca2d7d8eaa"
++  integrity sha512-pAZSHMiagDR7cARo/cch1f3rXy0AEXwsVsVH09FcyeJVAzCnGgmYis7P3JidtTUjyadhTeSo8TgRPswstghDaw==
++  dependencies:
++    undici-types "~6.21.0"
+ 
+ "@types/rimraf@^0.0.28":
+   version "0.0.28"
+@@ -2191,3 +2193,8 @@ yargs@^16.1.0:
+     string-width "^4.2.0"
+     y18n "^5.0.5"
+     yargs-parser "^20.2.2"
++
++undici-types@~6.21.0:
++  version "6.21.0"
++  resolved "https://registry.yarnpkg.com/undici-types/-/undici-types-6.21.0.tgz#691d00af3909be93a7faa13be61b3a5b50ef12cb"
++  integrity sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==
+diff --git a/extensions/gamebryo-bsa-support/package.json b/extensions/gamebryo-bsa-support/package.json
+index b692289..2487d2c 100644
+--- a/extensions/gamebryo-bsa-support/package.json
++++ b/extensions/gamebryo-bsa-support/package.json
+@@ -8,23 +8,25 @@
+   },
+   "scripts": {
+     "webpack": "webpack --config webpack.config.js --mode development --progress --profile --color",
+-    "copy_bsatk": "copyfiles -f ./node_modules/bsatk/build/Release/bsatk.node ./dist",
+-    "build": "npm run webpack && npm run copy_bsatk && extractInfo"
++    "build": "npm run webpack && extractInfo"
+   },
+   "author": "Black Tree Gaming Ltd.",
+   "license": "GPL-3.0",
+   "devDependencies": {
+     "@types/i18next": "^13.0.0",
+-    "@types/node": "^22.14.0",
++    "@types/node": "22.18.8",
+     "@types/rimraf": "^3.0.2",
+     "bluebird": "^3.7.2",
+-    "bsatk": "Nexus-Mods/node-bsatk",
+     "copyfiles": "^2.4.1",
+     "rimraf": "^3.0.2",
+     "rm-local-modules": "^0.0.2",
+     "ts-loader": "^9.5.1",
+     "vortex-api": "Nexus-Mods/vortex-api",
+     "webpack": "^5.94.0",
+-    "webpack-cli": "^5.1.4"
++    "webpack-cli": "^5.1.4",
++    "lz4js": "0.2.0"
++  },
++  "resolutions": {
++    "@types/node": "22.18.8"
+   }
+ }
+diff --git a/extensions/gamebryo-bsa-support/src/index.ts b/extensions/gamebryo-bsa-support/src/index.ts
+index 5f55e90..3fc2f5f 100644
+--- a/extensions/gamebryo-bsa-support/src/index.ts
++++ b/extensions/gamebryo-bsa-support/src/index.ts
+@@ -1,184 +1,161 @@
+-import PromiseBB from 'bluebird';
+-import {BSAFile, BSAFolder, BSArchive, createBSA, loadBSA} from 'bsatk';
+-import * as path from 'path';
+-import { PassThrough } from 'stream';
+-import {dir as tmpDir} from 'tmp';
+-import { fs, types, util } from 'vortex-api';
++import * as path from "path";
++import { PassThrough } from "stream";
++
++import { fs, types, util } from "vortex-api";
++import PromiseBB from "bluebird";
++
++import { BSAArchive, BSAWriter, createBSA, loadBSA } from "./bsa";
++
++// --- BSA Handler ---
+ 
+ class BSAHandler implements types.IArchiveHandler {
+-  private mBSA: BSArchive;
+-  constructor(bsa: BSArchive) {
+-    this.mBSA = bsa;
++  private mBSA: BSAArchive;
++  private mWriter: BSAWriter | undefined;
++
++  constructor(bsa: BSAArchive | BSAWriter) {
++    if (bsa instanceof BSAArchive) {
++      this.mBSA = bsa;
++    } else {
++      this.mWriter = bsa;
++      // Create a dummy archive for writer mode
++      this.mBSA = undefined as any;
++    }
+   }
+ 
+   public readDir(archPath: string): PromiseBB<string[]> {
+-    return PromiseBB.resolve(this.readDirImpl(this.mBSA.root, archPath.split(path.sep), 0));
++    if (this.mBSA === undefined) {
++      return PromiseBB.resolve([]);
++    }
++    return PromiseBB.resolve(this.readDirImpl(archPath.split(/[\\/]/)));
+   }
+ 
+   public extractFile(filePath: string, outputPath: string): PromiseBB<void> {
+-    const file: BSAFile = this.getFileImpl(this.mBSA.root, filePath.split(path.sep), 0);
+-    if (file === undefined) {
+-      return PromiseBB.reject(new Error('file not found ' + filePath));
++    if (this.mBSA === undefined) {
++      return PromiseBB.reject(new Error("Archive opened in create mode"));
+     }
+-
+-    return new PromiseBB<void>((resolve, reject) => {
+-      this.mBSA.extractFile(file, outputPath, (readErr) => {
+-        if (readErr !== null) {
+-          reject(readErr);
+-        }
+-        resolve();
+-      });
+-    });
++    const file = this.mBSA.fileList.find(
++      (f) => f.fullPath.toLowerCase() === filePath.toLowerCase().replace(/\//g, "\\"),
++    );
++    if (!file) {
++      return PromiseBB.reject(new Error("file not found " + filePath));
++    }
++    return PromiseBB.resolve(this.mBSA.extractFile(file, outputPath));
+   }
+ 
+   public extractAll(outputPath: string): PromiseBB<void> {
+-    return new PromiseBB<void>((resolve, reject) => {
+-      this.mBSA.extractAll(outputPath, (readErr) => {
+-        if (readErr !== null) {
+-          reject(readErr);
+-        }
+-        resolve();
+-      });
+-    });
++    if (this.mBSA === undefined) {
++      return PromiseBB.reject(new Error("Archive opened in create mode"));
++    }
++    return PromiseBB.resolve(this.mBSA.extractAll(outputPath));
+   }
+ 
+   public readFile(filePath: string): NodeJS.ReadableStream {
+-    // using a pass-through stream because reading the file from bsa
+-    // is itself an asynchronous operation. Of course we could have implemented
+-    // readFile to return a Promise<ReadableStream> but combining two async mechanisms
+-    // this way felt like overkill.
+     const pass = new PassThrough();
+ 
+-    const file: BSAFile = this.getFileImpl(this.mBSA.root, filePath.split(path.sep), 0);
+-    if (file === undefined) {
+-      pass.emit('error', new Error('file not found ' + filePath));
++    if (this.mBSA === undefined) {
++      pass.emit("error", new Error("Archive opened in create mode"));
++      return pass;
++    }
++
++    const file = this.mBSA.fileList.find(
++      (f) => f.fullPath.toLowerCase() === filePath.toLowerCase().replace(/\//g, "\\"),
++    );
++    if (!file) {
++      pass.emit("error", new Error("file not found " + filePath));
+       return pass;
+     }
+ 
+-    tmpDir((tmpErr: any, tmpPath: string, cleanup: () => void) => {
++    const tmpDir = require("tmp").dir as (cb: (err: any, name: string) => void) => void;
++    tmpDir((tmpErr: any, tmpPath: string) => {
+       if (tmpErr !== null) {
+-        return pass.emit('error', tmpErr);
++        return pass.emit("error", tmpErr);
+       }
+-      this.mBSA.extractFile(file, tmpPath, (readErr) => {
+-        if (readErr !== null) {
+-          return pass.emit('error', readErr);
+-        }
+-
+-        const fileStream = fs.createReadStream(path.join(tmpPath, path.basename(filePath)));
+-        fileStream.on('data', (data) => pass.write(data));
+-        fileStream.on('end', () => {
+-          pass.end();
+-          fs.removeAsync(tmpPath). catch(() => null);
+-        });
+-        fileStream.on('error', (err) => pass.emit('error', err));
+-        fileStream.on('readable', () => pass.emit('readable'));
+-      });
++      this.mBSA
++        .extractFile(file, tmpPath)
++        .then(() => {
++          const fileStream = fs.createReadStream(path.join(tmpPath, path.win32.basename(filePath)));
++          fileStream.on("data", (data: Buffer) => pass.write(data));
++          fileStream.on("end", () => {
++            pass.end();
++            fs.removeAsync(tmpPath).catch(() => null);
++          });
++          fileStream.on("error", (err: Error) => pass.emit("error", err));
++          fileStream.on("readable", () => pass.emit("readable"));
++        })
++        .catch((err: Error) => pass.emit("error", err));
+     });
+ 
+     return pass;
+   }
+ 
+   public addFile(filePath: string, sourcePath: string): PromiseBB<void> {
+-    const segments = filePath.split(path.sep);
+-    let current = this.mBSA.root;
+-    segments.forEach((segment, idx) => {
+-      if (idx === segments.length - 1) {
+-        current.addFile(this.mBSA.createFile(segment, sourcePath, false));
+-      } else {
+-        current = this.getSubfolder(current, segment);
+-      }
+-    });
++    if (this.mWriter === undefined) {
++      return PromiseBB.reject(new Error("Archive not opened in create mode"));
++    }
++    this.mWriter.addFile(filePath.replace(/\//g, "\\"), sourcePath);
+     return PromiseBB.resolve();
+   }
+ 
+   public write(): PromiseBB<void> {
+-    this.mBSA.write();
+-    return PromiseBB.resolve();
++    if (this.mWriter === undefined) {
++      return PromiseBB.reject(new Error("Archive not opened in create mode"));
++    }
++    return PromiseBB.resolve(this.mWriter.write());
+   }
+ 
+   public closeArchive(): PromiseBB<void> {
+-    this.mBSA.closeArchive();
+     return PromiseBB.resolve();
+   }
+ 
+-  private getSubfolder(base: BSAFolder, name: string): BSAFolder {
+-    for (let i = 0; i < base.numSubFolders; ++i) {
+-      if (base.getSubFolder(i).name.toLowerCase() === name.toLowerCase()) {
+-        return base.getSubFolder(i);
+-      }
+-    }
+-    return base.addFolder(name);
+-  }
+-
+-  private getFileImpl(folder: BSAFolder, filePath: string[], offset: number): BSAFile {
+-    if (offset === filePath.length - 1) {
+-      return this.getFiles(folder).find(file => file.name === filePath[offset]);
++  private readDirImpl(archPath: string[]): string[] {
++    let query = archPath.join("\\").toLowerCase();
++    if (query && !query.endsWith("\\")) {
++      query += "\\";
+     }
+ 
+-    const res = this.findSubFolders(folder, filePath[offset]).map(
+-      (subFolder: BSAFolder) => this.getFileImpl(subFolder, filePath, offset + 1));
+-    return res.find(item => item !== undefined);
+-  }
++    const files: string[] = [];
++    const subDirs = new Set<string>();
+ 
+-  private readDirImpl(folder: BSAFolder, archPath: string[], offset: number): string[] {
+-    if (offset === archPath.length) {
+-      return this.getFileAndFolderNames(folder);
+-    }
++    for (const f of this.mBSA.fileList) {
++      const fp = f.fullPath.toLowerCase();
++      if (query && !fp.startsWith(query)) continue;
+ 
+-    const res = this.findSubFolders(folder, archPath[offset]).map(
+-      (subFolder: BSAFolder) => this.readDirImpl(subFolder, archPath, offset + 1));
+-    return [].concat.apply([], res);
+-  }
+-
+-  // find subfolders with the specified name (bsa seems to support multiple
+-  // occurences of the same folder name)
+-  private findSubFolders(folder: BSAFolder, name: string): BSAFolder[] {
+-    const res: BSAFolder[] = [];
+-    for (let idx = 0; idx < folder.numSubFolders; ++idx) {
+-      const iter = folder.getSubFolder(idx);
+-      if (iter.name === name) {
+-        res.push(iter);
++      const rest = query ? fp.substring(query.length) : fp;
++      const sep = rest.indexOf("\\");
++      if (sep === -1) {
++        files.push(f.name);
++      } else {
++        subDirs.add(rest.substring(0, sep));
+       }
+     }
+-    return res;
+-  }
+ 
+-  private getFileAndFolderNames(folder: BSAFolder): string[] {
+-    return [].concat(
+-      this.getFolders(folder).map(item => item.name),
+-      this.getFiles(folder).map(item => item.name),
+-    );
+-  }
+-
+-  private getFolders(parent: BSAFolder): BSAFolder[] {
+-    const res: BSAFolder[] = [];
+-    for (let idx = 0; idx < parent.numSubFolders; ++idx) {
+-      res.push(parent.getSubFolder(idx));
+-    }
+-    return res;
+-  }
+-
+-  private getFiles(parent: BSAFolder): BSAFile[] {
+-    const res: BSAFile[] = [];
+-    for (let idx = 0; idx < parent.numFiles; ++idx) {
+-      res.push(parent.getFile(idx));
+-    }
+-    return res;
++    return [...Array.from(subDirs), ...files];
+   }
+ }
+ 
+-function createBSAHandler(fileName: string,
+-                          options: types.IArchiveOptions)
+-                          : PromiseBB<types.IArchiveHandler> {
+-  return PromiseBB.resolve((async () => (options.create)
+-    ? util.toPromise(cb => createBSA(fileName, cb))
+-    : util.toPromise(cb => loadBSA(fileName, options.verify === true, cb)))
+-    ())
+-    .then((arc: BSArchive) => Promise.resolve(new BSAHandler(arc)));
++// --- Handler Factories ---
++
++function createBSAHandler(
++  fileName: string,
++  options: types.IArchiveOptions,
++): PromiseBB<types.IArchiveHandler> {
++  if (options.create) {
++    const version =
++      options.version === "0x67" || options.version === "103"
++        ? 0x67
++        : options.version === "0x69" || options.version === "105"
++          ? 0x69
++          : 0x68;
++    const writer = new BSAWriter(fileName, version as 0x67 | 0x68 | 0x69);
++    return PromiseBB.resolve(new BSAHandler(writer));
++  }
++  return PromiseBB.resolve(
++    loadBSA(fileName, options.verify === true).then((archive) => new BSAHandler(archive)),
++  );
+ }
+ 
+ function init(context: types.IExtensionContext) {
+-  context.registerArchiveType('bsa', createBSAHandler);
++  context.registerArchiveType("bsa", createBSAHandler);
+   return true;
+ }
+ 
+diff --git a/extensions/gamebryo-bsa-support/tsconfig.json b/extensions/gamebryo-bsa-support/tsconfig.json
+index dcda581..9896556 100644
+--- a/extensions/gamebryo-bsa-support/tsconfig.json
++++ b/extensions/gamebryo-bsa-support/tsconfig.json
+@@ -1,6 +1,6 @@
+ {
+   "compilerOptions": {
+-    "target": "es6",
++    "target": "ES2020",
+     "module": "commonjs",
+     "moduleResolution": "node",
+     "noImplicitAny": false,
+@@ -13,9 +13,9 @@
+     "skipLibCheck": true,
+     "esModuleInterop": true
+   },
+-    "exclude": [
+-      "node_modules"
+-    ],
++  "exclude": [
++    "node_modules"
++  ],
+   "files": [
+     "src/index.ts"
+   ]
+diff --git a/extensions/gamebryo-bsa-support/yarn.lock b/extensions/gamebryo-bsa-support/yarn.lock
+index 5a86b2c..e19ed0d 100644
+--- a/extensions/gamebryo-bsa-support/yarn.lock
++++ b/extensions/gamebryo-bsa-support/yarn.lock
+@@ -143,10 +143,12 @@
+   resolved "https://registry.yarnpkg.com/@types/json-schema/-/json-schema-7.0.15.tgz#596a1747233694d50f6ad8a7869fcb6f56cf5841"
+   integrity sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==
+ 
+-"@types/node@*":
+-  version "18.16.0"
+-  resolved "https://registry.yarnpkg.com/@types/node/-/node-18.16.0.tgz#4668bc392bb6938637b47e98b1f2ed5426f33316"
+-  integrity sha512-BsAaKhB+7X+H4GnSjGhJG9Qi8Tw+inU9nJDwmD5CgOmBLEI6ArdhikpLX7DjbjDRDTbqZzU2LSQNZg8WGPiSZQ==
++"@types/node@*", "@types/node@22.18.8":
++  version "22.18.8"
++  resolved "https://registry.yarnpkg.com/@types/node/-/node-22.18.8.tgz#738d9dafa38f6e0c467687c158f8e1ca2d7d8eaa"
++  integrity sha512-pAZSHMiagDR7cARo/cch1f3rXy0AEXwsVsVH09FcyeJVAzCnGgmYis7P3JidtTUjyadhTeSo8TgRPswstghDaw==
++  dependencies:
++    undici-types "~6.21.0"
+ 
+ "@types/node@^22.14.0":
+   version "22.18.4"
+@@ -2228,3 +2230,8 @@ yargs@^16.1.0:
+     string-width "^4.2.0"
+     y18n "^5.0.5"
+     yargs-parser "^20.2.2"
++
++lz4js@0.2.0:
++  version "0.2.0"
++  resolved "https://registry.npmjs.org/lz4js/-/lz4js-0.2.0.tgz"
++  integrity sha512-gY2Ia9Lm7Ep8qMiuGRhvUq0Q7qUereeldZPP1PMEJxPtEWHJLqw9pgX68oHajBH0nzJK4MaZEA/YNV3jT8u8Bg==
+diff --git a/extensions/gamebryo-savegame-management/package.json b/extensions/gamebryo-savegame-management/package.json
+index 7d43b38..4b6b658 100644
+--- a/extensions/gamebryo-savegame-management/package.json
++++ b/extensions/gamebryo-savegame-management/package.json
+@@ -7,7 +7,7 @@
+   "scripts": {
+     "webpack": "node ./node_modules/webpack/bin/webpack --config webpack.config.js --progress --profile --color",
+     "clear": "rm-local-modules",
+-    "copyfiles": "copyfiles -f ./node_modules/gamebryo-savegame/build/Release/GamebryoSave.node ./dist && copyfiles -f ./node_modules/gamebryo-savegame/dist/liblz4.dll ./dist && copyfiles -f ./node_modules/gamebryo-savegame/dist/zlib.dll ./dist && copyfiles -f src/stylesheets/savegame_management.scss dist",
++    "copyfiles": "copyfiles -f src/stylesheets/savegame_management.scss dist",
+     "build": "npm run webpack && npm run copyfiles && extractInfo",
+     "installDev": "copyfiles -u 1 dist/**/* ../../out/bundledPlugins/gamebryo-savegame-management",
+     "buildDev": "npm run build && npm run installDev"
+@@ -31,7 +31,6 @@
+     "babel-loader": "^8.0.6",
+     "bluebird": "^3.7.2",
+     "copyfiles": "^2.1.1",
+-    "gamebryo-savegame": "Nexus-Mods/node-gamebryo-savegames",
+     "i18next": "^15.0.9",
+     "immutability-helper": "^2.8.1",
+     "prop-types": "^15.7.2",
+@@ -46,10 +45,13 @@
+     "vortex-api": "Nexus-Mods/vortex-api",
+     "vortex-parse-ini": "Nexus-Mods/vortex-parse-ini",
+     "webpack": "^5.94.0",
+-    "webpack-cli": "^5.1.4"
++    "webpack-cli": "^5.1.4",
++    "lz4js": "0.2.0",
++    "@types/node": "22.18.8"
+   },
+   "resolutions": {
+     "@types/react": "16.14.66",
+-    "@types/react-dom": "16.9.25"
++    "@types/react-dom": "16.9.25",
++    "@types/node": "22.18.8"
+   }
+ }
+diff --git a/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts b/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts
+index fe72c9d..703a42a 100644
+--- a/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts
++++ b/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts
+@@ -1,12 +1,11 @@
+-import { ISavegame } from '../types/ISavegame';
++import * as path from "path";
+ 
+-import { CORRUPTED_NAME, MAX_SAVEGAMES } from '../constants';
++import Promise from "bluebird";
++import turbowalk, { IEntry } from "turbowalk";
+ 
+-import Promise from 'bluebird';
+-import * as savegameLib from 'gamebryo-savegame';
+-import * as path from 'path';
+-import turbowalk, { IEntry } from 'turbowalk';
+-import { fs } from 'vortex-api';
++import { CORRUPTED_NAME, MAX_SAVEGAMES } from "../constants";
++import { parseSaveGame } from "../savegame/GamebryoSaveGame";
++import { ISavegame } from "../types/ISavegame";
+ 
+ // TODO essentially disables cache clearing since we can as many screenshots as the max of
+ // savegames we will display.
+@@ -17,9 +16,9 @@ const MAX_CACHE_SIZE = MIN_CACHE_SIZE + 20;
+ 
+ const screenshotCache: {
+   [id: string]: {
+-    data: Uint8ClampedArray,
+-    lastAccess: number,
+-  },
++    data: Uint8ClampedArray;
++    lastAccess: number;
++  };
+ } = {};
+ 
+ function maintainCache() {
+@@ -28,7 +27,7 @@ function maintainCache() {
+     ids
+       .sort((lhs, rhs) => screenshotCache[lhs].lastAccess - screenshotCache[rhs].lastAccess)
+       .slice(0, ids.length - MIN_CACHE_SIZE)
+-      .forEach(id => delete screenshotCache[id]);
++      .forEach((id) => delete screenshotCache[id]);
+   }
+ }
+ 
+@@ -38,8 +37,10 @@ export interface IRefreshResult {
+ }
+ 
+ function isSavegame(input: IEntry) {
+-  return !input.isDirectory
+-    && ['.ess', '.fos'].indexOf(path.extname(input.filePath).toLowerCase()) !== -1;
++  return (
++    !input.isDirectory &&
++    [".ess", ".fos"].indexOf(path.extname(input.filePath).toLowerCase()) !== -1
++  );
+ }
+ 
+ /**
+@@ -48,29 +49,36 @@ function isSavegame(input: IEntry) {
+  * @param {string} savesPath
+  * @param {(save: ISavegame) => void} onAddSavegame
+  */
+-export function refreshSavegames(savesPath: string,
+-                                 onAddSavegame: (save: ISavegame) => void,
+-                                 allowTruncate: boolean): Promise<IRefreshResult> {
++export function refreshSavegames(
++  savesPath: string,
++  onAddSavegame: (save: ISavegame) => void,
++  allowTruncate: boolean,
++): Promise<IRefreshResult> {
+   const failedReads: string[] = [];
+   let truncated = false;
+   let saves: IEntry[] = [];
+ 
+-  return turbowalk(savesPath, entries => {
+-    saves = saves.concat(entries.filter(file => isSavegame(file)));
+-  }, { recurse: false })
+-    .catch(err => (['ENOENT', 'ENOTFOUND'].indexOf(err.code) !== -1)
+-      ? Promise.resolve()
+-      : Promise.reject(err))
++  return turbowalk(
++    savesPath,
++    (entries) => {
++      saves = saves.concat(entries.filter((file) => isSavegame(file)));
++    },
++    { recurse: false },
++  )
++    .catch((err) =>
++      ["ENOENT", "ENOTFOUND"].indexOf(err.code) !== -1 ? Promise.resolve() : Promise.reject(err),
++    )
+     .then(() => {
+       saves = saves.sort((lhs, rhs) => rhs.mtime - lhs.mtime);
+-      if (allowTruncate && (saves.length > MAX_SAVEGAMES)) {
++      if (allowTruncate && saves.length > MAX_SAVEGAMES) {
+         truncated = true;
+         saves = saves.slice(0, MAX_SAVEGAMES);
+       }
+-      return Promise.map(saves, save => loadSaveGame(save.filePath, save.size, onAddSavegame, false)
+-        .catch(err => {
++      return Promise.map(saves, (save) =>
++        loadSaveGame(save.filePath, save.size, onAddSavegame, false).catch((err) => {
+           failedReads.push(`[b]${path.basename(save.filePath)}[/b] - ${err.message}`);
+-        }));
++        }),
++      );
+     })
+     .then(() => ({ failedReads, truncated }));
+ }
+@@ -89,79 +97,72 @@ export function getScreenshot(id: string): Uint8ClampedArray {
+   }
+ }
+ 
+-export function loadSaveGame(filePath: string, fileSize: number,
+-                             onAddSavegame: (save: ISavegame) => void,
+-                             full: boolean, tries: number = 2): Promise<void> {
++export function loadSaveGame(
++  filePath: string,
++  fileSize: number,
++  onAddSavegame: (save: ISavegame) => void,
++  full: boolean,
++  tries: number = 2,
++): Promise<void> {
+   return new Promise<void>((resolve, reject) => {
++    const id = path.basename(filePath);
+     try {
+-      savegameLib.create(filePath, !full, (err, sg) => {
+-        const id = path.basename(filePath);
+-        if (err !== null) {
+-          onAddSavegame({
+-            id,
+-            filePath,
+-            fileSize,
+-            attributes: {
+-              id: 0,
+-              name: CORRUPTED_NAME,
+-              location: 'N/A',
+-              playTime: 'N/A',
+-              level: 0,
+-              filename: id,
+-              plugins: [],
+-              loadedTime: Date.now(),
+-              corrupted: true,
+-            },
+-          });
+-          return reject(err);
+-        }
+-        if (full) {
+-          screenshotCache[id] = {
+-            lastAccess: Date.now(),
+-            data: new Uint8ClampedArray(sg.screenshot),
+-          };
+-        }
+-        const save: ISavegame = {
+-          id,
+-          filePath,
+-          fileSize,
+-          attributes: {
+-            id: sg.saveNumber,
+-            name: sg.characterName,
+-            level: sg.characterLevel,
+-            filename: id,
+-            location: sg.location,
+-            plugins: sg.plugins,
+-            screenshot: full ? {
+-              width: sg.screenshotSize.width,
+-              height: sg.screenshotSize.height,
+-            } : undefined,
+-            loadedTime: Date.now(),
+-            creationtime: timestampFormat(sg.creationTime),
+-            playTime: sg.playTime,
+-          },
++      const sg = parseSaveGame(filePath, !full);
++      if (full) {
++        screenshotCache[id] = {
++          lastAccess: Date.now(),
++          data: new Uint8ClampedArray(sg.screenshot),
+         };
++      }
++      const save: ISavegame = {
++        id,
++        filePath,
++        fileSize,
++        attributes: {
++          id: sg.saveNumber,
++          name: sg.characterName,
++          level: sg.characterLevel,
++          filename: id,
++          location: sg.location,
++          plugins: sg.plugins,
++          screenshot: full
++            ? {
++                width: sg.screenshotSize.width,
++                height: sg.screenshotSize.height,
++              }
++            : undefined,
++          loadedTime: Date.now(),
++          creationtime: timestampFormat(sg.creationTime),
++          playTime: sg.playTime,
++        },
++      };
+ 
+-        onAddSavegame(save);
+-        resolve();
+-      });
++      onAddSavegame(save);
++      resolve();
+     } catch (err) {
+-      if (err.message.startsWith('failed to open')) {
+-        // error messages from the lib aren't very enlightening unfortunately.
+-        // it could be a temporary problem (i.e. the game currently writing the
+-        // save and thus it would be locked so try again).
+-        // this opens the file with a js function, if that fails too we get a
+-        // better error message we may be able to handle
+-        fs.openAsync(filePath, 'r')
+-          .then(() => reject(err))
+-          .catch(fserr => reject(fserr));
+-      } else {
+-        reject(err);
+-      }
++      onAddSavegame({
++        id,
++        filePath,
++        fileSize,
++        attributes: {
++          id: 0,
++          name: CORRUPTED_NAME,
++          location: "N/A",
++          playTime: "N/A",
++          level: 0,
++          filename: id,
++          plugins: [],
++          loadedTime: Date.now(),
++          corrupted: true,
++        },
++      });
++      reject(err);
+     }
+   })
+     .then(() => maintainCache())
+-    .catch(err => (tries > 0)
+-      ? loadSaveGame(filePath, fileSize, onAddSavegame, full, tries - 1)
+-      : Promise.reject(err));
++    .catch((err) =>
++      tries > 0
++        ? loadSaveGame(filePath, fileSize, onAddSavegame, full, tries - 1)
++        : Promise.reject(err),
++    );
+ }
+diff --git a/extensions/gamebryo-savegame-management/src/views/ScreenshotCanvas.tsx b/extensions/gamebryo-savegame-management/src/views/ScreenshotCanvas.tsx
+index 03f5c1c..d5a429e 100644
+--- a/extensions/gamebryo-savegame-management/src/views/ScreenshotCanvas.tsx
++++ b/extensions/gamebryo-savegame-management/src/views/ScreenshotCanvas.tsx
+@@ -1,6 +1,6 @@
+ import { ISavegame } from '../types/ISavegame';
+ 
+-import { Dimensions } from 'gamebryo-savegame';
++import { Dimensions } from '../savegame/GamebryoSaveGame';
+ import * as React from 'react';
+ import { log } from 'vortex-api';
+ import { getScreenshot } from '../util/refreshSavegames';
+diff --git a/extensions/gamebryo-savegame-management/tsconfig.json b/extensions/gamebryo-savegame-management/tsconfig.json
+index 7307975..45f0d02 100644
+--- a/extensions/gamebryo-savegame-management/tsconfig.json
++++ b/extensions/gamebryo-savegame-management/tsconfig.json
+@@ -1,6 +1,6 @@
+ {
+   "compilerOptions": {
+-    "target": "es6",
++    "target": "ES2020",
+     "module": "commonjs",
+     "moduleResolution": "node",
+     "noImplicitAny": false,
+@@ -13,9 +13,9 @@
+     "skipLibCheck": true,
+     "esModuleInterop": true
+   },
+-    "exclude": [
+-      "node_modules"
+-    ],
++  "exclude": [
++    "node_modules"
++  ],
+   "files": [
+     "typings.custom/index.d.ts",
+     "src/index.ts"
+diff --git a/extensions/gamebryo-savegame-management/webpack.config.js b/extensions/gamebryo-savegame-management/webpack.config.js
+index d293cef..c94494c 100644
+--- a/extensions/gamebryo-savegame-management/webpack.config.js
++++ b/extensions/gamebryo-savegame-management/webpack.config.js
+@@ -2,6 +2,6 @@ let webpack = require('vortex-api/bin/webpack').default;
+ 
+ const res = webpack('gamebryo-savegame-management', __dirname, 5);
+ 
+-res.externals['./GamebryoSave'] = './GamebryoSave';
++
+ 
+ module.exports = res;
+diff --git a/extensions/gamebryo-savegame-management/yarn.lock b/extensions/gamebryo-savegame-management/yarn.lock
+index 06c04ef..6eb12e3 100644
+--- a/extensions/gamebryo-savegame-management/yarn.lock
++++ b/extensions/gamebryo-savegame-management/yarn.lock
+@@ -143,10 +143,12 @@
+   resolved "https://registry.yarnpkg.com/@types/json-schema/-/json-schema-7.0.15.tgz#596a1747233694d50f6ad8a7869fcb6f56cf5841"
+   integrity sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==
+ 
+-"@types/node@*":
+-  version "13.5.0"
+-  resolved "https://registry.yarnpkg.com/@types/node/-/node-13.5.0.tgz#4e498dbf355795a611a87ae5ef811a8660d42662"
+-  integrity sha512-Onhn+z72D2O2Pb2ql2xukJ55rglumsVo1H6Fmyi8mlU9SvKdBk/pUSUAiBY/d9bAOF7VVWajX3sths/+g6ZiAQ==
++"@types/node@*", "@types/node@22.18.8":
++  version "22.18.8"
++  resolved "https://registry.yarnpkg.com/@types/node/-/node-22.18.8.tgz#738d9dafa38f6e0c467687c158f8e1ca2d7d8eaa"
++  integrity sha512-pAZSHMiagDR7cARo/cch1f3rXy0AEXwsVsVH09FcyeJVAzCnGgmYis7P3JidtTUjyadhTeSo8TgRPswstghDaw==
++  dependencies:
++    undici-types "~6.21.0"
+ 
+ "@types/prop-types@*":
+   version "15.7.3"
+@@ -1416,6 +1418,11 @@ lru-queue@0.1:
+   dependencies:
+     es5-ext "~0.10.2"
+ 
++lz4js@0.2.0:
++  version "0.2.0"
++  resolved "https://registry.npmjs.org/lz4js/-/lz4js-0.2.0.tgz"
++  integrity sha512-gY2Ia9Lm7Ep8qMiuGRhvUq0Q7qUereeldZPP1PMEJxPtEWHJLqw9pgX68oHajBH0nzJK4MaZEA/YNV3jT8u8Bg==
++
+ make-dir@^3.0.2, make-dir@^3.1.0:
+   version "3.1.0"
+   resolved "https://registry.yarnpkg.com/make-dir/-/make-dir-3.1.0.tgz#415e967046b3a7f1d185277d84aa58203726a13f"
+@@ -2660,3 +2667,8 @@ yargs@^16.1.0:
+     string-width "^4.2.0"
+     y18n "^5.0.5"
+     yargs-parser "^20.2.2"
++
++undici-types@~6.21.0:
++  version "6.21.0"
++  resolved "https://registry.yarnpkg.com/undici-types/-/undici-types-6.21.0.tgz#691d00af3909be93a7faa13be61b3a5b50ef12cb"
++  integrity sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==
+diff --git a/extensions/gamebryo-ba2-support/src/archivePath.ts b/extensions/gamebryo-ba2-support/src/archivePath.ts
+new file mode 100644
+index 0000000..fb8dbc5
+--- /dev/null
++++ b/extensions/gamebryo-ba2-support/src/archivePath.ts
+@@ -0,0 +1,38 @@
++import * as path from "node:path";
++
++function unsafeArchivePath(archivePath: string): Error {
++  return new Error(`Unsafe archive path: ${archivePath}`);
++}
++
++/**
++ * Convert the Windows-style paths stored in BSA/BA2 archives to a native,
++ * relative output path without allowing an archive entry to escape its target.
++ */
++export function resolveArchiveOutputPath(outputPath: string, archivePath: string): string {
++  const portablePath = archivePath.replace(/\\/g, "/");
++  const segments = portablePath.split("/");
++  if (
++    portablePath.startsWith("/") ||
++    /^[A-Za-z]:/.test(portablePath) ||
++    segments.some(
++      (segment) =>
++        segment.length === 0 || segment === "." || segment === ".." || segment.includes("\0"),
++    )
++  ) {
++    throw unsafeArchivePath(archivePath);
++  }
++
++  const outputRoot = path.resolve(outputPath);
++  const resolvedPath = path.resolve(outputRoot, ...segments);
++  const relativePath = path.relative(outputRoot, resolvedPath);
++  if (
++    relativePath.length === 0 ||
++    relativePath === ".." ||
++    relativePath.startsWith(`..${path.sep}`) ||
++    path.isAbsolute(relativePath)
++  ) {
++    throw unsafeArchivePath(archivePath);
++  }
++
++  return resolvedPath;
++}
+diff --git a/extensions/gamebryo-ba2-support/src/ba2.ts b/extensions/gamebryo-ba2-support/src/ba2.ts
+new file mode 100644
+index 0000000..37fc946
+--- /dev/null
++++ b/extensions/gamebryo-ba2-support/src/ba2.ts
+@@ -0,0 +1,383 @@
++import { createHash } from "crypto";
++import * as fs from "fs";
++import * as path from "path";
++import { inflateSync } from "zlib";
++
++import { resolveArchiveOutputPath } from "./archivePath";
++
++const BA2_MAGIC = "BTDX";
++const HEADER_SIZE = 24;
++const GNRL_ENTRY_SIZE = 36;
++
++// --- Types ---
++
++interface BA2Header {
++  version: number;
++  type: "general" | "dx10";
++  fileCount: number;
++  nameTableOffset: number;
++}
++
++interface GnrlFileEntry {
++  nameHash: number;
++  ext: string;
++  dirHash: number;
++  flags: number;
++  offset: number;
++  packedLen: number;
++  unpackedLen: number;
++}
++
++interface DX10TextureChunk {
++  offset: number;
++  packedLen: number;
++  unpackedLen: number;
++  startMip: number;
++  endMip: number;
++}
++
++interface DX10TextureEntry {
++  nameHash: number;
++  ext: string;
++  dirHash: number;
++  numChunks: number;
++  chunkHdrLen: number;
++  height: number;
++  width: number;
++  numMips: number;
++  dxgiFormat: number;
++  chunks: DX10TextureChunk[];
++}
++
++// --- DDS header constants ---
++
++const DDS_MAGIC = 0x20534444; // "DDS "
++const DDS_HEADER_SIZE = 124;
++const DDS_PIXELFORMAT_SIZE = 32;
++const DDS_HEADER_FLAGS = 0x00000001 | 0x00000002 | 0x00000004 | 0x00020000; // CAPS|HEIGHT|WIDTH|LINEARSIZE
++const DDS_SURFACE_FLAGS = 0x00001000 | 0x00400000 | 0x00000008; // TEXTURE|COMPLEX|MIPMAP
++const DDPF_FOURCC = 0x04;
++const DDPF_RGB = 0x40;
++const DDPF_ALPHA = 0x01;
++
++interface DxgiFormatInfo {
++  fourCC?: string;
++  bpp: number;
++  flags?: number;
++  rMask?: number;
++  gMask?: number;
++  bMask?: number;
++  aMask?: number;
++}
++
++const DXGI_FORMAT_MAP: Map<number, DxgiFormatInfo> = new Map([
++  [70, { fourCC: "DXT1", bpp: 4 }], // BC1_UNORM
++  [71, { fourCC: "DXT3", bpp: 8 }], // BC2_UNORM
++  [72, { fourCC: "DXT5", bpp: 8 }], // BC3_UNORM
++  [77, { fourCC: "ATI2", bpp: 8 }], // BC5_UNORM
++  [
++    87,
++    {
++      bpp: 32,
++      flags: DDPF_RGB | DDPF_ALPHA,
++      rMask: 0x00ff0000,
++      gMask: 0x0000ff00,
++      bMask: 0x000000ff,
++      aMask: 0xff000000,
++    },
++  ], // B8G8R8A8_UNORM
++  [61, { bpp: 8, flags: DDPF_RGB, rMask: 0xff, gMask: 0, bMask: 0, aMask: 0 }], // R8_UNORM
++  [98, { fourCC: "DX10", bpp: 8 }], // BC7_UNORM
++]);
++
++// --- Public API ---
++
++export class BA2Archive {
++  public readonly type: "general" | "dx10";
++  public readonly version: number;
++  public readonly fileList: string[];
++
++  private filePath: string;
++  private header: BA2Header;
++  private gnrlEntries?: GnrlFileEntry[];
++  private dx10Entries?: DX10TextureEntry[];
++
++  constructor(
++    filePath: string,
++    header: BA2Header,
++    fileList: string[],
++    gnrlEntries?: GnrlFileEntry[],
++    dx10Entries?: DX10TextureEntry[],
++  ) {
++    this.filePath = filePath;
++    this.header = header;
++    this.type = header.type;
++    this.version = header.version;
++    this.fileList = fileList;
++    this.gnrlEntries = gnrlEntries;
++    this.dx10Entries = dx10Entries;
++  }
++
++  async extractAll(outputPath: string): Promise<void> {
++    const fd = await fs.promises.open(this.filePath, "r");
++    try {
++      if (this.type === "general") {
++        await this.extractAllGeneral(fd, outputPath);
++      } else {
++        await this.extractAllDX10(fd, outputPath);
++      }
++    } finally {
++      await fd.close();
++    }
++  }
++
++  private async extractAllGeneral(fd: fs.promises.FileHandle, outputPath: string): Promise<void> {
++    const entries = this.gnrlEntries!;
++
++    for (let i = 0; i < entries.length; i++) {
++      const entry = entries[i];
++      const name = this.fileList[i];
++      const outFile = resolveArchiveOutputPath(outputPath, name);
++
++      await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
++
++      const isCompressed = entry.packedLen !== 0 && entry.packedLen !== entry.unpackedLen;
++      const readLen = isCompressed ? entry.packedLen : entry.unpackedLen;
++
++      if (readLen === 0) {
++        // Empty file
++        await fs.promises.writeFile(outFile, Buffer.alloc(0));
++        continue;
++      }
++
++      const buf = Buffer.alloc(readLen);
++      await fd.read(buf, 0, readLen, entry.offset);
++
++      if (isCompressed) {
++        const decompressed = inflateSync(buf);
++        await fs.promises.writeFile(outFile, decompressed);
++      } else {
++        await fs.promises.writeFile(outFile, buf);
++      }
++    }
++  }
++
++  private async extractAllDX10(fd: fs.promises.FileHandle, outputPath: string): Promise<void> {
++    const entries = this.dx10Entries!;
++
++    for (let i = 0; i < entries.length; i++) {
++      const tex = entries[i];
++      const name = this.fileList[i];
++      const outFile = resolveArchiveOutputPath(outputPath, name);
++
++      await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
++
++      // Build DDS header
++      const ddsHeader = buildDDSHeader(tex);
++      const chunks: Buffer[] = [ddsHeader];
++
++      // Extract and decompress each chunk
++      for (const chunk of tex.chunks) {
++        const isCompressed = chunk.packedLen !== 0 && chunk.packedLen !== chunk.unpackedLen;
++        const readLen = isCompressed ? chunk.packedLen : chunk.unpackedLen;
++
++        const buf = Buffer.alloc(readLen);
++        await fd.read(buf, 0, readLen, chunk.offset);
++
++        if (isCompressed) {
++          chunks.push(inflateSync(buf));
++        } else {
++          chunks.push(buf);
++        }
++      }
++
++      await fs.promises.writeFile(outFile, Buffer.concat(chunks));
++    }
++  }
++}
++
++export async function loadBA2(fileName: string): Promise<BA2Archive> {
++  const fd = await fs.promises.open(fileName, "r");
++  try {
++    // Read header
++    const headerBuf = Buffer.alloc(HEADER_SIZE);
++    await fd.read(headerBuf, 0, HEADER_SIZE, 0);
++
++    const magic = headerBuf.toString("ascii", 0, 4);
++    if (magic !== BA2_MAGIC) {
++      throw new Error(`Invalid BA2 file: expected magic "BTDX", got "${magic}"`);
++    }
++
++    const version = headerBuf.readUInt32LE(4);
++    const typeStr = headerBuf.toString("ascii", 8, 12);
++    const fileCount = headerBuf.readUInt32LE(12);
++    const nameTableOffset = Number(headerBuf.readBigUInt64LE(16));
++
++    let type: "general" | "dx10";
++    if (typeStr === "GNRL") {
++      type = "general";
++    } else if (typeStr === "DX10") {
++      type = "dx10";
++    } else {
++      throw new Error(`Unknown BA2 type: "${typeStr}"`);
++    }
++
++    const header: BA2Header = { version, type, fileCount, nameTableOffset };
++
++    // Read file entries
++    let gnrlEntries: GnrlFileEntry[] | undefined;
++    let dx10Entries: DX10TextureEntry[] | undefined;
++
++    if (type === "general") {
++      gnrlEntries = await readGnrlEntries(fd, fileCount);
++    } else {
++      dx10Entries = await readDX10Entries(fd, fileCount);
++    }
++
++    // Read name table
++    const stat = await fd.stat();
++    const nameTableLen = stat.size - nameTableOffset;
++    const nameTableBuf = Buffer.alloc(nameTableLen);
++    await fd.read(nameTableBuf, 0, nameTableLen, nameTableOffset);
++    const fileList = parseNameTable(nameTableBuf, fileCount);
++
++    return new BA2Archive(fileName, header, fileList, gnrlEntries, dx10Entries);
++  } finally {
++    await fd.close();
++  }
++}
++
++// --- Internal parsing ---
++
++async function readGnrlEntries(
++  fd: fs.promises.FileHandle,
++  fileCount: number,
++): Promise<GnrlFileEntry[]> {
++  const totalSize = fileCount * GNRL_ENTRY_SIZE;
++  const buf = Buffer.alloc(totalSize);
++  await fd.read(buf, 0, totalSize, HEADER_SIZE);
++
++  const entries: GnrlFileEntry[] = [];
++  for (let i = 0; i < fileCount; i++) {
++    const off = i * GNRL_ENTRY_SIZE;
++    entries.push({
++      nameHash: buf.readUInt32LE(off),
++      ext: buf.toString("ascii", off + 4, off + 8).replace(/\0/g, ""),
++      dirHash: buf.readUInt32LE(off + 8),
++      flags: buf.readUInt32LE(off + 12),
++      offset: Number(buf.readBigUInt64LE(off + 16)),
++      packedLen: buf.readUInt32LE(off + 24),
++      unpackedLen: buf.readUInt32LE(off + 28),
++    });
++  }
++  return entries;
++}
++
++async function readDX10Entries(
++  fd: fs.promises.FileHandle,
++  fileCount: number,
++): Promise<DX10TextureEntry[]> {
++  // DX10 entries are variable-length, so we need to read them one at a time
++  // First, estimate a generous buffer: each entry is at least 24 bytes header
++  // + chunks. Read a large enough chunk.
++  // Max reasonable: 24 + 255*24 = 6144 bytes per entry
++  const maxEntrySize = 24 + 255 * 24;
++  const bufSize = Math.min(fileCount * maxEntrySize, 10 * 1024 * 1024);
++  const buf = Buffer.alloc(bufSize);
++  await fd.read(buf, 0, bufSize, HEADER_SIZE);
++
++  const entries: DX10TextureEntry[] = [];
++  let off = 0;
++
++  for (let i = 0; i < fileCount; i++) {
++    const numChunks = buf[off + 0x0d];
++    const chunkHdrLen = buf.readUInt16LE(off + 0x0e);
++
++    const entry: DX10TextureEntry = {
++      nameHash: buf.readUInt32LE(off),
++      ext: buf.toString("ascii", off + 4, off + 8).replace(/\0/g, ""),
++      dirHash: buf.readUInt32LE(off + 8),
++      numChunks,
++      chunkHdrLen,
++      height: buf.readUInt16LE(off + 0x10),
++      width: buf.readUInt16LE(off + 0x12),
++      numMips: buf[off + 0x14],
++      dxgiFormat: buf[off + 0x15],
++      chunks: [],
++    };
++    off += 24;
++
++    for (let j = 0; j < numChunks; j++) {
++      entry.chunks.push({
++        offset: Number(buf.readBigUInt64LE(off)),
++        packedLen: buf.readUInt32LE(off + 8),
++        unpackedLen: buf.readUInt32LE(off + 12),
++        startMip: buf.readUInt16LE(off + 16),
++        endMip: buf.readUInt16LE(off + 18),
++      });
++      off += 24;
++    }
++
++    entries.push(entry);
++  }
++
++  return entries;
++}
++
++function parseNameTable(buf: Buffer, expectedCount: number): string[] {
++  const names: string[] = [];
++  let off = 0;
++
++  while (off + 2 <= buf.length && names.length < expectedCount) {
++    const len = buf.readUInt16LE(off);
++    off += 2;
++    if (off + len > buf.length) break;
++    names.push(buf.toString("ascii", off, off + len));
++    off += len;
++  }
++
++  return names;
++}
++
++// --- DDS header construction ---
++
++function buildDDSHeader(tex: DX10TextureEntry): Buffer {
++  const formatInfo = DXGI_FORMAT_MAP.get(tex.dxgiFormat);
++  const useFourCC = formatInfo?.fourCC !== undefined;
++
++  // DDS magic (4) + DDS_HEADER (124) = 128 bytes
++  const buf = Buffer.alloc(128);
++  buf.writeUInt32LE(DDS_MAGIC, 0);
++
++  // DDS_HEADER at offset 4
++  const h = 4;
++  buf.writeUInt32LE(DDS_HEADER_SIZE, h); // dwSize
++  buf.writeUInt32LE(DDS_HEADER_FLAGS, h + 4); // dwFlags
++  buf.writeUInt32LE(tex.height, h + 8); // dwHeight
++  buf.writeUInt32LE(tex.width, h + 12); // dwWidth
++  // dwPitchOrLinearSize at h+16 (leave 0)
++  // dwDepth at h+20 (leave 0)
++  buf.writeUInt32LE(tex.numMips, h + 24); // dwMipMapCount
++  // dwReserved1[11] at h+28 (leave 0)
++
++  // DDS_PIXELFORMAT at h+72
++  const pf = h + 72;
++  buf.writeUInt32LE(DDS_PIXELFORMAT_SIZE, pf); // dwSize
++
++  if (useFourCC) {
++    buf.writeUInt32LE(DDPF_FOURCC, pf + 4); // dwFlags
++    buf.write(formatInfo!.fourCC!, pf + 8, 4, "ascii"); // dwFourCC
++  } else if (formatInfo) {
++    buf.writeUInt32LE(formatInfo.flags ?? 0, pf + 4);
++    buf.writeUInt32LE(formatInfo.bpp, pf + 12); // dwRGBBitCount
++    buf.writeUInt32LE(formatInfo.rMask ?? 0, pf + 16);
++    buf.writeUInt32LE(formatInfo.gMask ?? 0, pf + 20);
++    buf.writeUInt32LE(formatInfo.bMask ?? 0, pf + 24);
++    buf.writeUInt32LE(formatInfo.aMask ?? 0, pf + 28);
++  }
++
++  // dwCaps at h+104
++  buf.writeUInt32LE(DDS_SURFACE_FLAGS, h + 104);
++
++  return buf;
++}
+diff --git a/extensions/gamebryo-bsa-support/src/archivePath.ts b/extensions/gamebryo-bsa-support/src/archivePath.ts
+new file mode 100644
+index 0000000..fb8dbc5
+--- /dev/null
++++ b/extensions/gamebryo-bsa-support/src/archivePath.ts
+@@ -0,0 +1,38 @@
++import * as path from "node:path";
++
++function unsafeArchivePath(archivePath: string): Error {
++  return new Error(`Unsafe archive path: ${archivePath}`);
++}
++
++/**
++ * Convert the Windows-style paths stored in BSA/BA2 archives to a native,
++ * relative output path without allowing an archive entry to escape its target.
++ */
++export function resolveArchiveOutputPath(outputPath: string, archivePath: string): string {
++  const portablePath = archivePath.replace(/\\/g, "/");
++  const segments = portablePath.split("/");
++  if (
++    portablePath.startsWith("/") ||
++    /^[A-Za-z]:/.test(portablePath) ||
++    segments.some(
++      (segment) =>
++        segment.length === 0 || segment === "." || segment === ".." || segment.includes("\0"),
++    )
++  ) {
++    throw unsafeArchivePath(archivePath);
++  }
++
++  const outputRoot = path.resolve(outputPath);
++  const resolvedPath = path.resolve(outputRoot, ...segments);
++  const relativePath = path.relative(outputRoot, resolvedPath);
++  if (
++    relativePath.length === 0 ||
++    relativePath === ".." ||
++    relativePath.startsWith(`..${path.sep}`) ||
++    path.isAbsolute(relativePath)
++  ) {
++    throw unsafeArchivePath(archivePath);
++  }
++
++  return resolvedPath;
++}
+diff --git a/extensions/gamebryo-bsa-support/src/bsa.ts b/extensions/gamebryo-bsa-support/src/bsa.ts
+new file mode 100644
+index 0000000..f2b92d9
+--- /dev/null
++++ b/extensions/gamebryo-bsa-support/src/bsa.ts
+@@ -0,0 +1,706 @@
++import * as fs from "fs";
++import * as path from "path";
++import { inflateSync } from "zlib";
++
++import * as lz4js from "lz4js";
++
++import { resolveArchiveOutputPath } from "./archivePath";
++
++// LZ4 frame magic number
++const LZ4_FRAME_MAGIC = 0x184d2204;
++
++function decompressBSA(compressedBuf: Buffer): Buffer {
++  // Detect compression format from magic bytes
++  if (compressedBuf.length >= 4 && compressedBuf.readUInt32LE(0) === LZ4_FRAME_MAGIC) {
++    // LZ4 frame format (Skyrim SE)
++    const result = lz4js.decompress(new Uint8Array(compressedBuf));
++    return Buffer.from(result);
++  }
++  // zlib/deflate (Oblivion, FO3, FNV, Skyrim LE)
++  return inflateSync(compressedBuf);
++}
++
++// --- BSA Format Constants ---
++
++const BSA_MAGIC = "BSA\0";
++const BSA_HEADER_SIZE = 36;
++
++const FLAG_HASDIRNAMES = 0x00000001;
++const FLAG_HASFILENAMES = 0x00000002;
++const FLAG_DEFAULTCOMPRESSED = 0x00000004;
++const FLAG_NAMEPREFIXED = 0x00000100;
++
++type BSAVersion = 0x67 | 0x68 | 0x69;
++
++const VERSION_OBLIVION: BSAVersion = 0x67;
++const VERSION_FALLOUT3: BSAVersion = 0x68; // also FNV, Skyrim LE
++const VERSION_SKYRIMSE: BSAVersion = 0x69;
++
++// --- Types ---
++
++interface BSAHeader {
++  version: BSAVersion;
++  archiveFlags: number;
++  folderCount: number;
++  fileCount: number;
++  totalFolderNameLength: number;
++  totalFileNameLength: number;
++  fileFlags: number;
++}
++
++interface FolderRecord {
++  nameHash: bigint;
++  fileCount: number;
++  offset: number;
++}
++
++interface FileRecord {
++  nameHash: bigint;
++  size: number;
++  dataOffset: number;
++  compressToggled: boolean;
++}
++
++interface BSAFileEntry {
++  name: string;
++  folderPath: string;
++  fullPath: string;
++  size: number;
++  dataOffset: number;
++  compressToggled: boolean;
++}
++
++interface BSAFolderEntry {
++  name: string;
++  files: BSAFileEntry[];
++  subFolders: BSAFolderEntry[];
++}
++
++// --- BSA Hash Algorithm ---
++
++function genHashInt(data: Uint8Array, start: number, end: number): number {
++  let hash = 0;
++  for (let i = start; i < end; i++) {
++    hash = Math.imul(hash, 0x1003f) + data[i];
++    hash = hash >>> 0; // keep as uint32
++  }
++  return hash;
++}
++
++export function calculateBSAHash(fileName: string): bigint {
++  // Normalize: lowercase and replace / with backslash
++  let lower = "";
++  for (let i = 0; i < fileName.length; i++) {
++    let ch = fileName.charCodeAt(i);
++    if (ch >= 0x41 && ch <= 0x5a) ch += 0x20; // to lowercase
++    if (ch === 0x2f) ch = 0x5c; // / -> backslash
++    lower += String.fromCharCode(ch);
++  }
++
++  const bytes = new Uint8Array(lower.length);
++  for (let i = 0; i < lower.length; i++) {
++    bytes[i] = lower.charCodeAt(i);
++  }
++
++  // Find extension
++  const dotIdx = lower.lastIndexOf(".");
++  const extStart = dotIdx >= 0 ? dotIdx : lower.length;
++  const stemLen = extStart;
++  const ext = lower.substring(extStart);
++
++  // Hash1 - lower 32 bits
++  let hash1 = 0;
++  if (stemLen > 0) {
++    hash1 =
++      bytes[stemLen - 1] |
++      ((stemLen > 2 ? bytes[stemLen - 2] : 0) << 8) |
++      (stemLen << 16) |
++      (bytes[0] << 24);
++    hash1 = hash1 >>> 0;
++  }
++
++  // Extension flags
++  if (ext.length > 0) {
++    const extBody = ext.substring(1); // without the dot
++    if (extBody === "kf") hash1 |= 0x80;
++    else if (extBody === "nif") hash1 |= 0x8000;
++    else if (extBody === "dds") hash1 |= 0x8080;
++    else if (extBody === "wav") hash1 |= 0x80000000;
++    hash1 = hash1 >>> 0;
++
++    // Hash2 - upper 32 bits
++    // genHashInt from pos 1 to (extStart-2) - matches C++ pointer arithmetic (extU - 2)
++    const h2a = genHashInt(bytes, 1, extStart - 2);
++    // genHashInt of the extension (including the dot)
++    const h2b = genHashInt(bytes, extStart, bytes.length);
++    const hash2 = ((h2a + h2b) & 0xffffffff) >>> 0;
++
++    return (BigInt(hash1 >>> 0) | (BigInt(hash2) << 32n)) & 0xffffffffffffffffn;
++  }
++
++  return BigInt(hash1 >>> 0);
++}
++
++// --- BSA Archive Class ---
++
++export class BSAArchive {
++  public readonly version: BSAVersion;
++  public readonly archiveFlags: number;
++  public readonly fileCount: number;
++  public readonly folderTree: BSAFolderEntry;
++  public readonly fileList: BSAFileEntry[];
++
++  private filePath: string;
++  private header: BSAHeader;
++
++  constructor(
++    filePath: string,
++    header: BSAHeader,
++    folderTree: BSAFolderEntry,
++    fileList: BSAFileEntry[],
++  ) {
++    this.filePath = filePath;
++    this.header = header;
++    this.version = header.version;
++    this.archiveFlags = header.archiveFlags;
++    this.fileCount = fileList.length;
++    this.folderTree = folderTree;
++    this.fileList = fileList;
++  }
++
++  private defaultCompressed(): boolean {
++    return (this.archiveFlags & FLAG_DEFAULTCOMPRESSED) !== 0;
++  }
++
++  private namePrefixed(): boolean {
++    return this.version !== VERSION_OBLIVION && (this.archiveFlags & FLAG_NAMEPREFIXED) !== 0;
++  }
++
++  private isCompressed(file: BSAFileEntry): boolean {
++    const dc = this.defaultCompressed();
++    const toggle = file.compressToggled;
++    return (dc && !toggle) || (!dc && toggle);
++  }
++
++  async extractFile(file: BSAFileEntry, outputPath: string): Promise<void> {
++    const fd = await fs.promises.open(this.filePath, "r");
++    try {
++      let offset = file.dataOffset;
++
++      // Skip name prefix if applicable
++      if (this.namePrefixed()) {
++        const lenBuf = Buffer.alloc(1);
++        await fd.read(lenBuf, 0, 1, offset);
++        const nameLen = lenBuf[0];
++        offset += 1 + nameLen;
++      }
++
++      const outFile = resolveArchiveOutputPath(outputPath, file.name);
++      await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
++
++      if (this.isCompressed(file)) {
++        // Compressed: first 4 bytes are the original uncompressed size
++        const sizeBuf = Buffer.alloc(4);
++        await fd.read(sizeBuf, 0, 4, offset);
++        const origSize = sizeBuf.readUInt32LE(0);
++        offset += 4;
++
++        if (origSize === 0 || file.size === 0) {
++          await fs.promises.writeFile(outFile, Buffer.alloc(0));
++          return;
++        }
++
++        // file.size is total on-disk size INCLUDING the 4-byte prefix
++        const compressedLen = file.size - 4;
++        const compressedBuf = Buffer.alloc(compressedLen);
++        await fd.read(compressedBuf, 0, compressedLen, offset);
++        const decompressed = decompressBSA(compressedBuf);
++        await fs.promises.writeFile(outFile, decompressed);
++      } else {
++        if (file.size === 0) {
++          await fs.promises.writeFile(outFile, Buffer.alloc(0));
++          return;
++        }
++        const buf = Buffer.alloc(file.size);
++        await fd.read(buf, 0, file.size, offset);
++        await fs.promises.writeFile(outFile, buf);
++      }
++    } finally {
++      await fd.close();
++    }
++  }
++
++  async extractAll(outputPath: string): Promise<void> {
++    const fd = await fs.promises.open(this.filePath, "r");
++    try {
++      for (const file of this.fileList) {
++        let offset = file.dataOffset;
++
++        // Skip name prefix if applicable
++        if (this.namePrefixed()) {
++          const lenBuf = Buffer.alloc(1);
++          await fd.read(lenBuf, 0, 1, offset);
++          const nameLen = lenBuf[0];
++          offset += 1 + nameLen;
++        }
++
++        const outFile = resolveArchiveOutputPath(outputPath, file.fullPath);
++        await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
++
++        if (this.isCompressed(file)) {
++          const sizeBuf = Buffer.alloc(4);
++          await fd.read(sizeBuf, 0, 4, offset);
++          const origSize = sizeBuf.readUInt32LE(0);
++          offset += 4;
++
++          if (origSize === 0 || file.size === 0) {
++            await fs.promises.writeFile(outFile, Buffer.alloc(0));
++            continue;
++          }
++
++          // file.size is total on-disk size INCLUDING the 4-byte prefix
++          const compressedLen = file.size - 4;
++          const compressedBuf = Buffer.alloc(compressedLen);
++          await fd.read(compressedBuf, 0, compressedLen, offset);
++          const decompressed = decompressBSA(compressedBuf);
++          await fs.promises.writeFile(outFile, decompressed);
++        } else {
++          if (file.size === 0) {
++            await fs.promises.writeFile(outFile, Buffer.alloc(0));
++            continue;
++          }
++          const buf = Buffer.alloc(file.size);
++          await fd.read(buf, 0, file.size, offset);
++          await fs.promises.writeFile(outFile, buf);
++        }
++      }
++    } finally {
++      await fd.close();
++    }
++  }
++}
++
++// --- Loading ---
++
++export async function loadBSA(fileName: string, verify: boolean = false): Promise<BSAArchive> {
++  const fd = await fs.promises.open(fileName, "r");
++  try {
++    // Read header
++    const headerBuf = Buffer.alloc(BSA_HEADER_SIZE);
++    await fd.read(headerBuf, 0, BSA_HEADER_SIZE, 0);
++
++    const magic = headerBuf.toString("ascii", 0, 4);
++    if (magic !== BSA_MAGIC) {
++      throw new Error(
++        `Invalid BSA file: expected magic "BSA\\0", got "${magic.replace(/\0/g, "\\0")}"`,
++      );
++    }
++
++    const versionRaw = headerBuf.readUInt32LE(4);
++    if (versionRaw !== 0x67 && versionRaw !== 0x68 && versionRaw !== 0x69) {
++      throw new Error(`Unsupported BSA version: 0x${versionRaw.toString(16)}`);
++    }
++    const version = versionRaw as BSAVersion;
++
++    const header: BSAHeader = {
++      version,
++      archiveFlags: headerBuf.readUInt32LE(12),
++      folderCount: headerBuf.readUInt32LE(16),
++      fileCount: headerBuf.readUInt32LE(20),
++      totalFolderNameLength: headerBuf.readUInt32LE(24),
++      totalFileNameLength: headerBuf.readUInt32LE(28),
++      fileFlags: headerBuf.readUInt32LE(32),
++    };
++
++    const isSkyrimSE = version === VERSION_SKYRIMSE;
++
++    // Read folder records
++    const folderRecordSize = isSkyrimSE ? 24 : 16;
++    const folderRecordsBufSize = header.folderCount * folderRecordSize;
++    const folderRecordsBuf = Buffer.alloc(folderRecordsBufSize);
++    await fd.read(folderRecordsBuf, 0, folderRecordsBufSize, BSA_HEADER_SIZE);
++
++    const folderRecords: FolderRecord[] = [];
++    for (let i = 0; i < header.folderCount; i++) {
++      const off = i * folderRecordSize;
++      const nameHash = folderRecordsBuf.readBigUInt64LE(off);
++      let fileCount: number;
++      let offset: number;
++      if (isSkyrimSE) {
++        // SSE layout: hash(8) + count(4) + padding(4) + offset(8) = 24
++        // C++ reads count as uint64 then truncates to uint32
++        fileCount = folderRecordsBuf.readUInt32LE(off + 8);
++        offset = Number(folderRecordsBuf.readBigUInt64LE(off + 16));
++      } else {
++        fileCount = folderRecordsBuf.readUInt32LE(off + 8);
++        offset = folderRecordsBuf.readUInt32LE(off + 12);
++      }
++      folderRecords.push({ nameHash, fileCount, offset });
++    }
++
++    // Parse folder data using absolute offsets from folder records.
++    // Each folder record's offset points to (folderDataPosition + totalFileNameLength).
++    // So actual data position = offset - totalFileNameLength.
++    // At each position: BString(folder name) + fileCount * 16-byte file records.
++
++    const fileRecordSize = 16; // hash(8) + size(4) + offset(4)
++
++    interface ParsedFolder {
++      name: string;
++      nameHash: bigint;
++      files: FileRecord[];
++    }
++
++    const parsedFolders: ParsedFolder[] = [];
++
++    // Calculate how much data we need to read for all folder data
++    // Find min and max offsets to determine the range
++    let minOffset = Infinity;
++    let maxEnd = 0;
++    for (const fr of folderRecords) {
++      const dataPos = fr.offset - header.totalFileNameLength;
++      if (dataPos < minOffset) minOffset = dataPos;
++      // Estimate end: name (up to 256 bytes) + file records
++      const estEnd = dataPos + 257 + fr.fileCount * fileRecordSize;
++      if (estEnd > maxEnd) maxEnd = estEnd;
++    }
++
++    // Read the entire folder data block at once
++    const folderDataBufSize = maxEnd - minOffset;
++    const folderDataBuf = Buffer.alloc(folderDataBufSize);
++    await fd.read(folderDataBuf, 0, folderDataBufSize, minOffset);
++
++    let fileNameBlockOffset = 0;
++
++    for (const fr of folderRecords) {
++      const dataPos = fr.offset - header.totalFileNameLength;
++      let off = dataPos - minOffset;
++
++      // Read B-string: 1 byte length, then that many chars (including null terminator)
++      const nameLen = folderDataBuf[off];
++      off += 1;
++      // The name includes the null terminator in the length count
++      const name = folderDataBuf.toString("ascii", off, off + nameLen - 1).replace(/\0/g, "");
++      off += nameLen;
++
++      // Read file records
++      const files: FileRecord[] = [];
++      for (let j = 0; j < fr.fileCount; j++) {
++        const nameHash = folderDataBuf.readBigUInt64LE(off);
++        let size = folderDataBuf.readUInt32LE(off + 8);
++        const dataOffset = folderDataBuf.readUInt32LE(off + 12);
++        let compressToggled = false;
++        if ((size & (1 << 30)) !== 0) {
++          compressToggled = true;
++          size ^= 1 << 30;
++        }
++        files.push({ nameHash, size, dataOffset, compressToggled });
++        off += fileRecordSize;
++      }
++
++      // Track the end position for file name block calculation
++      const endPos = minOffset + off;
++      if (endPos > fileNameBlockOffset) fileNameBlockOffset = endPos;
++
++      parsedFolders.push({ name, nameHash: fr.nameHash, files });
++    }
++
++    // Read file names block (starts right after the last folder data)
++    const fileNamesBuf = Buffer.alloc(header.totalFileNameLength);
++    await fd.read(fileNamesBuf, 0, header.totalFileNameLength, fileNameBlockOffset);
++
++    // Parse file names (null-terminated strings)
++    const fileNames: string[] = [];
++    let fnOff = 0;
++    for (let i = 0; i < header.fileCount; i++) {
++      let end = fnOff;
++      while (end < fileNamesBuf.length && fileNamesBuf[end] !== 0) end++;
++      fileNames.push(fileNamesBuf.toString("ascii", fnOff, end));
++      fnOff = end + 1;
++    }
++
++    // Verify hashes if requested
++    if (verify) {
++      let fileIdx = 0;
++      for (const pf of parsedFolders) {
++        for (const fr of pf.files) {
++          const fname = fileNames[fileIdx];
++          const expectedHash = calculateBSAHash(fname);
++          if (expectedHash !== fr.nameHash) {
++            throw new Error(
++              `Hash mismatch for "${fname}": expected ${expectedHash.toString(16)}, got ${fr.nameHash.toString(16)}`,
++            );
++          }
++          fileIdx++;
++        }
++      }
++    }
++
++    // Build folder tree and flat file list
++    const fileList: BSAFileEntry[] = [];
++    const rootFolder: BSAFolderEntry = { name: "", files: [], subFolders: [] };
++    let globalFileIdx = 0;
++
++    for (const pf of parsedFolders) {
++      // Create folder node in tree
++      const folderNode: BSAFolderEntry = {
++        name: pf.name,
++        files: [],
++        subFolders: [],
++      };
++
++      for (const fr of pf.files) {
++        const fileName = fileNames[globalFileIdx++];
++        const entry: BSAFileEntry = {
++          name: fileName,
++          folderPath: pf.name,
++          fullPath: pf.name ? pf.name + "\\" + fileName : fileName,
++          size: fr.size,
++          dataOffset: fr.dataOffset,
++          compressToggled: fr.compressToggled,
++        };
++        folderNode.files.push(entry);
++        fileList.push(entry);
++      }
++
++      // Insert into tree by splitting the path
++      insertFolderIntoTree(rootFolder, pf.name, folderNode);
++    }
++
++    return new BSAArchive(fileName, header, rootFolder, fileList);
++  } finally {
++    await fd.close();
++  }
++}
++
++function insertFolderIntoTree(
++  root: BSAFolderEntry,
++  folderPath: string,
++  folderNode: BSAFolderEntry,
++): void {
++  if (!folderPath) {
++    // Root level files
++    root.files.push(...folderNode.files);
++    return;
++  }
++
++  const parts = folderPath.split("\\");
++
++  let current = root;
++  for (let i = 0; i < parts.length - 1; i++) {
++    let found = current.subFolders.find((sf) => sf.name.toLowerCase() === parts[i].toLowerCase());
++    if (!found) {
++      found = { name: parts[i], files: [], subFolders: [] };
++      current.subFolders.push(found);
++    }
++    current = found;
++  }
++
++  // The last part is the actual folder name
++  const lastPart = parts[parts.length - 1];
++  let existing = current.subFolders.find((sf) => sf.name.toLowerCase() === lastPart.toLowerCase());
++  if (existing) {
++    existing.files.push(...folderNode.files);
++  } else {
++    const newFolder: BSAFolderEntry = {
++      name: lastPart,
++      files: folderNode.files,
++      subFolders: [],
++    };
++    current.subFolders.push(newFolder);
++  }
++}
++
++// --- BSA Creation ---
++
++export async function createBSA(
++  fileName: string,
++  version: BSAVersion = VERSION_FALLOUT3,
++): Promise<BSAWriter> {
++  return new BSAWriter(fileName, version);
++}
++
++interface PendingFile {
++  folderPath: string;
++  fileName: string;
++  sourcePath: string;
++}
++
++export class BSAWriter {
++  private filePath: string;
++  private version: BSAVersion;
++  private pendingFiles: PendingFile[] = [];
++
++  constructor(filePath: string, version: BSAVersion) {
++    this.filePath = filePath;
++    this.version = version;
++  }
++
++  addFile(archivePath: string, sourcePath: string): void {
++    const sep = archivePath.lastIndexOf("\\");
++    const folderPath = sep >= 0 ? archivePath.substring(0, sep) : "";
++    const fileName = sep >= 0 ? archivePath.substring(sep + 1) : archivePath;
++    this.pendingFiles.push({ folderPath, fileName, sourcePath });
++  }
++
++  async write(): Promise<void> {
++    // Group files by folder
++    const folderMap = new Map<string, PendingFile[]>();
++    for (const pf of this.pendingFiles) {
++      const key = pf.folderPath.toLowerCase();
++      if (!folderMap.has(key)) folderMap.set(key, []);
++      folderMap.get(key)!.push(pf);
++    }
++
++    const folders = Array.from(folderMap.entries()).map(([key, files]) => ({
++      path: files[0].folderPath,
++      files,
++    }));
++
++    // Calculate layout
++    const archiveFlags = FLAG_HASDIRNAMES | FLAG_HASFILENAMES;
++    const folderCount = folders.length;
++    const fileCount = this.pendingFiles.length;
++
++    // Folder names length (each includes null terminator for B-string)
++    let totalFolderNameLength = 0;
++    for (const f of folders) {
++      totalFolderNameLength += f.path.length;
++    }
++
++    // File names length
++    let totalFileNameLength = 0;
++    for (const f of folders) {
++      for (const pf of f.files) {
++        totalFileNameLength += pf.fileName.length + 1; // null terminated
++      }
++    }
++
++    // Determine file flags
++    let fileFlags = 0;
++    for (const pf of this.pendingFiles) {
++      const ext = path.extname(pf.fileName).toLowerCase();
++      if (ext === ".nif") fileFlags |= 1 << 0;
++      else if (ext === ".dds") fileFlags |= 1 << 1;
++      else if (ext === ".xml") fileFlags |= 1 << 2;
++      else if (ext === ".wav") fileFlags |= 1 << 3;
++      else if (ext === ".mp3") fileFlags |= 1 << 4;
++      else if (ext === ".txt") fileFlags |= 1 << 5;
++      else if (ext === ".spt") fileFlags |= 1 << 6;
++      else if (ext === ".tex") fileFlags |= 1 << 7;
++      else if (ext === ".ctl") fileFlags |= 1 << 8;
++    }
++
++    // Layout:
++    // 1. Header (36 bytes)
++    // 2. Folder records (folderCount * 16 bytes)
++    // 3. Folder data: for each folder: BString name + file records
++    // 4. File names block
++    // 5. File data
++
++    const folderRecordSize = this.version === VERSION_SKYRIMSE ? 24 : 16;
++    const fileRecordSize = 16;
++    const folderRecordsStart = BSA_HEADER_SIZE;
++    const folderDataStart = folderRecordsStart + folderCount * folderRecordSize;
++
++    // Calculate folder data sizes
++    let folderDataSize = 0;
++    for (const f of folders) {
++      folderDataSize += 1 + f.path.length + 1; // B-string: len byte + chars + null
++      folderDataSize += f.files.length * fileRecordSize;
++    }
++
++    const fileNamesStart = folderDataStart + folderDataSize;
++    const fileDataStart = fileNamesStart + totalFileNameLength;
++
++    // Read all source files
++    const fileData: Buffer[] = [];
++    const fileSizes: number[] = [];
++    let currentDataOffset = fileDataStart;
++    const fileDataOffsets: number[] = [];
++
++    for (const f of folders) {
++      for (const pf of f.files) {
++        const content = await fs.promises.readFile(pf.sourcePath);
++        fileData.push(content);
++        fileSizes.push(content.length);
++        fileDataOffsets.push(currentDataOffset);
++        currentDataOffset += content.length;
++      }
++    }
++
++    // Build the output buffer
++    const totalSize = currentDataOffset;
++    const buf = Buffer.alloc(totalSize);
++
++    // Write header
++    buf.write("BSA\0", 0, 4, "ascii");
++    buf.writeUInt32LE(this.version, 4);
++    buf.writeUInt32LE(0x24, 8); // header offset constant
++    buf.writeUInt32LE(archiveFlags, 12);
++    buf.writeUInt32LE(folderCount, 16);
++    buf.writeUInt32LE(fileCount, 20);
++    buf.writeUInt32LE(totalFolderNameLength, 24);
++    buf.writeUInt32LE(totalFileNameLength, 28);
++    buf.writeUInt32LE(fileFlags, 32);
++
++    // Write folder records and folder data
++    let folderRecordOff = folderRecordsStart;
++    let folderDataOff = folderDataStart;
++    let globalFileIdx = 0;
++
++    for (const f of folders) {
++      const folderHash = calculateBSAHash(f.path);
++
++      // Write folder record
++      buf.writeBigUInt64LE(folderHash, folderRecordOff);
++      buf.writeUInt32LE(f.files.length, folderRecordOff + 8);
++      // Offset points to the folder data including the totalFileNameLength
++      if (this.version === VERSION_SKYRIMSE) {
++        buf.writeBigUInt64LE(BigInt(folderDataOff + totalFileNameLength), folderRecordOff + 16);
++      } else {
++        buf.writeUInt32LE(folderDataOff + totalFileNameLength, folderRecordOff + 12);
++      }
++      folderRecordOff += folderRecordSize;
++
++      // Write folder data: B-string name
++      const nameBytes = f.path.length + 1; // include null terminator
++      buf[folderDataOff] = nameBytes;
++      folderDataOff += 1;
++      buf.write(f.path, folderDataOff, f.path.length, "ascii");
++      folderDataOff += f.path.length;
++      buf[folderDataOff] = 0; // null terminator
++      folderDataOff += 1;
++
++      // Write file records
++      for (const pf of f.files) {
++        const fileHash = calculateBSAHash(pf.fileName);
++        buf.writeBigUInt64LE(fileHash, folderDataOff);
++        buf.writeUInt32LE(fileSizes[globalFileIdx], folderDataOff + 8);
++        buf.writeUInt32LE(fileDataOffsets[globalFileIdx], folderDataOff + 12);
++        folderDataOff += fileRecordSize;
++        globalFileIdx++;
++      }
++    }
++
++    // Write file names
++    let fileNameOff = fileNamesStart;
++    for (const f of folders) {
++      for (const pf of f.files) {
++        buf.write(pf.fileName, fileNameOff, pf.fileName.length, "ascii");
++        fileNameOff += pf.fileName.length;
++        buf[fileNameOff] = 0; // null terminator
++        fileNameOff += 1;
++      }
++    }
++
++    // Write file data
++    globalFileIdx = 0;
++    for (const data of fileData) {
++      data.copy(buf, fileDataOffsets[globalFileIdx]);
++      globalFileIdx++;
++    }
++
++    await fs.promises.writeFile(this.filePath, buf);
++  }
++}
+diff --git a/extensions/gamebryo-bsa-support/src/lz4js.d.ts b/extensions/gamebryo-bsa-support/src/lz4js.d.ts
+new file mode 100644
+index 0000000..f883d53
+--- /dev/null
++++ b/extensions/gamebryo-bsa-support/src/lz4js.d.ts
+@@ -0,0 +1,4 @@
++declare module "lz4js" {
++  export function compress(src: Uint8Array): Uint8Array;
++  export function decompress(src: Uint8Array, maxSize?: number): Uint8Array;
++}
+diff --git a/extensions/gamebryo-plugin-management/tests/linux-smoke.cjs b/extensions/gamebryo-plugin-management/tests/linux-smoke.cjs
+new file mode 100644
+index 0000000..ded52ff
+--- /dev/null
++++ b/extensions/gamebryo-plugin-management/tests/linux-smoke.cjs
+@@ -0,0 +1,144 @@
++const assert = require('node:assert/strict');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { test } = require('node:test');
++const zlib = require('node:zlib');
++const ts = require('typescript');
++
++// Execute the actual backported source with the repository's pinned compiler.
++require.extensions['.ts'] = (module, filename) => {
++  const result = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
++    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
++    fileName: filename,
++  });
++  module._compile(result.outputText, filename);
++};
++
++const { ESPFile } = require('../src/esp/ESPFile.ts');
++const { BSAWriter, loadBSA } = require('../../gamebryo-bsa-support/src/bsa.ts');
++const { loadBA2 } = require('../../gamebryo-ba2-support/src/ba2.ts');
++const { resolveArchiveOutputPath } = require('../../gamebryo-ba2-support/src/archivePath.ts');
++const { parseSaveGame } = require('../../gamebryo-savegame-management/src/savegame/GamebryoSaveGame.ts');
++
++const u16 = (value) => { const b = Buffer.alloc(2); b.writeUInt16LE(value); return b; };
++const u32 = (value) => { const b = Buffer.alloc(4); b.writeUInt32LE(value); return b; };
++const u64 = (value) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(value)); return b; };
++const string = (value) => Buffer.concat([u16(Buffer.byteLength(value)), Buffer.from(value)]);
++
++function temporary(t) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vortex-legacy-gamebryo-'));
++  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
++  return root;
++}
++
++function plugin(flags = 1, oblivion = false) {
++  const record = (type, data) => Buffer.concat([Buffer.from(type), u16(data.length), data]);
++  const hedr = Buffer.alloc(12);
++  hedr.writeFloatLE(1.7);
++  hedr.writeUInt32LE(3, 4);
++  const body = Buffer.concat([
++    record('HEDR', hedr),
++    record('MAST', Buffer.from('Fallout4.esm\0')),
++    record('CNAM', Buffer.from('Legacy test\0')),
++    record('SNAM', Buffer.from('Linux plugin fixture\0')),
++  ]);
++  const header = Buffer.alloc(oblivion ? 20 : 24);
++  header.write('TES4');
++  header.writeUInt32LE(body.length, 4);
++  header.writeUInt32LE(flags, 8);
++  if (!oblivion) header.writeUInt16LE(44, 20);
++  return Buffer.concat([header, body]);
++}
++
++test('legacy synchronous ESP metadata and light-flag writes preserve other flags', (t) => {
++  const root = temporary(t);
++  const file = path.join(root, 'Legacy.esp');
++  fs.writeFileSync(file, plugin());
++  const esp = new ESPFile(file, 'fallout4');
++  assert.equal(esp.isMaster, true);
++  assert.equal(esp.isLight, false);
++  assert.equal(esp.isDummy, false);
++  assert.equal(esp.author, 'Legacy test');
++  assert.equal(esp.description, 'Linux plugin fixture');
++  assert.deepEqual(esp.masterList, ['Fallout4.esm']);
++  assert.equal(esp.setLightFlag(true), undefined);
++  assert.equal(new ESPFile(file, 'fallout4').isLight, true);
++  assert.equal(fs.readFileSync(file).readUInt32LE(8), 0x201);
++  esp.setLightFlag(false);
++  assert.equal(fs.readFileSync(file).readUInt32LE(8), 1);
++  fs.writeFileSync(file, plugin(1, true));
++  assert.equal(new ESPFile(file, 'oblivion').revision, 0x52444548);
++  fs.writeFileSync(file, plugin().subarray(0, 30));
++  assert.throws(() => new ESPFile(file, 'fallout4'), /incomplete/);
++});
++
++test('BSA creation and extraction work with Linux paths for versions 103, 104 and 105', async (t) => {
++  const root = temporary(t);
++  const source = path.join(root, 'source.txt');
++  fs.writeFileSync(source, 'legacy archive content');
++  for (const version of [103, 104, 105]) {
++    const file = path.join(root, `test-${version}.bsa`);
++    const writer = new BSAWriter(file, version);
++    writer.addFile('Meshes\\Weapons\\Sword.nif', source);
++    await writer.write();
++    const archive = await loadBSA(file, true);
++    assert.equal(archive.version, version);
++    const output = path.join(root, `extracted-${version}`);
++    await archive.extractAll(output);
++    assert.equal(fs.readFileSync(path.join(output, 'Meshes', 'Weapons', 'Sword.nif'), 'utf8'),
++      'legacy archive content');
++  }
++});
++
++test('Fallout 4 BA2 extraction inflates data and creates native directories', async (t) => {
++  const root = temporary(t);
++  const name = 'Scripts\\Legacy.pex';
++  const contents = Buffer.from('collection archive payload '.repeat(10));
++  const compressed = zlib.deflateSync(contents);
++  const header = Buffer.alloc(24);
++  header.write('BTDX');
++  header.writeUInt32LE(1, 4);
++  header.write('GNRL', 8);
++  header.writeUInt32LE(1, 12);
++  header.writeBigUInt64LE(BigInt(60 + compressed.length), 16);
++  const entry = Buffer.alloc(36);
++  entry.write('pex', 4);
++  entry.writeBigUInt64LE(60n, 16);
++  entry.writeUInt32LE(compressed.length, 24);
++  entry.writeUInt32LE(contents.length, 28);
++  const file = path.join(root, 'test.ba2');
++  fs.writeFileSync(file, Buffer.concat([header, entry, compressed, string(name)]));
++  const archive = await loadBA2(file);
++  assert.deepEqual(archive.fileList, [name]);
++  await archive.extractAll(path.join(root, 'output'));
++  assert.deepEqual(fs.readFileSync(path.join(root, 'output', 'Scripts', 'Legacy.pex')), contents);
++  for (const name of ['..\\escape', '/absolute', 'C:\\absolute', 'folder\\..\\escape']) {
++    assert.throws(() => resolveArchiveOutputPath(root, name), /Unsafe archive path/);
++  }
++});
++
++test('Fallout 4 saves retain metadata, regular/light plugins and RGBA screenshots', (t) => {
++  const root = temporary(t);
++  const file = path.join(root, 'Legacy.fos');
++  const timestamp = 1700000000n;
++  const buffer = Buffer.concat([
++    Buffer.from('FO4_SAVEGAME'), u32(0), u32(15), u32(42), string('Nora'),
++    u32(23), string('Sanctuary'), string('12.34.56'), string('HumanRace'),
++    u16(1), u32(0), u32(0), u64((timestamp + 11644473600n) * 10000000n),
++    u32(1), u32(1), Buffer.from([30, 40, 50, 255]),
++    Buffer.from([0x44]), string('1.10.163.0'), u32(0),
++    Buffer.from([1]), string('Fallout4.esm'), u16(1), string('Legacy.esl'),
++  ]);
++  fs.writeFileSync(file, buffer);
++  const metadata = parseSaveGame(file, true);
++  assert.equal(metadata.characterName, 'Nora');
++  assert.equal(metadata.saveNumber, 42);
++  assert.equal(metadata.creationTime, Number(timestamp));
++  const full = parseSaveGame(file, false);
++  assert.deepEqual(full.plugins, ['Fallout4.esm', 'Legacy.esl']);
++  assert.deepEqual(full.screenshotSize, { width: 1, height: 1 });
++  assert.deepEqual(full.screenshot, Buffer.from([30, 40, 50, 255]));
++  fs.writeFileSync(file, buffer.subarray(0, 25));
++  assert.throws(() => parseSaveGame(file, true), /Unexpected end/);
++});
+diff --git a/extensions/gamebryo-savegame-management/src/savegame/BinaryReader.ts b/extensions/gamebryo-savegame-management/src/savegame/BinaryReader.ts
+new file mode 100644
+index 0000000..b644b44
+--- /dev/null
++++ b/extensions/gamebryo-savegame-management/src/savegame/BinaryReader.ts
+@@ -0,0 +1,303 @@
++import * as zlib from "zlib";
++
++import * as lz4 from "lz4js";
++
++/**
++ * Sequential binary reader over a Buffer.
++ *
++ * Supports mid-stream decompression (zlib/LZ4) for Skyrim SE saves,
++ * optional field markers ('|') for Fallout 3/NV saves, and
++ * two string formats: standard (uint16 length prefix) and BZ-string
++ * (uint8 length prefix, null terminated) for Oblivion.
++ */
++export class BinaryReader {
++  private buf: Buffer;
++  private offset: number;
++  private hasFieldMarkers: boolean = false;
++  private bzStringMode: boolean = false;
++  private encoding: string = "utf8";
++
++  constructor(buf: Buffer) {
++    this.buf = buf;
++    this.offset = 0;
++  }
++
++  tell(): number {
++    return this.offset;
++  }
++
++  seek(pos: number): void {
++    this.offset = pos;
++  }
++
++  skip(bytes: number): void {
++    this.offset += bytes;
++    if (this.offset > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (skip of ${bytes} bytes)`);
++    }
++  }
++
++  setFieldMarkers(enabled: boolean): void {
++    this.hasFieldMarkers = enabled;
++  }
++
++  setBZString(enabled: boolean): void {
++    this.bzStringMode = enabled;
++  }
++
++  setEncoding(enc: string): void {
++    this.encoding = enc;
++  }
++
++  /** Check if the file starts with the given magic string */
++  checkHeader(expected: string): boolean {
++    if (this.buf.length < expected.length) return false;
++    const found = this.buf.toString("ascii", 0, expected.length);
++    if (found === expected) {
++      this.offset = expected.length;
++      return true;
++    }
++    return false;
++  }
++
++  readUint8(): number {
++    if (this.offset + 1 > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of 1 byte)`);
++    }
++    const val = this.buf.readUInt8(this.offset);
++    this.offset += 1;
++    if (this.hasFieldMarkers) this.consumeFieldMarker();
++    return val;
++  }
++
++  readUint16(): number {
++    if (this.offset + 2 > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of 2 bytes)`);
++    }
++    const val = this.buf.readUInt16LE(this.offset);
++    this.offset += 2;
++    if (this.hasFieldMarkers) this.consumeFieldMarker();
++    return val;
++  }
++
++  readUint32(): number {
++    if (this.offset + 4 > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of 4 bytes)`);
++    }
++    const val = this.buf.readUInt32LE(this.offset);
++    this.offset += 4;
++    if (this.hasFieldMarkers) this.consumeFieldMarker();
++    return val;
++  }
++
++  readInt32(): number {
++    if (this.offset + 4 > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of 4 bytes)`);
++    }
++    const val = this.buf.readInt32LE(this.offset);
++    this.offset += 4;
++    if (this.hasFieldMarkers) this.consumeFieldMarker();
++    return val;
++  }
++
++  readInt64(): bigint {
++    if (this.offset + 8 > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of 8 bytes)`);
++    }
++    const val = this.buf.readBigInt64LE(this.offset);
++    this.offset += 8;
++    if (this.hasFieldMarkers) this.consumeFieldMarker();
++    return val;
++  }
++
++  readFloat(): number {
++    if (this.offset + 4 > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of 4 bytes)`);
++    }
++    const val = this.buf.readFloatLE(this.offset);
++    this.offset += 4;
++    if (this.hasFieldMarkers) this.consumeFieldMarker();
++    return val;
++  }
++
++  /**
++   * Read a length-prefixed string.
++   * In BZ-string mode: uint8 length + data + null terminator.
++   * In standard mode: uint16 length + data.
++   *
++   * When field markers are enabled, markers appear after both the length
++   * prefix and the string data (matching C++ templated read behavior).
++   */
++  readString(): string {
++    let length: number;
++    if (this.bzStringMode) {
++      // Use readUint8 so field marker after length is consumed
++      length = this.readUint8();
++    } else {
++      // Use readUint16 so field marker after length is consumed
++      length = this.readUint16();
++    }
++
++    if (length === 0) return "";
++
++    const raw = this.readBytes(length);
++
++    let str: string;
++    if (this.bzStringMode) {
++      // BZ-strings include the null terminator in the length
++      str = this.decodeString(raw.subarray(0, raw.length - 1));
++    } else {
++      str = this.decodeString(raw);
++    }
++
++    if (this.hasFieldMarkers) {
++      this.consumeFieldMarker();
++    }
++
++    return str;
++  }
++
++  /** Read a BString: uint8 length + data (no null terminator, no field marker) */
++  readBString(): string {
++    const length = this.buf.readUInt8(this.offset);
++    this.offset += 1;
++    const raw = this.readBytes(length);
++    return this.decodeString(raw);
++  }
++
++  /** Read raw bytes into a Buffer */
++  readBytes(length: number): Buffer {
++    if (this.offset + length > this.buf.length) {
++      throw new Error(`Unexpected end of file at ${this.offset} (read of ${length} bytes)`);
++    }
++    const result = this.buf.subarray(this.offset, this.offset + length);
++    this.offset += length;
++    return result;
++  }
++
++  /**
++   * Read a screenshot image.
++   * If dimensions are not provided, reads them from the stream (uint32 width, uint32 height).
++   * If alpha is true, the image is RGBA (4bpp), otherwise RGB (3bpp) converted to RGBA.
++   */
++  readImage(
++    width?: number,
++    height?: number,
++    alpha: boolean = false,
++  ): {
++    width: number;
++    height: number;
++    data: Buffer;
++  } {
++    if (width === undefined || height === undefined) {
++      width = this.readUint32();
++      height = this.readUint32();
++    }
++
++    if (width >= 2000) throw new Error(`Invalid screenshot width: ${width}`);
++    if (height >= 2000) throw new Error(`Invalid screenshot height: ${height}`);
++
++    const bpp = alpha ? 4 : 3;
++    const bytes = width * height * bpp;
++    const raw = this.readBytes(bytes);
++
++    let data: Buffer;
++    if (alpha) {
++      data = Buffer.from(raw);
++    } else {
++      // Convert RGB to RGBA
++      const rgba = Buffer.alloc(width * height * 4);
++      let inIdx = 0;
++      let outIdx = 0;
++      for (let i = 0; i < width * height; i++) {
++        rgba[outIdx++] = raw[inIdx++]; // R
++        rgba[outIdx++] = raw[inIdx++]; // G
++        rgba[outIdx++] = raw[inIdx++]; // B
++        rgba[outIdx++] = 0xff; // A
++      }
++      data = rgba;
++    }
++
++    return { width, height, data };
++  }
++
++  /** Read the plugin list: uint8 count + strings */
++  readPlugins(bStrings: boolean = false): string[] {
++    const count = this.readUint8();
++    const plugins: string[] = [];
++    for (let i = 0; i < count; i++) {
++      const name = bStrings ? this.readBString() : this.readString();
++      if (name.length > 256) throw new Error(`Invalid plugin name at offset ${this.offset}`);
++      plugins.push(name);
++    }
++    return plugins;
++  }
++
++  /** Read light plugin list: uint16 count + strings */
++  readLightPlugins(): string[] {
++    const count = this.readUint16();
++    const plugins: string[] = [];
++    for (let i = 0; i < count; i++) {
++      const name = this.readString();
++      if (name.length > 256) throw new Error(`Invalid light plugin name at offset ${this.offset}`);
++      plugins.push(name);
++    }
++    return plugins;
++  }
++
++  /**
++   * Switch the buffer to decompressed content from the current offset.
++   * format 1 = zlib, format 2 = LZ4.
++   */
++  setCompression(format: number, compressedSize: number, uncompressedSize: number): void {
++    const compressed = this.readBytes(compressedSize);
++
++    let decompressed: Buffer;
++    if (format === 1) {
++      // inflateSync (not inflateRawSync) — Skyrim SE saves use zlib-wrapped compression
++      // (2-byte header + adler32 checksum), matching the C++ implementation's inflateInit behavior.
++      decompressed = zlib.inflateSync(compressed, {
++        maxOutputLength: uncompressedSize,
++      });
++    } else if (format === 2) {
++      const output = Buffer.alloc(uncompressedSize);
++      lz4.decompressBlock(compressed, output, 0, compressedSize, 0);
++      decompressed = output;
++    } else {
++      throw new Error(`Unknown compression format: ${format}`);
++    }
++
++    this.buf = decompressed;
++    this.offset = 0;
++  }
++
++  private consumeFieldMarker(): void {
++    if (this.offset < this.buf.length) {
++      const marker = this.buf.readUInt8(this.offset);
++      if (marker !== 0x7c) {
++        throw new Error(
++          `Expected field separator '|' at offset ${this.offset}, got 0x${marker.toString(16)}`,
++        );
++      }
++      this.offset += 1;
++    }
++  }
++
++  private decodeString(raw: Buffer): string {
++    if (this.encoding === "windows-1251") {
++      const decoder = new TextDecoder("windows-1251");
++      return decoder.decode(raw);
++    }
++
++    // Try UTF-8 first, fall back to latin1
++    try {
++      const str = raw.toString("utf8");
++      // Check if the UTF-8 decode produced replacement characters
++      if (!str.includes("\uFFFD")) return str;
++    } catch (e) {
++      // fall through
++    }
++
++    return raw.toString("latin1");
++  }
++}
+diff --git a/extensions/gamebryo-savegame-management/src/savegame/GamebryoSaveGame.ts b/extensions/gamebryo-savegame-management/src/savegame/GamebryoSaveGame.ts
+new file mode 100644
+index 0000000..ef61399
+--- /dev/null
++++ b/extensions/gamebryo-savegame-management/src/savegame/GamebryoSaveGame.ts
+@@ -0,0 +1,370 @@
++import * as fs from "fs";
++import * as path from "path";
++
++import { BinaryReader } from "./BinaryReader";
++
++export interface Dimensions {
++  width: number;
++  height: number;
++}
++
++export interface SaveGameData {
++  characterName: string;
++  characterLevel: number;
++  location: string;
++  saveNumber: number;
++  creationTime: number;
++  playTime: string;
++  plugins: string[];
++  screenshotSize: Dimensions;
++  screenshot: Buffer;
++  fileName: string;
++}
++
++interface WINSYSTEMTIME {
++  wYear: number;
++  wMonth: number;
++  wDayOfWeek: number;
++  wDay: number;
++  wHour: number;
++  wMinute: number;
++  wSecond: number;
++  wMilliseconds: number;
++}
++
++function windowsTicksToEpoch(windowsTicks: bigint): number {
++  const WINDOWS_TICK = 10000000n;
++  const SEC_TO_UNIX_EPOCH = 11644473600n;
++  return Number(windowsTicks / WINDOWS_TICK - SEC_TO_UNIX_EPOCH);
++}
++
++function readWINSYSTEMTIME(reader: BinaryReader): WINSYSTEMTIME {
++  return {
++    wYear: reader.readUint16(),
++    wMonth: reader.readUint16(),
++    wDayOfWeek: reader.readUint16(),
++    wDay: reader.readUint16(),
++    wHour: reader.readUint16(),
++    wMinute: reader.readUint16(),
++    wSecond: reader.readUint16(),
++    wMilliseconds: reader.readUint16(),
++  };
++}
++
++function systemTimeToEpoch(st: WINSYSTEMTIME): number {
++  // C++ mktime() interprets as local time, so we must too
++  const d = new Date(st.wYear, st.wMonth - 1, st.wDay, st.wHour, st.wMinute, st.wSecond);
++  return Math.floor(d.getTime() / 1000);
++}
++
++/**
++ * Heuristic: if >50% of non-numeric characters in the filename are Cyrillic,
++ * assume the save content uses Windows-1251 encoding.
++ */
++function determineEncoding(fileName: string): string {
++  const nameOnly = fileName.replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "");
++  const relevant = nameOnly.replace(/[0-9.\- ]/g, "");
++  if (relevant.length === 0) return "utf8";
++
++  let cyrillicCount = 0;
++  for (const ch of relevant) {
++    const code = ch.charCodeAt(0);
++    if (code >= 0x400 && code <= 0x52f) cyrillicCount++;
++  }
++
++  if ((cyrillicCount * 100) / relevant.length > 50) {
++    return "windows-1251";
++  }
++  return "utf8";
++}
++
++function readOblivion(reader: BinaryReader, quickRead: boolean): Partial<SaveGameData> {
++  reader.setBZString(true);
++
++  reader.skip(1); // Major version
++  reader.skip(1); // Minor version
++  reader.skip(16); // WINSYSTEMTIME (exe last modified)
++  reader.skip(4); // Header version
++  reader.skip(4); // Header size
++
++  const saveNumber = reader.readUint32();
++  const characterName = reader.readString();
++  const characterLevel = reader.readUint16();
++  const location = reader.readString();
++
++  const gameDays = reader.readFloat();
++  const playTime = Math.floor(gameDays) + " days, " + (Math.floor(gameDays * 24) % 24) + " hours";
++
++  reader.skip(4); // game ticks
++
++  const winTime = readWINSYSTEMTIME(reader);
++  const creationTime = systemTimeToEpoch(winTime);
++
++  let plugins: string[] = [];
++  let screenshotSize: Dimensions = { width: 0, height: 0 };
++  let screenshot: Buffer = Buffer.alloc(0);
++
++  if (!quickRead) {
++    reader.skip(4); // Screenshot size
++    const img = reader.readImage();
++    screenshotSize = { width: img.width, height: img.height };
++    screenshot = img.data;
++    plugins = reader.readPlugins(true);
++  }
++
++  return {
++    characterName,
++    characterLevel,
++    location,
++    saveNumber,
++    creationTime,
++    playTime,
++    plugins,
++    screenshotSize,
++    screenshot,
++  };
++}
++
++function readSkyrim(reader: BinaryReader, quickRead: boolean): Partial<SaveGameData> {
++  reader.skip(4); // header size
++  const version = reader.readUint32(); // header version
++  const saveNumber = reader.readUint32();
++
++  const characterName = reader.readString();
++  const characterLevel = reader.readUint32();
++  const location = reader.readString();
++  const playTime = reader.readString();
++
++  reader.readString(); // race name
++  reader.skip(2); // Player gender
++  reader.skip(4); // experience gathered
++  reader.skip(4); // experience required
++
++  const ftime = reader.readInt64();
++  const creationTime = windowsTicksToEpoch(ftime);
++
++  let plugins: string[] = [];
++  let screenshotSize: Dimensions = { width: 0, height: 0 };
++  let screenshot: Buffer = Buffer.alloc(0);
++
++  if (!quickRead) {
++    if (version < 0x0c) {
++      // Original Skyrim
++      const img = reader.readImage();
++      screenshotSize = { width: img.width, height: img.height };
++      screenshot = img.data;
++    } else {
++      // Skyrim SE — has compression
++      const width = reader.readUint32();
++      const height = reader.readUint32();
++      const compressionFormat = reader.readUint16();
++
++      const img = reader.readImage(width, height, true);
++      screenshotSize = { width: img.width, height: img.height };
++      screenshot = img.data;
++
++      const uncompressedSize = reader.readUint32();
++      const compressedSize = reader.readUint32();
++      reader.setCompression(compressionFormat, compressedSize, uncompressedSize);
++    }
++
++    const formVersion = reader.readUint8();
++    reader.skip(4); // plugin info size
++    plugins = reader.readPlugins();
++
++    if (formVersion >= 0x4e) {
++      plugins = plugins.concat(reader.readLightPlugins());
++    }
++  }
++
++  return {
++    characterName,
++    characterLevel,
++    location,
++    saveNumber,
++    creationTime,
++    playTime,
++    plugins,
++    screenshotSize,
++    screenshot,
++  };
++}
++
++function readFO3(reader: BinaryReader, quickRead: boolean): Partial<SaveGameData> {
++  reader.skip(4); // Save header size
++  reader.skip(4); // File version (always 0x30)
++  reader.skip(1); // Delimiter
++
++  // New Vegas detection heuristic:
++  // Read bytes until we find 0x7c. If 5 bytes were read, it's New Vegas.
++  // If 4 bytes, it's FO3.
++  const pos = reader.tell();
++  let fieldSize = 0;
++  while (reader.readUint8() !== 0x7c) {
++    fieldSize++;
++  }
++  // We consumed fieldSize bytes + the 0x7c marker itself via readUint8 calls
++  // But readUint8 doesn't consume field markers here since hasFieldMarkers is false
++  // fieldSize counts the non-0x7c bytes. The 0x7c was also consumed.
++
++  if (fieldSize === 4) {
++    // FO3: the field was only 4 bytes, seek back since we need it
++    // Actually we read fieldSize+1 bytes (including the 0x7c).
++    // For FO3 we need to go back to pos to re-read the 4-byte field
++    reader.seek(pos);
++  }
++  // For NV (fieldSize === 5): we already consumed the unknown string + separator, stay here
++
++  reader.setFieldMarkers(true);
++
++  const width = reader.readUint32();
++  const height = reader.readUint32();
++  const saveNumber = reader.readUint32();
++  const characterName = reader.readString();
++  reader.readString(); // unknown string
++  const characterLevel = reader.readInt32();
++  const location = reader.readString();
++  const playTime = reader.readString();
++
++  let plugins: string[] = [];
++  let screenshotSize: Dimensions = { width: 0, height: 0 };
++  let screenshot: Buffer = Buffer.alloc(0);
++
++  if (!quickRead) {
++    const img = reader.readImage(width, height);
++    screenshotSize = { width: img.width, height: img.height };
++    screenshot = img.data;
++
++    reader.skip(5); // unknown byte + plugin data size
++    plugins = reader.readPlugins();
++  }
++
++  return {
++    characterName,
++    characterLevel,
++    location,
++    saveNumber,
++    creationTime: 0,
++    playTime,
++    plugins,
++    screenshotSize,
++    screenshot,
++  };
++}
++
++function readFO4(reader: BinaryReader, quickRead: boolean): Partial<SaveGameData> {
++  reader.skip(4); // header size
++  reader.skip(4); // header version
++  const saveNumber = reader.readUint32();
++
++  const characterName = reader.readString();
++  const characterLevel = reader.readUint32();
++  const location = reader.readString();
++  const playTime = reader.readString();
++  reader.readString(); // race name
++
++  reader.skip(2); // Player gender
++  reader.skip(4); // experience gathered
++  reader.skip(4); // experience required
++
++  const ftime = reader.readInt64();
++  const creationTime = windowsTicksToEpoch(ftime);
++
++  let plugins: string[] = [];
++  let screenshotSize: Dimensions = { width: 0, height: 0 };
++  let screenshot: Buffer = Buffer.alloc(0);
++
++  if (!quickRead) {
++    const img = reader.readImage(undefined, undefined, true);
++    screenshotSize = { width: img.width, height: img.height };
++    screenshot = img.data;
++
++    const formVersion = reader.readUint8();
++    reader.readString(); // game version
++    reader.skip(4); // plugin info size
++    plugins = reader.readPlugins();
++
++    if (formVersion >= 0x44) {
++      plugins = plugins.concat(reader.readLightPlugins());
++    }
++  }
++
++  return {
++    characterName,
++    characterLevel,
++    location,
++    saveNumber,
++    creationTime,
++    playTime,
++    plugins,
++    screenshotSize,
++    screenshot,
++  };
++}
++
++const HEADERS: Array<[string, (r: BinaryReader, q: boolean) => Partial<SaveGameData>]> = [
++  ["TES4SAVEGAME", readOblivion],
++  ["TESV_SAVEGAME", readSkyrim],
++  ["FO3SAVEGAME", readFO3],
++  ["FO4_SAVEGAME", readFO4],
++];
++
++// Quick read only needs the first ~256 bytes of header metadata.
++// Reading 4KB avoids loading multi-MB files just to parse a few fields.
++const QUICK_READ_BYTES = 4096;
++
++export function parseSaveGame(filePath: string, quickRead: boolean): SaveGameData {
++  let buf: Buffer;
++  if (quickRead) {
++    const fd = fs.openSync(filePath, "r");
++    try {
++      buf = Buffer.alloc(QUICK_READ_BYTES);
++      const bytesRead = fs.readSync(fd, buf, 0, QUICK_READ_BYTES, 0);
++      buf = buf.subarray(0, bytesRead);
++    } finally {
++      fs.closeSync(fd);
++    }
++  } else {
++    buf = fs.readFileSync(filePath);
++  }
++  const reader = new BinaryReader(buf);
++
++  const encoding = determineEncoding(filePath);
++  reader.setEncoding(encoding);
++
++  let result: Partial<SaveGameData> | null = null;
++
++  for (const [header, readFn] of HEADERS) {
++    if (reader.checkHeader(header)) {
++      result = readFn(reader, quickRead);
++      break;
++    }
++  }
++
++  if (!result) {
++    throw new Error("invalid file header");
++  }
++
++  // Fallback: use file mtime if no creation time was parsed
++  if (!result.creationTime) {
++    try {
++      const stat = fs.statSync(filePath);
++      result.creationTime = Math.floor(stat.mtimeMs / 1000);
++    } catch (e) {
++      result.creationTime = 0;
++    }
++  }
++
++  return {
++    characterName: result.characterName || "",
++    characterLevel: result.characterLevel || 0,
++    location: result.location || "",
++    saveNumber: result.saveNumber || 0,
++    creationTime: result.creationTime || 0,
++    playTime: result.playTime || "",
++    plugins: result.plugins || [],
++    screenshotSize: result.screenshotSize || { width: 0, height: 0 },
++    screenshot: result.screenshot || Buffer.alloc(0),
++    fileName: path.basename(filePath),
++  };
++}
+diff --git a/extensions/gamebryo-savegame-management/src/types/lz4js.d.ts b/extensions/gamebryo-savegame-management/src/types/lz4js.d.ts
+new file mode 100644
+index 0000000..6e6380f
+--- /dev/null
++++ b/extensions/gamebryo-savegame-management/src/types/lz4js.d.ts
+@@ -0,0 +1,9 @@
++declare module "lz4js" {
++  export function decompressBlock(
++    src: Buffer | Uint8Array,
++    dst: Buffer | Uint8Array,
++    sIndex: number,
++    sLength: number,
++    dIndex: number,
++  ): number;
++}

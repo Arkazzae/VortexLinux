@@ -1,0 +1,260 @@
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+index 08729b3..f4d5dc6 100644
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -18,7 +18,12 @@ export interface CompatibilityGame {
+ 
+ type PrefixResolver = (game: CompatibilityGame) => string | null | undefined;
+ let gameProvider: (() => CompatibilityGame | undefined) | undefined;
+-let selectedPrefixCache: { key: string; prefix: string | null } | undefined;
++let selectedPrefixCache:
++  | { key: string; prefix: string | null | undefined; expires: number }
++  | undefined;
++// A missing prefix usually appears after the game's first launch, so retry it
++// periodically instead of rescanning Steam manifests for every file operation.
++const MISSING_PREFIX_RETRY_MS = 10_000;
+ const storeResolvers = new Map<string, PrefixResolver>();
+ 
+ export function setCompatibilityGameProvider(provider: typeof gameProvider): void {
+@@ -43,9 +48,15 @@ export function selectedGamePrefix(game = gameProvider?.()): string | null | und
+     game.executable,
+     game.environment?.WINEPREFIX,
+   ]);
+-  if (selectedPrefixCache?.key === key) return selectedPrefixCache.prefix;
++  if (selectedPrefixCache?.key === key && Date.now() < selectedPrefixCache.expires) {
++    return selectedPrefixCache.prefix;
++  }
+   const prefix = resolveGamePrefix(game);
+-  if (prefix !== undefined) selectedPrefixCache = { key, prefix };
++  selectedPrefixCache = {
++    key,
++    prefix,
++    expires: prefix === undefined ? Date.now() + MISSING_PREFIX_RETRY_MS : Infinity,
++  };
+   return prefix;
+ }
+ 
+@@ -80,6 +91,8 @@ function resolveGamePrefix(game: CompatibilityGame): string | null | undefined {
+ interface IUserPathMapping {
+   linuxRoot: string;
+   windowsRoot: string[];
++  /** Only games use this root; Linux applications do not store files there. */
++  gameData: boolean;
+ }
+ 
+ let cachedPrefixKey: string | undefined;
+@@ -147,11 +160,11 @@ function linuxUserPathMappings(): IUserPathMapping[] {
+   const savedGames = process.env.VORTEX_LINUX_SAVED_GAMES ?? path.join(os.homedir(), "Saved Games");
+ 
+   return [
+-    { linuxRoot: xdgDocumentsPath(), windowsRoot: ["Documents"] },
+-    { linuxRoot: appData, windowsRoot: ["AppData", "Roaming"] },
+-    { linuxRoot: localAppData, windowsRoot: ["AppData", "Local"] },
+-    { linuxRoot: localLow, windowsRoot: ["AppData", "LocalLow"] },
+-    { linuxRoot: savedGames, windowsRoot: ["Saved Games"] },
++    { linuxRoot: xdgDocumentsPath(), windowsRoot: ["Documents"], gameData: false },
++    { linuxRoot: appData, windowsRoot: ["AppData", "Roaming"], gameData: false },
++    { linuxRoot: localAppData, windowsRoot: ["AppData", "Local"], gameData: true },
++    { linuxRoot: localLow, windowsRoot: ["AppData", "LocalLow"], gameData: true },
++    { linuxRoot: savedGames, windowsRoot: ["Saved Games"], gameData: true },
+   ];
+ }
+ 
+@@ -170,18 +183,17 @@ function findSteamPrefixes(): string[] {
+   });
+ }
+ 
+-function compatibilityPrefixes(): string[] {
++/**
++ * Returns undefined when the selected game needs a prefix that does not exist
++ * yet, so callers can refuse to place its data on the Linux side instead.
++ */
++function compatibilityPrefixes(): string[] | undefined {
+   const game = gameProvider?.();
+   if (game !== undefined) {
+     const prefix = selectedGamePrefix(game);
+     if (prefix === null) return [];
+     if (prefix === undefined || !fs.existsSync(path.join(prefix, "drive_c", "users"))) {
+-      throw Object.assign(
+-        new Error(
+-          "The selected game's Wine/Proton prefix is unavailable. Launch the game once, or configure its WINEPREFIX.",
+-        ),
+-        { code: "ENOENT" },
+-      );
++      return undefined;
+     }
+     return [prefix];
+   }
+@@ -200,14 +212,40 @@ function compatibilityPrefixes(): string[] {
+   return cachedPrefixes;
+ }
+ 
+-function windowsUserRoots(relativeRoot: string[]): string[] {
+-  return compatibilityPrefixes().flatMap((prefix) => {
++function currentUserName(): string | undefined {
++  try {
++    return os.userInfo().username.toLowerCase();
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Proton always runs as steamuser and plain Wine as the current user. A prefix
++ * can still contain another profile, for example after a tool ran through plain
++ * Wine in a Proton prefix, so choose the profile the game itself uses.
++ */
++function prefixUsers(users: string[]): string[] {
++  const find = (name: string | undefined) =>
++    users.find((user) => name !== undefined && user.toLowerCase() === name);
++  const selected = find("steamuser") ?? find(currentUserName());
++  return selected !== undefined ? [selected] : users;
++}
++
++function windowsUserRoots(prefixes: string[], relativeRoot: string[]): string[] {
++  return prefixes.flatMap((prefix) => {
+     const users = path.join(prefix, "drive_c", "users");
+     try {
+-      return fs
++      const profiles = fs
+         .readdirSync(users, { withFileTypes: true })
+-        .filter((entry) => entry.isDirectory())
+-        .map((entry) => path.join(users, entry.name, ...relativeRoot))
++        .filter(
++          (entry) =>
++            entry.isDirectory() &&
++            !["public", "default", "default user", "all users"].includes(entry.name.toLowerCase()),
++        )
++        .map((entry) => entry.name);
++      return prefixUsers(profiles)
++        .map((user) => path.join(users, user, ...relativeRoot))
+         .filter(fs.existsSync);
+     } catch {
+       return [];
+@@ -215,7 +253,11 @@ function windowsUserRoots(relativeRoot: string[]): string[] {
+   });
+ }
+ 
+-function resolveCandidate(root: string, relative: string): ICandidate | undefined {
++function resolveCandidate(
++  root: string,
++  relative: string,
++  minimumExistingParts: number,
++): ICandidate | undefined {
+   const parts = relative.split(path.sep).filter(Boolean);
+   let current = root;
+   let existingParts = 0;
+@@ -240,7 +282,6 @@ function resolveCandidate(root: string, relative: string): ICandidate | undefine
+       existingParts += 1;
+     }
+ 
+-    const minimumExistingParts = parts[0]?.toLowerCase() === "my games" ? 2 : 1;
+     if (existingParts < minimumExistingParts) {
+       return undefined;
+     }
+@@ -266,13 +307,33 @@ export function resolveWindowsUserPathSync(input: string): string {
+     return input;
+   }
+ 
++  const selected = gameProvider?.() !== undefined;
++  let prefixes: string[] | undefined;
+   const candidates = linuxUserPathMappings()
+     .flatMap((mapping) => {
+       const relative = path.relative(mapping.linuxRoot, input);
+       if (relative.startsWith("..") || path.isAbsolute(relative) || relative.length === 0) {
+         return [];
+       }
+-      return windowsUserRoots(mapping.windowsRoot).map((root) => resolveCandidate(root, relative));
++      const myGames = relative.split(path.sep)[0].toLowerCase() === "my games";
++      const gameData = mapping.gameData || myGames;
++      prefixes ??= compatibilityPrefixes();
++      if (prefixes === undefined) {
++        if (!gameData) return [];
++        throw Object.assign(
++          new Error(
++            "The selected game's Wine/Proton prefix is unavailable. Launch the game once, or configure its WINEPREFIX.",
++          ),
++          { code: "ENOENT" },
++        );
++      }
++      // The selected game's own data belongs in its prefix even before the game
++      // creates it. Other paths are redirected only when the prefix already has
++      // them, so Linux files in Documents or ~/.config stay where they are.
++      const minimumExistingParts = selected && gameData ? 0 : myGames ? 2 : 1;
++      return windowsUserRoots(prefixes, mapping.windowsRoot).map((root) =>
++        resolveCandidate(root, relative, minimumExistingParts),
++      );
+     })
+     .filter((candidate): candidate is ICandidate => candidate !== undefined);
+ 
+diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer/src/util/compatibilitySelection.test.ts
+index fb672cd..ee058f2 100644
+--- a/src/renderer/src/util/compatibilitySelection.test.ts
++++ b/src/renderer/src/util/compatibilitySelection.test.ts
+@@ -36,6 +36,66 @@ describe.runIf(process.platform === "linux")("selected compatibility prefix", ()
+     vi.stubEnv("VORTEX_COMPAT_PREFIXES", "");
+     setCompatibilityGameProvider(undefined);
+   });
++  it("creates new game configuration directories inside the selected prefix", () => {
++    const prefix = path.join(home, "new-prefix");
++    const userDocuments = path.join(prefix, "drive_c/users/steamuser/Documents");
++    fs.mkdirSync(userDocuments, { recursive: true });
++    fs.mkdirSync(path.join(prefix, "drive_c/users/Public/Documents"), { recursive: true });
++    setCompatibilityGameProvider(() => ({ path: home, environment: { WINEPREFIX: prefix } }));
++    const destination = resolveCaseInsensitiveSync(path.join(documents, relative));
++    expect(destination).toBe(path.join(userDocuments, relative));
++    fs.mkdirSync(path.dirname(destination), { recursive: true });
++    fs.writeFileSync(destination, "fixture");
++    expect(fs.existsSync(path.join(documents, relative))).toBe(false);
++  });
++
++  it("keeps Linux files outside the selected prefix unless the prefix already has them", () => {
++    const prefix = path.join(home, "prefix");
++    const userDocuments = path.join(prefix, "drive_c/users/steamuser/Documents");
++    fs.mkdirSync(path.join(userDocuments, "Shared"), { recursive: true });
++    fs.mkdirSync(path.join(prefix, "drive_c/users/steamuser/AppData/Roaming"), { recursive: true });
++    vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(home, ".config"));
++    const archive = path.join(documents, "Mods/archive.7z");
++    fs.mkdirSync(path.dirname(archive), { recursive: true });
++    fs.writeFileSync(archive, "archive");
++    const settings = path.join(home, ".config/someapp/settings.json");
++    fs.mkdirSync(path.dirname(settings), { recursive: true });
++    fs.writeFileSync(settings, "{}");
++    setCompatibilityGameProvider(() => ({ path: home, environment: { WINEPREFIX: prefix } }));
++    expect(resolveCaseInsensitiveSync(archive)).toBe(archive);
++    expect(resolveCaseInsensitiveSync(path.join(documents, "Mods/new.7z.tmp"))).toBe(
++      path.join(documents, "Mods/new.7z.tmp"),
++    );
++    expect(resolveCaseInsensitiveSync(settings)).toBe(settings);
++    expect(resolveCaseInsensitiveSync(path.join(documents, "shared/file.txt"))).toBe(
++      path.join(userDocuments, "Shared/file.txt"),
++    );
++  });
++
++  it("uses Proton's steamuser profile when a prefix also has a Wine user profile", () => {
++    const prefix = path.join(home, "prefix");
++    const expected = fixture(prefix);
++    fs.mkdirSync(path.join(prefix, "drive_c/users", os.userInfo().username, "Documents/My Games"), {
++      recursive: true,
++    });
++    setCompatibilityGameProvider(() => ({ path: home, environment: { WINEPREFIX: prefix } }));
++    expect(resolveCaseInsensitiveSync(path.join(documents, relative))).toBe(expected);
++    expect(resolveCaseInsensitiveSync(path.join(documents, "My Games/New/new.ini"))).toBe(
++      path.join(prefix, "drive_c/users/steamuser/Documents/My Games/New/new.ini"),
++    );
++  });
++
++  it("only refuses game data while the selected prefix is missing", () => {
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(home, "missing") },
++    }));
++    const archive = path.join(documents, "Mods/archive.7z");
++    expect(resolveCaseInsensitiveSync(archive)).toBe(archive);
++    expect(() => resolveWindowsUserPathSync(path.join(home, "Saved Games/Example/save"))).toThrow(
++      /unavailable/,
++    );
++  });
++
+   afterEach(() => {
+     setCompatibilityGameProvider(undefined);
+     vi.restoreAllMocks();

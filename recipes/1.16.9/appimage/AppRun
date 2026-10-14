@@ -1,0 +1,82 @@
+#!/bin/sh
+
+set -eu
+
+APPDIR=${APPDIR:-"$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"}
+
+export ELECTRON_TRASH="${ELECTRON_TRASH:-gio}"
+# The legacy FOMOD installer loads its bundled native library from dist/.
+unset PREBUILDS_ONLY
+
+export DOTNET_ROOT="$APPDIR/usr/lib/dotnet"
+export DOTNET_ROOT_X64="$DOTNET_ROOT"
+export PATH="$DOTNET_ROOT:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+export VORTEX_DOTNET_WIN_ROOT="${VORTEX_DOTNET_WIN_ROOT:-$APPDIR/opt/Vortex/dotnet-win-x64}"
+export VORTEX_WINEPREFIX="${VORTEX_WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/vortex-linux/wineprefix}"
+export DOTNET_ROLL_FORWARD="${DOTNET_ROLL_FORWARD:-Major}"
+export DOTNET_MULTILEVEL_LOOKUP="${DOTNET_MULTILEVEL_LOOKUP:-0}"
+
+if [ "${1-}" = "--vortex-self-test" ]; then
+  self_test_root="$(mktemp -d "${TMPDIR:-/tmp}/vortex-1.16.9-self-test.XXXXXX")"
+  trap 'rm -rf -- "$self_test_root"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  export HOME="$self_test_root/home"
+  export XDG_CONFIG_HOME="$HOME/.config"
+  export XDG_DATA_HOME="$HOME/.local/share"
+  export XDG_CACHE_HOME="$HOME/.cache"
+  export VORTEX_USERDATA="$XDG_CONFIG_HOME/Vortex"
+  export VORTEX_WINEPREFIX="$self_test_root/wine-prefix"
+  export WINEPREFIX="$VORTEX_WINEPREFIX"
+  export VORTEX_COMPAT_PREFIXES="$VORTEX_WINEPREFIX"
+  export VORTEX_LINUX_DOCUMENTS="$HOME/Documents"
+  export VORTEX_LINUX_APPDATA="$XDG_CONFIG_HOME"
+  export VORTEX_LINUX_LOCAL_APPDATA="$XDG_DATA_HOME"
+  export DOTNET_CLI_HOME="$HOME"
+  export TMPDIR="$self_test_root/tmp"
+  mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
+  runtime_probe="$APPDIR/opt/Vortex/resources/app.asar.unpacked/assets/dotnetprobe"
+  fomod_release="$APPDIR/opt/Vortex/resources/app.asar.unpacked/node_modules/fomod-installer-native/dist"
+  fomod_node="$fomod_release/modinstaller.node"
+  fomod_library="$fomod_release/ModInstaller.Native.so"
+  if [ ! -x "$DOTNET_ROOT/dotnet" ] || [ ! -x "$runtime_probe" ] ||
+     [ ! -f "$fomod_node" ] || [ ! -f "$fomod_library" ]; then
+    printf 'AppImage runtime self-test failed: bundled runtime files are missing\n' >&2
+    exit 1
+  fi
+
+  if ! env -u LD_LIBRARY_PATH ELECTRON_RUN_AS_NODE=1 \
+      "$APPDIR/opt/Vortex/vortex" "$APPDIR/usr/share/vortex-linux/test-runtime.cjs" \
+      "$APPDIR/opt/Vortex/resources/app.asar"; then
+    printf 'AppImage runtime self-test failed\n' >&2
+    exit 1
+  fi
+
+  "$runtime_probe" 9
+  exit 0
+fi
+
+# Electron-based developer tools export this when they use Electron as their
+# Node.js host. It must never leak into a normal Vortex desktop launch.
+unset ELECTRON_RUN_AS_NODE
+
+case "${1-}" in
+  nxm://*) set -- --download "$@" ;;
+esac
+
+case "${VORTEX_OZONE_PLATFORM:-x11}" in
+  auto) ;;
+  *) set -- "--ozone-platform=${VORTEX_OZONE_PLATFORM:-x11}" --disable-vulkan "$@" ;;
+esac
+
+# Electron normally uses unprivileged user namespaces when the setuid sandbox
+# inside an AppImage cannot be used. Fall back only on systems that disable it.
+if { [ -r /proc/sys/kernel/unprivileged_userns_clone ] &&
+     [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = 0 ]; } ||
+   { [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] &&
+     [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 ]; }; then
+  set -- --no-sandbox "$@"
+fi
+
+exec "$APPDIR/opt/Vortex/vortex" "$@"

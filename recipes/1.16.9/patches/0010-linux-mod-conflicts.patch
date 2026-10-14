@@ -1,0 +1,63 @@
+diff --git a/extensions/mod-dependency-manager/src/util/conflicts.ts b/extensions/mod-dependency-manager/src/util/conflicts.ts
+index d7c8d79..9df17eb 100644
+--- a/extensions/mod-dependency-manager/src/util/conflicts.ts
++++ b/extensions/mod-dependency-manager/src/util/conflicts.ts
+@@ -41,8 +41,11 @@ function toLookupInfo(mod: types.IMod): IModLookupInfo {
+ }
+ 
+ function makeGetRelPath(api: types.IExtensionApi, game: types.IGame) {
+-  const makeResolver = (basePath: string,
++  const makeResolver = (basePath: string | undefined,
+                         mergeMods: boolean | ((mod: types.IMod) => string)) => {
++    if (basePath === undefined) {
++      return () => undefined;
++    }
+     if (typeof(mergeMods) === 'boolean') {
+       if (ABSOLUTE_PATHS) {
+         return mergeMods
+@@ -64,7 +67,7 @@ function makeGetRelPath(api: types.IExtensionApi, game: types.IGame) {
+   const discovery = state.settings.gameMode.discovered[game.id];
+ 
+   const modPaths = game.getModPaths(discovery.path);
+-  const modTypeResolver: { [modType: string]: (mod: types.IMod) => string } =
++  const modTypeResolver: { [modType: string]: (mod: types.IMod) => string | undefined } =
+     Object.keys(modPaths).reduce((prev, modTypeId) => {
+       if (modTypeId === '') {
+         prev[modTypeId] = makeResolver(modPaths[modTypeId], game.mergeMods);
+@@ -77,13 +80,13 @@ function makeGetRelPath(api: types.IExtensionApi, game: types.IGame) {
+       return prev;
+     }, {});
+ 
+-  return (mod: types.IMod): string => {
++  return (mod: types.IMod): string | undefined => {
+     if (modTypeResolver[mod.type] === undefined) {
+       const modType: types.IModType = util.getModType(mod.type);
+       if (modType === undefined) {
+         log('warn', 'mod has invalid mod type', mod.type);
+         // fall back to default resolver
+-        return modTypeResolver[''](mod);
++        return modTypeResolver['']?.(mod);
+       }
+       modTypeResolver[mod.type] = makeResolver(
+         modType.getPath(game),
+@@ -108,6 +111,11 @@ function getAllFiles(api: types.IExtensionApi,
+ 
+   return Promise.all(consideredMods.map((mod: types.IMod) => {
+     const modPath = path.join(stagingPath, mod.installationPath);
++    const modDeployPath = typeRelPath(mod);
++    // Auxiliary mod types can be managed without a deployment destination.
++    if (modDeployPath === undefined) {
++      return Promise.resolve();
++    }
+ 
+     return turbowalk(modPath, entries => {
+       entries.forEach(entry => {
+@@ -117,7 +125,7 @@ function getAllFiles(api: types.IExtensionApi,
+             if (activator !== undefined) {
+               relPath = activator.getDeployedPath(relPath);
+             }
+-            relPath = path.join(typeRelPath(mod), relPath);
++            relPath = path.join(modDeployPath, relPath);
+ 
+             const relPathL = relPath.toLowerCase();
+             // when getDeployedPath actually renames the file it's possible to get multiple

@@ -1,0 +1,3626 @@
+diff --git a/src/main.ts b/src/main.ts
+index acfb0ff..7675332 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -96,6 +96,15 @@ function setEnv(key: string, value: string, force?: boolean) {
+   }
+ }
+ 
++if (process.platform === "linux") {
++  // Windows-focused extensions commonly build profile paths from these
++  // variables. The renderer filesystem bridge maps the resulting native
++  // placeholders into the matching Steam/Proton user profile on access.
++  setEnv("APPDATA", getVortexPath("appData"));
++  setEnv("LOCALAPPDATA", getVortexPath("localAppData"));
++  setEnv("USERPROFILE", getVortexPath("home"));
++}
++
+ if (process.env.NODE_ENV !== "development") {
+   setEnv("NODE_ENV", "production", true);
+ } else {
+diff --git a/src/util/compatibilityPaths.test.ts b/src/util/compatibilityPaths.test.ts
+new file mode 100644
+index 0000000..7bc1fa1
+--- /dev/null
++++ b/src/util/compatibilityPaths.test.ts
+@@ -0,0 +1,153 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { resetCompatibilityPathCache, resolveWindowsUserPathSync } from "./compatibilityPaths";
++
++const tempDirPlaceholder = "__TEMP_DIR__";
++
++describe.runIf(process.platform === "linux")("compatibility profile paths", () => {
++  let tempDir: string;
++  let oldAppData: string | undefined;
++  let oldDocuments: string | undefined;
++  let oldPrefixes: string | undefined;
++  let oldSavedGames: string | undefined;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-prefixes-"));
++    oldAppData = process.env.VORTEX_LINUX_APPDATA;
++    oldDocuments = process.env.VORTEX_LINUX_DOCUMENTS;
++    oldPrefixes = process.env.VORTEX_COMPAT_PREFIXES;
++    oldSavedGames = process.env.VORTEX_LINUX_SAVED_GAMES;
++    process.env.VORTEX_LINUX_APPDATA = path.join(tempDir, ".config");
++    process.env.VORTEX_LINUX_DOCUMENTS = path.join(tempDir, "Documents");
++    process.env.VORTEX_COMPAT_PREFIXES = path.join(tempDir, "prefix");
++    process.env.VORTEX_LINUX_SAVED_GAMES = path.join(tempDir, "Saved Games");
++    resetCompatibilityPathCache();
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++    restoreEnvironment("VORTEX_LINUX_APPDATA", oldAppData);
++    restoreEnvironment("VORTEX_LINUX_DOCUMENTS", oldDocuments);
++    restoreEnvironment("VORTEX_COMPAT_PREFIXES", oldPrefixes);
++    restoreEnvironment("VORTEX_LINUX_SAVED_GAMES", oldSavedGames);
++    resetCompatibilityPathCache();
++  });
++
++  it("maps a Windows Documents path into an arbitrary compatibility prefix", () => {
++    const actualDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "Documents",
++      "My Games",
++      "Example",
++    );
++    fs.mkdirSync(actualDirectory, { recursive: true });
++    fs.writeFileSync(path.join(actualDirectory, "Settings.ini"), "");
++
++    const requested = path.join(
++      process.env.VORTEX_LINUX_DOCUMENTS,
++      "my games",
++      "example",
++      "settings.ini",
++    );
++    expect(resolveWindowsUserPathSync(requested)).toBe(path.join(actualDirectory, "Settings.ini"));
++  });
++
++  it("maps a not-yet-created file when its destination directory exists", () => {
++    const actualDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "Documents",
++      "My Games",
++      "Example",
++    );
++    fs.mkdirSync(actualDirectory, { recursive: true });
++
++    const requested = path.join(
++      process.env.VORTEX_LINUX_DOCUMENTS,
++      "My Games",
++      "Example",
++      "NewSettings.ini",
++    );
++    expect(resolveWindowsUserPathSync(requested)).toBe(
++      path.join(actualDirectory, "NewSettings.ini"),
++    );
++  });
++
++  it.each([
++    ["Roaming", path.join(tempDirPlaceholder, ".config"), ["AppData", "Roaming"]],
++    ["Local", path.join(tempDirPlaceholder, "Local"), ["AppData", "Local"]],
++    ["LocalLow", path.join(tempDirPlaceholder, "LocalLow"), ["AppData", "LocalLow"]],
++    ["Saved Games", path.join(tempDirPlaceholder, "Saved Games"), ["Saved Games"]],
++  ])("maps %s data into its matching compatibility profile", (_name, linuxRoot, winRoot) => {
++    linuxRoot = linuxRoot.replace(tempDirPlaceholder, tempDir);
++    const actualDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      ...winRoot,
++      "Example Game",
++    );
++    fs.mkdirSync(actualDirectory, { recursive: true });
++    fs.writeFileSync(path.join(actualDirectory, "Settings.ini"), "");
++
++    const requested = path.join(linuxRoot, "Example Game", "Settings.ini");
++    expect(resolveWindowsUserPathSync(requested)).toBe(path.join(actualDirectory, "Settings.ini"));
++  });
++
++  it("does not remap Vortex userData into a leftover Wine prefix", () => {
++    const prefixStaging = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "AppData",
++      "Roaming",
++      "Vortex",
++      "cyberpunk2077",
++      "mods",
++    );
++    fs.mkdirSync(prefixStaging, { recursive: true });
++    fs.writeFileSync(path.join(prefixStaging, "stale.txt"), "prefix");
++
++    const stagingFile = path.join(
++      process.env.VORTEX_LINUX_APPDATA!,
++      "Vortex",
++      "cyberpunk2077",
++      "mods",
++      "redscript-mod",
++      "r6",
++      "scripts",
++      "NoIntroVideos.reds",
++    );
++    expect(resolveWindowsUserPathSync(stagingFile)).toBe(stagingFile);
++  });
++
++  it("leaves unrelated and unmatched paths unchanged", () => {
++    const unrelated = path.join(tempDir, "Downloads", "archive.zip");
++    const unmatched = path.join(process.env.VORTEX_LINUX_DOCUMENTS, "Unknown", "file.ini");
++    expect(resolveWindowsUserPathSync(unrelated)).toBe(unrelated);
++    expect(resolveWindowsUserPathSync(unmatched)).toBe(unmatched);
++  });
++});
++
++function restoreEnvironment(key: string, value: string | undefined) {
++  if (value === undefined) {
++    delete process.env[key];
++  } else {
++    process.env[key] = value;
++  }
++}
+diff --git a/src/util/compatibilityPaths.ts b/src/util/compatibilityPaths.ts
+new file mode 100644
+index 0000000..f4d5dc6
+--- /dev/null
++++ b/src/util/compatibilityPaths.ts
+@@ -0,0 +1,356 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { canonicalPath, findSteamInstallation, steamLibraries } from "./linux/steamLibraries";
++
++interface ICandidate {
++  existingParts: number;
++  path: string;
++}
++
++export interface CompatibilityGame {
++  path?: string;
++  store?: string;
++  executable?: string;
++  environment?: Record<string, string>;
++}
++
++type PrefixResolver = (game: CompatibilityGame) => string | null | undefined;
++let gameProvider: (() => CompatibilityGame | undefined) | undefined;
++let selectedPrefixCache:
++  | { key: string; prefix: string | null | undefined; expires: number }
++  | undefined;
++// A missing prefix usually appears after the game's first launch, so retry it
++// periodically instead of rescanning Steam manifests for every file operation.
++const MISSING_PREFIX_RETRY_MS = 10_000;
++const storeResolvers = new Map<string, PrefixResolver>();
++
++export function setCompatibilityGameProvider(provider: typeof gameProvider): void {
++  gameProvider = provider;
++  resetCompatibilityPathCache();
++}
++
++export function registerCompatibilityStore(store: string, resolver: PrefixResolver): void {
++  storeResolvers.set(store, resolver);
++  resetCompatibilityPathCache();
++}
++
++export function getCompatibilityGame(): CompatibilityGame | undefined {
++  return gameProvider?.();
++}
++
++export function selectedGamePrefix(game = gameProvider?.()): string | null | undefined {
++  if (game === undefined) return undefined;
++  const key = JSON.stringify([
++    game.path,
++    game.store,
++    game.executable,
++    game.environment?.WINEPREFIX,
++  ]);
++  if (selectedPrefixCache?.key === key && Date.now() < selectedPrefixCache.expires) {
++    return selectedPrefixCache.prefix;
++  }
++  const prefix = resolveGamePrefix(game);
++  selectedPrefixCache = {
++    key,
++    prefix,
++    expires: prefix === undefined ? Date.now() + MISSING_PREFIX_RETRY_MS : Infinity,
++  };
++  return prefix;
++}
++
++function resolveGamePrefix(game: CompatibilityGame): string | null | undefined {
++  if (game.environment?.WINEPREFIX) return path.resolve(expandHome(game.environment.WINEPREFIX));
++  if (game.path === undefined) return null;
++  if (game.executable) {
++    if (/\.(?:sh|x86_64|x86)$/i.test(game.executable)) return null;
++    let fd: number | undefined;
++    try {
++      fd = fs.openSync(path.resolve(game.path, game.executable), "r");
++      const header = Buffer.alloc(4);
++      fs.readSync(fd, header, 0, 4, 0);
++      if (header.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return null;
++    } catch {
++      /* The game may have been moved or uninstalled. */
++    } finally {
++      if (fd !== undefined) fs.closeSync(fd);
++    }
++  }
++  const custom = storeResolvers.get(game.store ?? "");
++  if (custom !== undefined) return custom(game);
++  if (game.store === "steam") {
++    const installation = findSteamInstallation(game.path);
++    if (installation !== undefined) {
++      return installation.prefix;
++    }
++  }
++  return undefined;
++}
++
++interface IUserPathMapping {
++  linuxRoot: string;
++  windowsRoot: string[];
++  /** Only games use this root; Linux applications do not store files there. */
++  gameData: boolean;
++}
++
++let cachedPrefixKey: string | undefined;
++let cachedPrefixes: string[] = [];
++
++function expandHome(input: string): string {
++  return input.replace(/^\$HOME(?=\/|$)/, os.homedir());
++}
++
++function xdgDocumentsPath(): string {
++  if (process.env.VORTEX_LINUX_DOCUMENTS !== undefined) {
++    return process.env.VORTEX_LINUX_DOCUMENTS;
++  }
++
++  try {
++    const config = fs.readFileSync(
++      path.join(
++        process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
++        "user-dirs.dirs",
++      ),
++      "utf8",
++    );
++    const match = config.match(/^XDG_DOCUMENTS_DIR=(?:"([^"]*)"|'([^']*)'|([^\n]*))$/m);
++    const value = match?.[1] ?? match?.[2] ?? match?.[3];
++    if (value !== undefined && value.length > 0) {
++      return path.normalize(expandHome(value));
++    }
++  } catch {
++    // Fall back to the freedesktop default below.
++  }
++
++  return path.join(os.homedir(), "Documents");
++}
++
++function linuxAppDataPath(): string {
++  return (
++    process.env.VORTEX_LINUX_APPDATA ??
++    process.env.XDG_CONFIG_HOME ??
++    path.join(os.homedir(), ".config")
++  );
++}
++
++/**
++ * Electron stores Vortex itself under {appData}/Vortex. That directory must
++ * stay on the Linux filesystem; leftover Wine copies of %APPDATA%\\Vortex
++ * in Steam prefixes are not a substitute for staging, downloads, or state.
++ */
++function vortexUserDataPath(): string {
++  return process.env.VORTEX_USERDATA ?? path.join(linuxAppDataPath(), "Vortex");
++}
++
++function isPathInside(root: string, candidate: string): boolean {
++  const relative = path.relative(path.resolve(root), path.resolve(candidate));
++  return (
++    relative === "" ||
++    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
++  );
++}
++
++function linuxUserPathMappings(): IUserPathMapping[] {
++  const appData = linuxAppDataPath();
++  const localAppData =
++    process.env.VORTEX_LINUX_LOCAL_APPDATA ?? path.resolve(appData, "..", "Local");
++  const localLow = process.env.VORTEX_LINUX_LOCAL_LOW ?? path.resolve(appData, "..", "LocalLow");
++  const savedGames = process.env.VORTEX_LINUX_SAVED_GAMES ?? path.join(os.homedir(), "Saved Games");
++
++  return [
++    { linuxRoot: xdgDocumentsPath(), windowsRoot: ["Documents"], gameData: false },
++    { linuxRoot: appData, windowsRoot: ["AppData", "Roaming"], gameData: false },
++    { linuxRoot: localAppData, windowsRoot: ["AppData", "Local"], gameData: true },
++    { linuxRoot: localLow, windowsRoot: ["AppData", "LocalLow"], gameData: true },
++    { linuxRoot: savedGames, windowsRoot: ["Saved Games"], gameData: true },
++  ];
++}
++
++function findSteamPrefixes(): string[] {
++  return steamLibraries().flatMap((library) => {
++    const compatData = path.join(library, "steamapps", "compatdata");
++    try {
++      return fs
++        .readdirSync(compatData, { withFileTypes: true })
++        .filter((entry) => entry.isDirectory())
++        .map((entry) => path.join(compatData, entry.name, "pfx"))
++        .filter(fs.existsSync);
++    } catch {
++      return [];
++    }
++  });
++}
++
++/**
++ * Returns undefined when the selected game needs a prefix that does not exist
++ * yet, so callers can refuse to place its data on the Linux side instead.
++ */
++function compatibilityPrefixes(): string[] | undefined {
++  const game = gameProvider?.();
++  if (game !== undefined) {
++    const prefix = selectedGamePrefix(game);
++    if (prefix === null) return [];
++    if (prefix === undefined || !fs.existsSync(path.join(prefix, "drive_c", "users"))) {
++      return undefined;
++    }
++    return [prefix];
++  }
++  const configured = process.env.VORTEX_COMPAT_PREFIXES ?? "";
++  const cacheKey = `${os.homedir()}\0${configured}`;
++  if (cacheKey === cachedPrefixKey) {
++    return cachedPrefixes;
++  }
++
++  const explicit = configured
++    .split(path.delimiter)
++    .filter(Boolean)
++    .map((entry) => path.resolve(expandHome(entry)));
++  cachedPrefixes = [...new Set([...explicit, ...findSteamPrefixes()].map(canonicalPath))];
++  cachedPrefixKey = cacheKey;
++  return cachedPrefixes;
++}
++
++function currentUserName(): string | undefined {
++  try {
++    return os.userInfo().username.toLowerCase();
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Proton always runs as steamuser and plain Wine as the current user. A prefix
++ * can still contain another profile, for example after a tool ran through plain
++ * Wine in a Proton prefix, so choose the profile the game itself uses.
++ */
++function prefixUsers(users: string[]): string[] {
++  const find = (name: string | undefined) =>
++    users.find((user) => name !== undefined && user.toLowerCase() === name);
++  const selected = find("steamuser") ?? find(currentUserName());
++  return selected !== undefined ? [selected] : users;
++}
++
++function windowsUserRoots(prefixes: string[], relativeRoot: string[]): string[] {
++  return prefixes.flatMap((prefix) => {
++    const users = path.join(prefix, "drive_c", "users");
++    try {
++      const profiles = fs
++        .readdirSync(users, { withFileTypes: true })
++        .filter(
++          (entry) =>
++            entry.isDirectory() &&
++            !["public", "default", "default user", "all users"].includes(entry.name.toLowerCase()),
++        )
++        .map((entry) => entry.name);
++      return prefixUsers(profiles)
++        .map((user) => path.join(users, user, ...relativeRoot))
++        .filter(fs.existsSync);
++    } catch {
++      return [];
++    }
++  });
++}
++
++function resolveCandidate(
++  root: string,
++  relative: string,
++  minimumExistingParts: number,
++): ICandidate | undefined {
++  const parts = relative.split(path.sep).filter(Boolean);
++  let current = root;
++  let existingParts = 0;
++
++  try {
++    for (const [index, part] of parts.entries()) {
++      const exact = path.join(current, part);
++      if (fs.existsSync(exact)) {
++        current = exact;
++        existingParts += 1;
++        continue;
++      }
++
++      const match = fs
++        .readdirSync(current)
++        .find((entry) => entry.toLowerCase() === part.toLowerCase());
++      if (match === undefined) {
++        current = path.join(current, ...parts.slice(index));
++        break;
++      }
++      current = path.join(current, match);
++      existingParts += 1;
++    }
++
++    if (existingParts < minimumExistingParts) {
++      return undefined;
++    }
++    return {
++      existingParts,
++      path: current,
++    };
++  } catch {
++    return undefined;
++  }
++}
++
++export function resolveSelectedWindowsUserPathSync(input: string): string {
++  return gameProvider?.() === undefined ? input : resolveWindowsUserPathSync(input);
++}
++
++export function resolveWindowsUserPathSync(input: string): string {
++  if (process.platform !== "linux" || !path.isAbsolute(input)) {
++    return input;
++  }
++
++  if (isPathInside(vortexUserDataPath(), input)) {
++    return input;
++  }
++
++  const selected = gameProvider?.() !== undefined;
++  let prefixes: string[] | undefined;
++  const candidates = linuxUserPathMappings()
++    .flatMap((mapping) => {
++      const relative = path.relative(mapping.linuxRoot, input);
++      if (relative.startsWith("..") || path.isAbsolute(relative) || relative.length === 0) {
++        return [];
++      }
++      const myGames = relative.split(path.sep)[0].toLowerCase() === "my games";
++      const gameData = mapping.gameData || myGames;
++      prefixes ??= compatibilityPrefixes();
++      if (prefixes === undefined) {
++        if (!gameData) return [];
++        throw Object.assign(
++          new Error(
++            "The selected game's Wine/Proton prefix is unavailable. Launch the game once, or configure its WINEPREFIX.",
++          ),
++          { code: "ENOENT" },
++        );
++      }
++      // The selected game's own data belongs in its prefix even before the game
++      // creates it. Other paths are redirected only when the prefix already has
++      // them, so Linux files in Documents or ~/.config stay where they are.
++      const minimumExistingParts = selected && gameData ? 0 : myGames ? 2 : 1;
++      return windowsUserRoots(prefixes, mapping.windowsRoot).map((root) =>
++        resolveCandidate(root, relative, minimumExistingParts),
++      );
++    })
++    .filter((candidate): candidate is ICandidate => candidate !== undefined);
++
++  const destinations = [...new Set(candidates.map((candidate) => canonicalPath(candidate.path)))];
++  if (destinations.length > 1) {
++    throw Object.assign(
++      new Error(
++        "Several compatibility prefixes contain this game data. Select the game's installation or configure its WINEPREFIX.",
++      ),
++      { code: "EAMBIGUOUS" },
++    );
++  }
++  return candidates[0]?.path ?? input;
++}
++
++export function resetCompatibilityPathCache() {
++  cachedPrefixKey = undefined;
++  cachedPrefixes = [];
++  selectedPrefixCache = undefined;
++}
+diff --git a/src/util/compatibilitySelection.test.ts b/src/util/compatibilitySelection.test.ts
+new file mode 100644
+index 0000000..ee058f2
+--- /dev/null
++++ b/src/util/compatibilitySelection.test.ts
+@@ -0,0 +1,197 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import {
++  resetCompatibilityPathCache,
++  resolveWindowsUserPathSync,
++  setCompatibilityGameProvider,
++} from "./compatibilityPaths";
++import { findSteamInstallation, steamLibraries, steamRoots } from "./linux/steamLibraries";
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
++
++vi.mock("node:os", async (original) => ({
++  ...(await original<typeof os>()),
++  homedir: vi.fn(),
++}));
++
++describe.runIf(process.platform === "linux")("selected compatibility prefix", () => {
++  let home: string;
++  let documents: string;
++  const relative = "My Games/Example/settings.ini";
++  function fixture(prefix: string): string {
++    const file = path.join(prefix, "drive_c/users/steamuser/Documents", relative);
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, "[General]\n");
++    return file;
++  }
++  beforeEach(() => {
++    home = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-selected-prefix-"));
++    documents = path.join(home, "Documents");
++    vi.mocked(os.homedir).mockReturnValue(home);
++    vi.stubEnv("XDG_DATA_HOME", path.join(home, ".local/share"));
++    vi.stubEnv("VORTEX_LINUX_DOCUMENTS", documents);
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", "");
++    setCompatibilityGameProvider(undefined);
++  });
++  it("creates new game configuration directories inside the selected prefix", () => {
++    const prefix = path.join(home, "new-prefix");
++    const userDocuments = path.join(prefix, "drive_c/users/steamuser/Documents");
++    fs.mkdirSync(userDocuments, { recursive: true });
++    fs.mkdirSync(path.join(prefix, "drive_c/users/Public/Documents"), { recursive: true });
++    setCompatibilityGameProvider(() => ({ path: home, environment: { WINEPREFIX: prefix } }));
++    const destination = resolveCaseInsensitiveSync(path.join(documents, relative));
++    expect(destination).toBe(path.join(userDocuments, relative));
++    fs.mkdirSync(path.dirname(destination), { recursive: true });
++    fs.writeFileSync(destination, "fixture");
++    expect(fs.existsSync(path.join(documents, relative))).toBe(false);
++  });
++
++  it("keeps Linux files outside the selected prefix unless the prefix already has them", () => {
++    const prefix = path.join(home, "prefix");
++    const userDocuments = path.join(prefix, "drive_c/users/steamuser/Documents");
++    fs.mkdirSync(path.join(userDocuments, "Shared"), { recursive: true });
++    fs.mkdirSync(path.join(prefix, "drive_c/users/steamuser/AppData/Roaming"), { recursive: true });
++    vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(home, ".config"));
++    const archive = path.join(documents, "Mods/archive.7z");
++    fs.mkdirSync(path.dirname(archive), { recursive: true });
++    fs.writeFileSync(archive, "archive");
++    const settings = path.join(home, ".config/someapp/settings.json");
++    fs.mkdirSync(path.dirname(settings), { recursive: true });
++    fs.writeFileSync(settings, "{}");
++    setCompatibilityGameProvider(() => ({ path: home, environment: { WINEPREFIX: prefix } }));
++    expect(resolveCaseInsensitiveSync(archive)).toBe(archive);
++    expect(resolveCaseInsensitiveSync(path.join(documents, "Mods/new.7z.tmp"))).toBe(
++      path.join(documents, "Mods/new.7z.tmp"),
++    );
++    expect(resolveCaseInsensitiveSync(settings)).toBe(settings);
++    expect(resolveCaseInsensitiveSync(path.join(documents, "shared/file.txt"))).toBe(
++      path.join(userDocuments, "Shared/file.txt"),
++    );
++  });
++
++  it("uses Proton's steamuser profile when a prefix also has a Wine user profile", () => {
++    const prefix = path.join(home, "prefix");
++    const expected = fixture(prefix);
++    fs.mkdirSync(path.join(prefix, "drive_c/users", os.userInfo().username, "Documents/My Games"), {
++      recursive: true,
++    });
++    setCompatibilityGameProvider(() => ({ path: home, environment: { WINEPREFIX: prefix } }));
++    expect(resolveCaseInsensitiveSync(path.join(documents, relative))).toBe(expected);
++    expect(resolveCaseInsensitiveSync(path.join(documents, "My Games/New/new.ini"))).toBe(
++      path.join(prefix, "drive_c/users/steamuser/Documents/My Games/New/new.ini"),
++    );
++  });
++
++  it("only refuses game data while the selected prefix is missing", () => {
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(home, "missing") },
++    }));
++    const archive = path.join(documents, "Mods/archive.7z");
++    expect(resolveCaseInsensitiveSync(archive)).toBe(archive);
++    expect(() => resolveWindowsUserPathSync(path.join(home, "Saved Games/Example/save"))).toThrow(
++      /unavailable/,
++    );
++  });
++
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    vi.restoreAllMocks();
++    vi.unstubAllEnvs();
++    fs.rmSync(home, { force: true, recursive: true });
++  });
++
++  it.each(["data/Steam", ".local/share/Steam"])("finds Steam Flatpak at %s", (suffix) => {
++    const root = path.join(home, ".var/app/com.valvesoftware.Steam", suffix);
++    const expected = fixture(path.join(root, "steamapps/compatdata/123/pfx"));
++    expect(steamRoots()).toContain(root);
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++
++  it("refuses ambiguous prefixes regardless of timestamps", () => {
++    const a = path.join(home, "a"),
++      b = path.join(home, "b");
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", `${a}:${b}`);
++    const fa = fixture(a),
++      fb = fixture(b);
++    fs.utimesSync(fa, 1000, 1000);
++    fs.utimesSync(fb, 2000, 2000);
++    expect(() => resolveWindowsUserPathSync(path.join(documents, relative))).toThrow(/Several/);
++    fs.mkdirSync(path.dirname(path.join(documents, relative)), { recursive: true });
++    fs.writeFileSync(path.join(documents, relative), "stale host copy");
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: a } }));
++    expect(resolveCaseInsensitiveSync(path.join(documents, relative))).toBe(fa);
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(fa);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: b } }));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(fb);
++  });
++
++  it("uses the selected Steam installation on another library and accepts library symlinks", () => {
++    const root = path.join(home, ".local/share/Steam");
++    const library = path.join(home, "external disk");
++    fs.mkdirSync(path.join(root, "steamapps"), { recursive: true });
++    fs.writeFileSync(
++      path.join(root, "steamapps/libraryfolders.vdf"),
++      `"libraryfolders"\n{\n"0"\n{\n"path" "${library}"\n}\n}`,
++    );
++    const gamePath = path.join(library, "steamapps/common/Example");
++    fs.mkdirSync(gamePath, { recursive: true });
++    fs.writeFileSync(
++      path.join(library, "steamapps/appmanifest_123.acf"),
++      '"AppState"\n{\n"appid" "123"\n"installdir" "Example"\n}',
++    );
++    const prefix = path.join(library, "steamapps/compatdata/123/pfx");
++    const expected = fixture(prefix);
++    fixture(path.join(root, "steamapps/compatdata/999/pfx"));
++    const alias = path.join(home, "game-link");
++    fs.symlinkSync(gamePath, alias);
++    expect(steamLibraries()).toContain(library);
++    expect(findSteamInstallation(alias)?.prefix).toBe(prefix);
++    setCompatibilityGameProvider(() => ({
++      path: alias,
++      store: "steam",
++      executable: "Example.exe",
++    }));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++
++  it("does not fall back to another installation when the selected prefix is missing", () => {
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", path.join(home, "backup"));
++    fixture(path.join(home, "backup"));
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(home, "missing") },
++    }));
++    expect(() => resolveWindowsUserPathSync(path.join(documents, relative))).toThrow(/unavailable/);
++    expect(resolveWindowsUserPathSync(path.join(home, "Downloads/mod.zip"))).toBe(
++      path.join(home, "Downloads/mod.zip"),
++    );
++    const expected = fixture(path.join(home, "missing"));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++
++  it("keeps native game paths and Vortex state outside Proton", () => {
++    const gamePath = path.join(home, "native");
++    fs.mkdirSync(gamePath);
++    fs.writeFileSync(path.join(gamePath, "Game"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
++    fixture(path.join(home, "backup"));
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", path.join(home, "backup"));
++    setCompatibilityGameProvider(() => ({ path: gamePath, executable: "Game", store: "steam" }));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(
++      path.join(documents, relative),
++    );
++    vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(home, ".config"));
++    const state = path.join(home, ".config/Vortex/state.v2");
++    expect(resolveWindowsUserPathSync(state)).toBe(state);
++  });
++
++  it("deduplicates aliases of the same prefix", () => {
++    const prefix = path.join(home, "prefix");
++    const expected = fixture(prefix);
++    fs.symlinkSync(prefix, path.join(home, "alias"));
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", `${prefix}:${home}/alias`);
++    resetCompatibilityPathCache();
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++});
+diff --git a/src/util/fs.linuxCompatibility.test.ts b/src/util/fs.linuxCompatibility.test.ts
+new file mode 100644
+index 0000000..def3591
+--- /dev/null
++++ b/src/util/fs.linuxCompatibility.test.ts
+@@ -0,0 +1,93 @@
++import * as nodeFs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++// @ts-expect-error -- Vitest supports virtual modules at runtime but omits this overload.
++vi.mock("original-fs", async () => import("node:fs"), { virtual: true });
++
++import { resetCompatibilityPathCache } from "./compatibilityPaths";
++import { copyAsync, readFileSync, statAsync, statSync, writeFileAsync } from "./fs";
++
++describe.runIf(process.platform === "linux")("filesystem compatibility profile paths", () => {
++  let tempDir: string;
++  const oldEnvironment = new Map<string, string | undefined>();
++
++  beforeEach(() => {
++    tempDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), "vortex-fs-prefix-"));
++    setEnvironment("VORTEX_COMPAT_PREFIXES", path.join(tempDir, "prefix"));
++    setEnvironment("VORTEX_LINUX_APPDATA", path.join(tempDir, ".config"));
++    setEnvironment("VORTEX_LINUX_DOCUMENTS", path.join(tempDir, "Documents"));
++    resetCompatibilityPathCache();
++  });
++
++  afterEach(() => {
++    nodeFs.rmSync(tempDir, { force: true, recursive: true });
++    for (const [key, value] of oldEnvironment) {
++      if (value === undefined) {
++        delete process.env[key];
++      } else {
++        process.env[key] = value;
++      }
++    }
++    oldEnvironment.clear();
++    resetCompatibilityPathCache();
++  });
++
++  it("stats and copies Documents files inside a compatibility prefix", async () => {
++    const profileDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "Documents",
++      "My Games",
++      "Example Game",
++    );
++    nodeFs.mkdirSync(profileDirectory, { recursive: true });
++    nodeFs.writeFileSync(path.join(profileDirectory, "Settings.ini"), "profile-settings");
++
++    const requested = path.join(
++      process.env.VORTEX_LINUX_DOCUMENTS,
++      "My Games",
++      "Example Game",
++      "Settings.ini",
++    );
++    await expect(statAsync(requested)).resolves.toMatchObject({ size: 16 });
++    expect(statSync(requested).size).toBe(16);
++    expect(readFileSync(requested, "utf8")).toBe("profile-settings");
++    await copyAsync(requested, requested + ".base", { noSelfCopy: true });
++
++    expect(nodeFs.readFileSync(path.join(profileDirectory, "Settings.ini.base"), "utf8")).toBe(
++      "profile-settings",
++    );
++  });
++
++  it("writes Roaming data inside a compatibility prefix", async () => {
++    const profileDirectory = path.join(
++      tempDir,
++      "prefix",
++      "drive_c",
++      "users",
++      "generic",
++      "AppData",
++      "Roaming",
++      "Example Game",
++    );
++    nodeFs.mkdirSync(profileDirectory, { recursive: true });
++
++    const requested = path.join(process.env.VORTEX_LINUX_APPDATA, "Example Game", "settings.json");
++    await writeFileAsync(requested, "{}", "utf8");
++
++    expect(nodeFs.readFileSync(path.join(profileDirectory, "settings.json"), "utf8")).toBe("{}");
++  });
++
++  function setEnvironment(key: string, value: string) {
++    if (!oldEnvironment.has(key)) {
++      oldEnvironment.set(key, process.env[key]);
++    }
++    process.env[key] = value;
++  }
++});
+diff --git a/src/util/fs.ts b/src/util/fs.ts
+index afb6400..fe70c32 100644
+--- a/src/util/fs.ts
++++ b/src/util/fs.ts
+@@ -21,6 +21,7 @@ import {
+ import { createErrorReport, getVisibleWindow } from "./errorHandling";
+ import { TFunction } from "./i18n";
+ import lazyRequire from "./lazyRequire";
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
+ import { log } from "./log";
+ import { decodeSystemError } from "./nativeErrors";
+ import { restackErr, truthy } from "./util";
+@@ -29,6 +30,7 @@ import PromiseBB from "bluebird";
+ import { decode } from "iconv-lite";
+ import { dialog as dialogIn } from "electron";
+ import * as fs from "fs-extra";
++import * as originalFs from "original-fs";
+ import JsonSocket from "json-socket";
+ import * as _ from "lodash";
+ import * as net from "net";
+@@ -54,23 +56,52 @@ const dialog =
+ 
+ export { constants, FSWatcher, Stats, WriteStream } from "fs";
+ 
+-// simple re-export of functions we don't touch (yet)
+-export {
+-  accessSync,
+-  appendFileSync,
+-  closeSync,
+-  createReadStream,
+-  createWriteStream,
+-  linkSync,
+-  openSync,
+-  readdirSync,
+-  readFileSync,
+-  statSync,
+-  symlinkSync,
+-  watch,
+-  writeFileSync,
+-  writeSync,
+-} from "original-fs";
++function resolveSyncPathArguments<T extends (...args: any[]) => any>(
++  func: T,
++  pathArgs: number[],
++): T {
++  return ((...args: any[]) => {
++    const resolvedArgs = args.map((arg, index) =>
++      pathArgs.includes(index) && typeof arg === "string" ? resolveCaseInsensitiveSync(arg) : arg,
++    );
++    return func(...resolvedArgs);
++  }) as T;
++}
++
++// Extensions also use the synchronous side of the public filesystem API.
++// Keep those calls on the same Linux compatibility-path layer as the async API.
++/** @deprecated use node:fs directly */
++export const accessSync = resolveSyncPathArguments(originalFs.accessSync, [0]);
++/** @deprecated use node:fs directly */
++export const appendFileSync = resolveSyncPathArguments(originalFs.appendFileSync, [0]);
++/** @deprecated use node:fs directly */
++export const createReadStream = resolveSyncPathArguments(originalFs.createReadStream, [0]);
++/** @deprecated use node:fs directly */
++export const createWriteStream = resolveSyncPathArguments(originalFs.createWriteStream, [0]);
++/** @deprecated use node:fs directly */
++export const linkSync = resolveSyncPathArguments(originalFs.linkSync, [0, 1]);
++/** @deprecated use node:fs directly */
++export const openSync = resolveSyncPathArguments(originalFs.openSync, [0]);
++/** @deprecated use node:fs directly */
++export const readdirSync = resolveSyncPathArguments(originalFs.readdirSync, [0]);
++/** @deprecated use node:fs directly */
++export const realpathSync = resolveSyncPathArguments(originalFs.realpathSync, [0]);
++/** @deprecated use node:fs directly */
++export const readFileSync = resolveSyncPathArguments(originalFs.readFileSync, [0]);
++/** @deprecated use node:fs directly */
++export const statSync = resolveSyncPathArguments(originalFs.statSync, [0]);
++/** @deprecated use node:fs directly */
++export const symlinkSync = resolveSyncPathArguments(originalFs.symlinkSync, [0, 1]);
++/** @deprecated use node:fs directly */
++export const watch = resolveSyncPathArguments(originalFs.watch, [0]);
++/** @deprecated use node:fs directly */
++export const writeFileSync = resolveSyncPathArguments(originalFs.writeFileSync, [0]);
++
++// Descriptor-only operations do not contain a path to translate.
++/** @deprecated use node:fs directly */
++export const closeSync = originalFs.closeSync;
++/** @deprecated use node:fs directly */
++export const writeSync = originalFs.writeSync;
+ 
+ export interface ILinkFileOptions {
+   // Used to dictate whether error dialogs should
+@@ -528,9 +559,14 @@ function errorHandler(
+     .catch((err) => PromiseBB.reject(restackErr(err, stackErr)));
+ }
+ 
+-export function genFSWrapperAsync<T extends (...args) => any>(func: T) {
++export function genFSWrapperAsync<T extends (...args) => any>(func: T, pathArgs: number[] = []) {
+   const wrapper = (stackErr: Error, tries: number, ...args) =>
+-    simfail(() => PromiseBB.resolve(func(...args))).catch((err) =>
++    simfail(() => {
++      const resolvedArgs = args.map((arg, index) =>
++        pathArgs.includes(index) && typeof arg === "string" ? resolveCaseInsensitiveSync(arg) : arg,
++      );
++      return PromiseBB.resolve(func(...resolvedArgs));
++    }).catch((err) =>
+       errorHandler(err, stackErr, tries).then(() =>
+         wrapper(stackErr, tries - 1, ...args),
+       ),
+@@ -544,50 +580,38 @@ export function genFSWrapperAsync<T extends (...args) => any>(func: T) {
+ 
+ // tslint:disable:max-line-length
+ const chmodAsync: (path: string, mode: string | number) => PromiseBB<void> =
+-  genFSWrapperAsync(fs.chmod);
++  genFSWrapperAsync(fs.chmod, [0]);
+ const closeAsync: (fd: number) => PromiseBB<void> = genFSWrapperAsync(fs.close);
+ const fsyncAsync: (fd: number) => PromiseBB<void> = genFSWrapperAsync(fs.fsync);
+-const lstatAsync: (path: string) => PromiseBB<fs.Stats> = genFSWrapperAsync(
+-  fs.lstat,
+-);
+-const mkdirAsync: (path: string) => PromiseBB<void> = genFSWrapperAsync(
+-  fs.mkdir,
+-);
+-const mkdirsAsync: (path: string) => PromiseBB<void> = genFSWrapperAsync(
+-  fs.mkdirs,
+-);
++const lstatAsync: (path: string) => PromiseBB<fs.Stats> = genFSWrapperAsync(fs.lstat, [0]);
++const mkdirAsync: (path: string) => PromiseBB<void> = genFSWrapperAsync(fs.mkdir, [0]);
++const mkdirsAsync: (path: string) => PromiseBB<void> = genFSWrapperAsync(fs.mkdirs, [0]);
+ const moveAsync: (
+   src: string,
+   dest: string,
+   options?: fs.MoveOptions,
+-) => PromiseBB<void> = genFSWrapperAsync(fs.move);
++) => PromiseBB<void> = genFSWrapperAsync(fs.move, [0, 1]);
+ const openAsync: (
+   path: string,
+   flags: string | number,
+   mode?: number,
+-) => PromiseBB<number> = genFSWrapperAsync(fs.open);
+-const readdirAsync: (path: string) => PromiseBB<string[]> = genFSWrapperAsync(
+-  fs.readdir,
+-);
+-const readFileAsync: (...args: any[]) => PromiseBB<any> = genFSWrapperAsync(
+-  fs.readFile,
+-);
+-const statAsync: (path: string) => PromiseBB<fs.Stats> = genFSWrapperAsync(
+-  fs.stat,
+-);
++) => PromiseBB<number> = genFSWrapperAsync(fs.open, [0]);
++const readdirAsync: (path: string) => PromiseBB<string[]> = genFSWrapperAsync(fs.readdir, [0]);
++const readFileAsync: (...args: any[]) => PromiseBB<any> = genFSWrapperAsync(fs.readFile, [0]);
++const statAsync: (path: string) => PromiseBB<fs.Stats> = genFSWrapperAsync(fs.stat, [0]);
+ const statSilentAsync: (path: string) => PromiseBB<fs.Stats> = (
+   statPath: string,
+-) => PromiseBB.resolve(fs.stat(statPath));
++) => PromiseBB.resolve(fs.stat(resolveCaseInsensitiveSync(statPath)));
+ const symlinkAsync: (
+   srcpath: string,
+   dstpath: string,
+   type?: string,
+-) => PromiseBB<void> = genFSWrapperAsync(fs.symlink);
++) => PromiseBB<void> = genFSWrapperAsync(fs.symlink, [0, 1]);
+ const utimesAsync: (
+   path: string,
+   atime: number,
+   mtime: number,
+-) => PromiseBB<void> = genFSWrapperAsync(fs.utimes);
++) => PromiseBB<void> = genFSWrapperAsync(fs.utimes, [0]);
+ // fs.write and fs.read don't promisify correctly because it has two return values. fs-extra already works around this in their
+ // promisified api so no reason to reinvent the wheel (also we want the api to be compatible)
+ const writeAsync: <BufferT>(
+@@ -604,12 +628,12 @@ const writeFileAsync: (
+   file: string,
+   data: any,
+   options?: fs.WriteFileOptions,
+-) => PromiseBB<void> = genFSWrapperAsync(fs.writeFile);
++) => PromiseBB<void> = genFSWrapperAsync(fs.writeFile, [0]);
+ const appendFileAsync: (
+   file: string,
+   data: any,
+   options?: fs.WriteFileOptions,
+-) => PromiseBB<void> = genFSWrapperAsync(fs.appendFile);
++) => PromiseBB<void> = genFSWrapperAsync(fs.appendFile, [0]);
+ // tslint:enable:max-line-length
+ 
+ export {
+@@ -634,14 +658,14 @@ export {
+ };
+ 
+ export function isDirectoryAsync(dirPath: string): PromiseBB<boolean> {
+-  return PromiseBB.resolve(fs.stat(dirPath)).then((stats) =>
++  return PromiseBB.resolve(fs.stat(resolveCaseInsensitiveSync(dirPath))).then((stats) =>
+     stats.isDirectory(),
+   );
+ }
+ 
+ export function ensureDirSync(dirPath: string) {
+   try {
+-    fs.ensureDirSync(dirPath);
++    fs.ensureDirSync(resolveCaseInsensitiveSync(dirPath));
+   } catch (err) {
+     throw restackErr(err, new Error());
+   }
+@@ -649,7 +673,7 @@ export function ensureDirSync(dirPath: string) {
+ 
+ export function ensureFileAsync(filePath: string): PromiseBB<void> {
+   const stackErr = new Error();
+-  return PromiseBB.resolve(fs.ensureFile(filePath)).catch((err) => {
++  return PromiseBB.resolve(fs.ensureFile(resolveCaseInsensitiveSync(filePath))).catch((err) => {
+     throw restackErr(err, stackErr);
+   });
+ }
+@@ -658,6 +682,7 @@ export function ensureDirAsync(
+   dirPath: string,
+   onDirCreatedCB?: (created: string) => PromiseBB<void>,
+ ): PromiseBB<void> {
++  dirPath = resolveCaseInsensitiveSync(dirPath);
+   const stackErr = new Error();
+   // If a onDirCreated callback is provided, we can't use fs-extra's
+   //  implementation directly as there's no way for us to reliably determine
+@@ -775,6 +800,8 @@ export function copyAsync(
+     showDialogCallback?: () => boolean;
+   },
+ ): PromiseBB<void> {
++  src = resolveCaseInsensitiveSync(src);
++  dest = resolveCaseInsensitiveSync(dest);
+   const stackErr = new Error();
+   // fs.copy in fs-extra has a bug where it doesn't correctly avoid copying files onto themselves
+   const check = options?.noSelfCopy
+@@ -810,6 +837,8 @@ export function linkAsync(
+   dest: string,
+   options?: ILinkFileOptions,
+ ): PromiseBB<void> {
++  src = resolveCaseInsensitiveSync(src);
++  dest = resolveCaseInsensitiveSync(dest);
+   const stackErr = new Error();
+   return linkInt(src, dest, stackErr, NUM_RETRIES, options).catch((err) =>
+     PromiseBB.reject(restackErr(err, stackErr)),
+@@ -835,13 +864,14 @@ function linkInt(
+ }
+ 
+ export function removeSync(dirPath: string) {
+-  fs.removeSync(dirPath);
++  fs.removeSync(resolveCaseInsensitiveSync(dirPath));
+ }
+ 
+ export function unlinkAsync(
+   filePath: string,
+   options?: IRemoveFileOptions,
+ ): PromiseBB<void> {
++  filePath = resolveCaseInsensitiveSync(filePath);
+   return unlinkInt(filePath, new Error(), NUM_RETRIES, options || {});
+ }
+ 
+@@ -887,6 +917,8 @@ export function renameAsync(
+   sourcePath: string,
+   destinationPath: string,
+ ): PromiseBB<void> {
++  sourcePath = resolveCaseInsensitiveSync(sourcePath);
++  destinationPath = resolveCaseInsensitiveSync(destinationPath);
+   return renameInt(sourcePath, destinationPath, new Error(), NUM_RETRIES);
+ }
+ 
+@@ -921,6 +953,7 @@ function renameInt(
+ }
+ 
+ export function rmdirAsync(dirPath: string): PromiseBB<void> {
++  dirPath = resolveCaseInsensitiveSync(dirPath);
+   return rmdirInt(dirPath, new Error(), NUM_RETRIES);
+ }
+ 
+@@ -948,6 +981,7 @@ export function removeAsync(
+   remPath: string,
+   options?: IRemoveFileOptions,
+ ): PromiseBB<void> {
++  remPath = resolveCaseInsensitiveSync(remPath);
+   const stackErr = new Error();
+   return removeInt(remPath, stackErr, NUM_RETRIES, options || {});
+ }
+@@ -986,6 +1020,7 @@ function rimrafAsync(remPath: string): PromiseBB<void> {
+ }
+ 
+ export function readlinkAsync(linkPath: string): PromiseBB<string> {
++  linkPath = resolveCaseInsensitiveSync(linkPath);
+   const stackErr = new Error();
+   return readlinkInt(linkPath, stackErr, NUM_RETRIES);
+ }
+diff --git a/src/util/linux/steamLibraries.ts b/src/util/linux/steamLibraries.ts
+new file mode 100644
+index 0000000..4b832f0
+--- /dev/null
++++ b/src/util/linux/steamLibraries.ts
+@@ -0,0 +1,94 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { parse } from "simple-vdf";
++
++export function steamRoots(home = os.homedir()): string[] {
++  return [
++    path.join(process.env.XDG_DATA_HOME ?? path.join(home, ".local", "share"), "Steam"),
++    path.join(home, ".steam", "debian-installation"),
++    path.join(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"),
++    path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
++    path.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
++    path.join(home, ".steam", "steam"),
++  ];
++}
++
++export function canonicalPath(input: string): string {
++  try {
++    return fs.realpathSync(input);
++  } catch {
++    return path.resolve(input);
++  }
++}
++
++export function steamLibraries(roots = steamRoots()): string[] {
++  const libraries = new Set<string>();
++  for (const root of roots) {
++    if (fs.existsSync(root)) libraries.add(canonicalPath(root));
++    for (const directory of ["steamapps", "config"]) {
++      try {
++        const data = parse(
++          fs.readFileSync(path.join(root, directory, "libraryfolders.vdf"), "utf8"),
++        ) as any;
++        for (const library of Object.values(
++          data.libraryfolders ?? data.LibraryFolders ?? {},
++        ) as any[]) {
++          const location = typeof library === "string" ? library : library?.path;
++          if (typeof location === "string" && path.isAbsolute(location))
++            libraries.add(canonicalPath(location));
++        }
++      } catch {
++        /* Steam may be absent or still writing its manifest. */
++      }
++    }
++  }
++  return [...libraries];
++}
++
++export interface SteamInstallation {
++  appId: string;
++  gamePath: string;
++  steamAppsPath: string;
++  prefix: string;
++}
++
++export function findSteamInstallation(gamePath: string): SteamInstallation | undefined {
++  const target = canonicalPath(gamePath);
++  // Include the selected library even when Steam lives at a custom location.
++  const common = path.dirname(target);
++  const selectedRoot =
++    path.basename(common) === "common" && path.basename(path.dirname(common)) === "steamapps"
++      ? path.dirname(path.dirname(common))
++      : undefined;
++  const libraries = new Set([...steamLibraries(), ...(selectedRoot ? [selectedRoot] : [])]);
++  for (const library of libraries) {
++    const steamAppsPath = path.join(library, "steamapps");
++    let names: string[];
++    try {
++      names = fs.readdirSync(steamAppsPath);
++    } catch {
++      continue;
++    }
++    for (const name of names.filter((entry) => /^appmanifest_\d+\.acf$/.test(entry))) {
++      try {
++        const manifest = (parse(fs.readFileSync(path.join(steamAppsPath, name), "utf8")) as any)
++          .AppState;
++        const appId = String(manifest?.appid ?? "");
++        if (!/^\d+$/.test(appId) || typeof manifest?.installdir !== "string") continue;
++        const installed = canonicalPath(path.join(steamAppsPath, "common", manifest.installdir));
++        if (installed === target)
++          return {
++            appId,
++            gamePath: installed,
++            steamAppsPath,
++            prefix: path.join(steamAppsPath, "compatdata", appId, "pfx"),
++          };
++      } catch {
++        /* Ignore incomplete manifests. */
++      }
++    }
++  }
++  return undefined;
++}
+diff --git a/src/util/linuxCompatibility.test.ts b/src/util/linuxCompatibility.test.ts
+new file mode 100644
+index 0000000..4821f76
+--- /dev/null
++++ b/src/util/linuxCompatibility.test.ts
+@@ -0,0 +1,139 @@
++import type { SpawnOptions } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import {
++  filterSuccessfulWineStderr,
++  mapWineArgument,
++  prepareWindowsProcess,
++  prepareWindowsShellCommand,
++  resolveCaseInsensitiveSync,
++  toWinePath,
++} from "./linuxCompatibility";
++
++describe.runIf(process.platform === "linux")("linuxCompatibility", () => {
++  let tempDir: string;
++  let previousRuntimeRoot: string | undefined;
++  let previousWinePrefix: string | undefined;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-linux-compat-"));
++    previousRuntimeRoot = process.env.VORTEX_DOTNET_WIN_ROOT;
++    previousWinePrefix = process.env.VORTEX_WINEPREFIX;
++    process.env.VORTEX_WINEPREFIX = path.join(tempDir, "prefix");
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++    if (previousRuntimeRoot === undefined) {
++      delete process.env.VORTEX_DOTNET_WIN_ROOT;
++    } else {
++      process.env.VORTEX_DOTNET_WIN_ROOT = previousRuntimeRoot;
++    }
++    if (previousWinePrefix === undefined) {
++      delete process.env.VORTEX_WINEPREFIX;
++    } else {
++      process.env.VORTEX_WINEPREFIX = previousWinePrefix;
++    }
++  });
++
++  it("resolves Windows-authored casing and preserves it for a missing child", () => {
++    const actual = path.join(tempDir, "Tools", "Helper.exe");
++    fs.mkdirSync(path.dirname(actual));
++    fs.writeFileSync(actual, "");
++
++    expect(resolveCaseInsensitiveSync(path.join(tempDir, "tools", "helper.exe"))).toBe(actual);
++    expect(resolveCaseInsensitiveSync(path.join(tempDir, "tools", "missing.exe"))).toBe(
++      path.join(tempDir, "Tools", "missing.exe"),
++    );
++  });
++
++  it("uses the existing directory casing when a deployment target does not exist yet", () => {
++    const plugins = path.join(tempDir, "Data", "SFSE", "Plugins");
++    fs.mkdirSync(plugins, { recursive: true });
++
++    expect(
++      resolveCaseInsensitiveSync(path.join(tempDir, "Data", "SFSE", "plugins", "new.dll")),
++    ).toBe(path.join(plugins, "new.dll"));
++  });
++
++  it("maps local absolute arguments into Wine's Z drive", () => {
++    const localPath = path.join(tempDir, "Data", "input.pak");
++    fs.mkdirSync(path.dirname(localPath));
++    fs.writeFileSync(localPath, "");
++
++    expect(mapWineArgument(localPath)).toBe(toWinePath(localPath));
++    expect(mapWineArgument("--silent")).toBe("--silent");
++    expect(mapWineArgument("/silent")).toBe("/silent");
++  });
++
++  it("runs a managed Windows helper through the packaged runtime", () => {
++    const runtimeRoot = path.join(tempDir, "runtime");
++    const dotnet = path.join(runtimeRoot, "dotnet.exe");
++    const helper = path.join(tempDir, "Helper.exe");
++    const helperDll = path.join(tempDir, "Helper.dll");
++    const input = path.join(tempDir, "Data", "input.bin");
++    fs.mkdirSync(runtimeRoot);
++    fs.mkdirSync(path.dirname(input));
++    for (const file of [
++      dotnet,
++      helper,
++      helperDll,
++      `${path.join(tempDir, "Helper")}.runtimeconfig.json`,
++      input,
++    ]) {
++      fs.writeFileSync(file, "");
++    }
++    process.env.VORTEX_DOTNET_WIN_ROOT = runtimeRoot;
++
++    const options: SpawnOptions = { env: {} };
++    const result = prepareWindowsProcess(helper, ["--source", input], options);
++    expect(result.command).toBe("wine");
++    expect(result.args).toEqual([dotnet, toWinePath(helperDll), "--source", toWinePath(input)]);
++    expect(result.options.env?.WINEPREFIX).toBe(path.join(tempDir, "prefix"));
++    expect(result.options.env?.PATH).toBe(process.env.PATH);
++    expect(result.translated).toBe(true);
++  });
++
++  it("rewrites a shell invocation without knowing the helper or game", () => {
++    const helper = path.join(tempDir, "Generic Tool.exe");
++    const input = path.join(tempDir, "Data", "input.bin");
++    fs.mkdirSync(path.dirname(input));
++    fs.writeFileSync(helper, "");
++    fs.writeFileSync(input, "");
++
++    const result = prepareWindowsShellCommand(`"${helper}" --source "${input}"`);
++    expect(result.command).toContain("'wine'");
++    expect(result.command).toContain(`'${helper}'`);
++    expect(result.command).toContain(toWinePath(input));
++    expect(result.translated).toBe(true);
++  });
++
++  it("maps unquoted local paths in shell invocations", () => {
++    const helper = path.join(tempDir, "Helper.exe");
++    const input = path.join(tempDir, "Data", "input.bin");
++    fs.mkdirSync(path.dirname(input));
++    fs.writeFileSync(helper, "");
++    fs.writeFileSync(input, "");
++
++    const result = prepareWindowsShellCommand(`${helper} --source ${input}`);
++    expect(result.command).toContain(shellFragment(toWinePath(input)));
++    expect(result.translated).toBe(true);
++  });
++
++  it("removes known graphics diagnostics only from successful Wine output", () => {
++    const stderr = [
++      "libEGL warning: failed to create dri2 screen",
++      "pci id for fd 20: 10de:0000, driver (null)",
++      "real helper warning",
++    ].join("\n");
++    expect(filterSuccessfulWineStderr(stderr)).toBe("real helper warning");
++  });
++});
++
++function shellFragment(input: string): string {
++  return `'${input}'`;
++}
+diff --git a/src/util/linuxCompatibility.ts b/src/util/linuxCompatibility.ts
+new file mode 100644
+index 0000000..1be0938
+--- /dev/null
++++ b/src/util/linuxCompatibility.ts
+@@ -0,0 +1,270 @@
++import type { ExecOptions, SpawnOptions } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import {
++  resolveWindowsUserPathSync,
++  resolveSelectedWindowsUserPathSync,
++} from "./compatibilityPaths";
++
++export interface IPreparedProcess<TOptions extends ExecOptions | SpawnOptions> {
++  args: string[];
++  command: string;
++  options: TOptions;
++  translated: boolean;
++}
++
++export interface IPreparedShellCommand {
++  command: string;
++  options: ExecOptions;
++  translated: boolean;
++}
++
++const WINE_NOISE = [
++  /^libEGL warning:/,
++  /^MESA-LOADER:/,
++  /^pci id for fd /,
++  /^ATTENTION: default value of option /,
++];
++
++function isMissingPathError(err: unknown): boolean {
++  return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
++}
++
++function stripMatchingQuotes(input: string): { quote: string; value: string } {
++  const first = input[0];
++  const last = input[input.length - 1];
++  if ((first === '"' || first === "'") && first === last) {
++    return { quote: first, value: input.slice(1, -1) };
++  }
++  return { quote: "", value: input };
++}
++
++function shellQuote(input: string): string {
++  return `'${input.replaceAll("'", `'"'"'`)}'`;
++}
++
++function linuxRuntimeRoot(): string {
++  return process.env.VORTEX_DOTNET_WIN_ROOT ?? "/opt/Vortex/dotnet-win-x64";
++}
++
++function linuxWinePrefix(): string {
++  return (
++    process.env.VORTEX_WINEPREFIX ??
++    path.join(
++      process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"),
++      "vortex-linux",
++      "wineprefix",
++    )
++  );
++}
++
++function wineExecutable(): string {
++  return process.env.VORTEX_WINE ?? "wine";
++}
++
++function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
++  const result: NodeJS.ProcessEnv = {
++    ...process.env,
++    ...input,
++    WINEDEBUG: input?.WINEDEBUG ?? "-all",
++    WINEPREFIX: input?.WINEPREFIX ?? linuxWinePrefix(),
++  };
++
++  // These are Linux-side compatibility placeholders for Node extensions.
++  // Let Wine populate its own canonical C:\\users\\... values instead.
++  delete result.APPDATA;
++  delete result.LOCALAPPDATA;
++  delete result.USERPROFILE;
++  return result;
++}
++
++export function resolveCaseInsensitiveSync(input: string): string {
++  if (process.platform !== "linux" || !path.isAbsolute(input)) return input;
++  input = resolveSelectedWindowsUserPathSync(input);
++  if (fs.existsSync(input)) return input;
++
++  const normalized = path.normalize(input);
++  const root = path.parse(normalized).root;
++  const parts = path.relative(root, normalized).split(path.sep).filter(Boolean);
++  let current = root;
++
++  try {
++    for (let idx = 0; idx < parts.length; idx++) {
++      const part = parts[idx];
++      const exact = path.join(current, part);
++      if (fs.existsSync(exact)) {
++        current = exact;
++        continue;
++      }
++
++      const matches = fs
++        .readdirSync(current)
++        .filter((entry) => entry.toLowerCase() === part.toLowerCase());
++      if (matches.length === 0) {
++        // Keep the casing of the prefix that already exists. This matters when
++        // creating a new file below a Windows-authored directory such as
++        // "SFSE/Plugins" through a mod path spelling it "SFSE/plugins".
++        return resolveWindowsUserPathSync(path.join(current, ...parts.slice(idx)));
++      }
++      if (matches.length > 1) {
++        // The host contains multiple case variants and the requested spelling
++        // is not an exact match. Do not guess which existing entry to mutate.
++        return resolveWindowsUserPathSync(path.join(current, ...parts.slice(idx)));
++      }
++      current = path.join(current, matches[0]);
++    }
++    return current;
++  } catch {
++    return resolveWindowsUserPathSync(input);
++  }
++}
++
++export function toWinePath(input: string): string {
++  const resolved = resolveCaseInsensitiveSync(path.resolve(input));
++  return `Z:${resolved.replaceAll(path.sep, "\\")}`;
++}
++
++export function mapWineArgument(input: string): string {
++  const { quote, value } = stripMatchingQuotes(input);
++  if (!path.isAbsolute(value) || !value.slice(1).includes(path.sep)) {
++    return input;
++  }
++
++  const resolved = resolveCaseInsensitiveSync(value);
++  const parent = path.dirname(resolved);
++  if (!fs.existsSync(resolved) && !fs.existsSync(parent)) {
++    return input;
++  }
++
++  const mapped = toWinePath(resolved);
++  return quote ? `${quote}${mapped}${quote}` : mapped;
++}
++
++function managedEntryPoint(executable: string): string | undefined {
++  const stem = executable.slice(0, -path.extname(executable).length);
++  const dll = resolveCaseInsensitiveSync(`${stem}.dll`);
++  const runtimeConfig = resolveCaseInsensitiveSync(`${stem}.runtimeconfig.json`);
++  return fs.existsSync(dll) && fs.existsSync(runtimeConfig) ? dll : undefined;
++}
++
++export function prepareWindowsProcess<TOptions extends ExecOptions | SpawnOptions>(
++  command: string,
++  args: readonly string[] = [],
++  options: TOptions,
++): IPreparedProcess<TOptions> {
++  const resolvedCommand = resolveCaseInsensitiveSync(command);
++  if (process.platform !== "linux" || path.extname(resolvedCommand).toLowerCase() !== ".exe") {
++    return { args: [...args], command, options, translated: false };
++  }
++
++  const mappedArgs = args.map(mapWineArgument);
++  const managed = managedEntryPoint(resolvedCommand);
++  const dotnet = path.join(linuxRuntimeRoot(), "dotnet.exe");
++  const translatedArgs =
++    managed !== undefined && fs.existsSync(dotnet)
++      ? [dotnet, toWinePath(managed), ...mappedArgs]
++      : [resolvedCommand, ...mappedArgs];
++
++  return {
++    args: translatedArgs,
++    command: wineExecutable(),
++    options: {
++      ...options,
++      env: wineEnvironment(options.env),
++      shell: false,
++    },
++    translated: true,
++  };
++}
++
++function mapQuotedShellPaths(input: string): string {
++  return input
++    .replace(/"(\/[^"\n]+)"/g, (_match, value: string) => `"${mapWineArgument(value)}"`)
++    .replace(/'(\/[^'\n]+)'/g, (_match, value: string) => shellQuote(mapWineArgument(value)))
++    .replace(/(^|\s)(\/[^\s"'|;&<>]+)/g, (_match, prefix: string, value: string) => {
++      return `${prefix}${shellQuote(mapWineArgument(value))}`;
++    });
++}
++
++export function prepareWindowsShellCommand(
++  command: string,
++  options: ExecOptions = {},
++): IPreparedShellCommand {
++  if (process.platform !== "linux") {
++    return { command, options, translated: false };
++  }
++
++  const match = command.match(
++    /^\s*(?:"([^"]+\.exe)"|'([^']+\.exe)'|([^\s"']+\.exe))(?=\s|$)([\s\S]*)$/i,
++  );
++  if (match === null) {
++    return { command, options, translated: false };
++  }
++
++  const executable = resolveCaseInsensitiveSync(match[1] ?? match[2] ?? match[3]);
++  const managed = managedEntryPoint(executable);
++  const dotnet = path.join(linuxRuntimeRoot(), "dotnet.exe");
++  const runner = [shellQuote(wineExecutable())];
++  if (managed !== undefined && fs.existsSync(dotnet)) {
++    runner.push(shellQuote(dotnet), shellQuote(toWinePath(managed)));
++  } else {
++    runner.push(shellQuote(executable));
++  }
++
++  return {
++    command: `${runner.join(" ")}${mapQuotedShellPaths(match[4])}`,
++    options: {
++      ...options,
++      env: wineEnvironment(options.env),
++    },
++    translated: true,
++  };
++}
++
++export function filterSuccessfulWineStderr(stderr: string | Buffer): string | Buffer {
++  if (typeof stderr !== "string") {
++    return stderr;
++  }
++  return stderr
++    .split(/\r?\n/)
++    .filter((line) => line.trim().length > 0 && !WINE_NOISE.some((pattern) => pattern.test(line)))
++    .join("\n");
++}
++
++export async function withCaseInsensitiveFallback<T>(
++  input: string,
++  operation: (resolved: string) => Promise<T>,
++): Promise<T> {
++  try {
++    return await operation(input);
++  } catch (err) {
++    if (!isMissingPathError(err)) {
++      throw err;
++    }
++    const resolved = resolveCaseInsensitiveSync(input);
++    if (resolved === input) {
++      throw err;
++    }
++    return operation(resolved);
++  }
++}
++
++export function withCaseInsensitiveFallbackSync<T>(
++  input: string,
++  operation: (resolved: string) => T,
++): T {
++  try {
++    return operation(input);
++  } catch (err) {
++    if (!isMissingPathError(err)) {
++      throw err;
++    }
++    const resolved = resolveCaseInsensitiveSync(input);
++    if (resolved === input) {
++      throw err;
++    }
++    return operation(resolved);
++  }
++}
+diff --git a/src/util/linuxExeVersion.test.ts b/src/util/linuxExeVersion.test.ts
+new file mode 100644
+index 0000000..c5e403b
+--- /dev/null
++++ b/src/util/linuxExeVersion.test.ts
+@@ -0,0 +1,38 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import {
++  getFileVersion,
++  getProductVersion,
++  getFileVersionLocalized,
++  getProductVersionLocalized,
++} from "./linuxExeVersion";
++
++describe("native Linux PE version reader", () => {
++  let directory: string;
++  beforeEach(() => {
++    directory = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-pe-version-"));
++  });
++  afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
++
++  it("reads fixed and localized versions from the bundled Windows executable", () => {
++    const executable = path.resolve(__dirname, "../../assets/dotnetprobe.exe");
++    expect(getFileVersion(executable)).toBe("1.0.0.0");
++    expect(getProductVersion(executable)).toBe("1.0.0.0");
++    expect(getFileVersionLocalized(executable)).toBe("1.0.0.0");
++    expect(getProductVersionLocalized(executable)).toMatch(/^1\.0\.0\+/);
++  });
++
++  it("returns an empty fallback for missing and non-PE files", () => {
++    const plainFile = path.join(directory, "ordinary.exe");
++    fs.writeFileSync(plainFile, "This file is not a PE executable.\n");
++    for (const file of [path.join(directory, "missing.exe"), plainFile]) {
++      for (const readVersion of [getFileVersion, getProductVersion,
++        getFileVersionLocalized, getProductVersionLocalized]) {
++        expect(readVersion(file)).toBe("");
++      }
++    }
++  });
++});
+diff --git a/src/util/linuxExeVersion.ts b/src/util/linuxExeVersion.ts
+new file mode 100644
+index 0000000..47f0a37
+--- /dev/null
++++ b/src/util/linuxExeVersion.ts
+@@ -0,0 +1,34 @@
++/**
++ * Read version info from Windows PE executables.
++ *
++ * Drop-in replacement for the native exe-version package. Parses PE headers
++ * directly in TypeScript — no native addons or winapi-bindings dependency.
++ */
++
++import { readVersionInfo } from "./linuxPeVersion";
++
++export function getFileVersion(exeFile: string): string {
++  const info = readVersionInfo(exeFile);
++  if (info === undefined) return "";
++  return info.fileVersion.join(".");
++}
++
++export function getProductVersion(exeFile: string): string {
++  const info = readVersionInfo(exeFile);
++  if (info === undefined) return "";
++  return info.productVersion.join(".");
++}
++
++export function getFileVersionLocalized(exeFile: string): string {
++  const info = readVersionInfo(exeFile);
++  if (info === undefined) return "";
++  return info.fileVersionString;
++}
++
++export function getProductVersionLocalized(exeFile: string): string {
++  const info = readVersionInfo(exeFile);
++  if (info === undefined) return "";
++  return info.productVersionString;
++}
++
++export default getFileVersion;
+diff --git a/src/util/linuxIni.test.ts b/src/util/linuxIni.test.ts
+new file mode 100644
+index 0000000..f8f1a15
+--- /dev/null
++++ b/src/util/linuxIni.test.ts
+@@ -0,0 +1,99 @@
++import * as fs from "node:fs";
++import Module, { createRequire } from "node:module";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import linuxWinapi from "./linuxWinapi";
++
++describe.runIf(process.platform === "linux")("Linux INI compatibility", () => {
++  let directory: string;
++  let file: string;
++
++  beforeEach(() => {
++    directory = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-ini-"));
++    file = path.join(directory, "settings.ini");
++  });
++  afterEach(() => {
++    vi.restoreAllMocks();
++    fs.rmSync(directory, { recursive: true, force: true });
++  });
++
++  it("reads missing files as empty and preserves comments, casing and CRLF on edits", () => {
++    expect(linuxWinapi.GetPrivateProfileSectionNames(file)).toEqual([]);
++    fs.writeFileSync(
++      file,
++      "; keep me\r\n[General]\r\nEnabled=0\r\nPath=a=b\r\n\r\n[Other]\r\nKey=value\r\n",
++    );
++    expect(linuxWinapi.GetPrivateProfileSection("GENERAL", file)).toEqual({
++      Enabled: "0",
++      Path: "a=b",
++    });
++    linuxWinapi.WritePrivateProfileString("general", "enabled", "1", file);
++    expect(fs.readFileSync(file, "utf8")).toBe(
++      "; keep me\r\n[General]\r\nEnabled=1\r\nPath=a=b\r\n\r\n[Other]\r\nKey=value\r\n",
++    );
++  });
++
++  it("adds and removes keys and sections without resurrecting duplicate keys", () => {
++    fs.writeFileSync(file, "[General]\nKey=first\nKEY=second\n; retained\n");
++    linuxWinapi.WritePrivateProfileString("general", "key", null, file);
++    expect(linuxWinapi.GetPrivateProfileSection("General", file)).toEqual({});
++    linuxWinapi.WritePrivateProfileString("Mods", "Enabled", "1", file);
++    expect(linuxWinapi.GetPrivateProfileSection("mods", file)).toEqual({ Enabled: "1" });
++    linuxWinapi.WritePrivateProfileString("Mods", null, null, file);
++    expect(linuxWinapi.GetPrivateProfileSectionNames(file)).toEqual(["General"]);
++    expect(fs.readFileSync(file, "utf8")).toContain("; retained");
++  });
++
++  it.each(["utf8", "utf16le", "latin1"] as const)(
++    "preserves %s bytes, BOM and linked files",
++    (encoding) => {
++      const bom =
++        encoding === "utf16le"
++          ? Buffer.from([0xff, 0xfe])
++          : encoding === "utf8"
++            ? Buffer.from([0xef, 0xbb, 0xbf])
++            : Buffer.alloc(0);
++      const text = "[General]\r\nName=café\r\nKey=old\r\n";
++      fs.writeFileSync(file, Buffer.concat([bom, Buffer.from(text, encoding)]));
++      const hardlink = path.join(directory, "linked.ini");
++      const symlink = path.join(directory, "alias.ini");
++      fs.linkSync(file, hardlink);
++      fs.symlinkSync(file, symlink);
++      linuxWinapi.WritePrivateProfileString("General", "Key", "$new", symlink);
++      const expected = Buffer.concat([bom, Buffer.from(text.replace("old", "$new"), encoding)]);
++      expect(fs.readFileSync(file)).toEqual(expected);
++      expect(fs.readFileSync(hardlink)).toEqual(expected);
++      expect(fs.lstatSync(symlink).isSymbolicLink()).toBe(true);
++    },
++  );
++
++  it("rejects unencodable writes without truncating the original file", () => {
++    const bytes = Buffer.from("[General]\nName=café\n", "latin1");
++    fs.writeFileSync(file, bytes);
++    expect(() => linuxWinapi.WritePrivateProfileString("General", "Name", "żółw", file)).toThrow(
++      /encoding/,
++    );
++    expect(fs.readFileSync(file)).toEqual(bytes);
++    expect(() => linuxWinapi.GetPrivateProfileSectionNames(directory)).toThrow();
++  });
++
++  it("round-trips changes through the installed vortex-parse-ini package", async () => {
++    const loader = Module as typeof Module & { _load: (...args: unknown[]) => unknown };
++    const original = loader._load;
++    vi.spyOn(loader, "_load").mockImplementation(function (request, ...args) {
++      return request === "winapi-bindings" ? linuxWinapi : original.call(this, request, ...args);
++    });
++    const require = createRequire(__filename);
++    const { default: IniParser, WinapiFormat } = require("vortex-parse-ini");
++    const parser = new IniParser(new WinapiFormat());
++    fs.writeFileSync(file, "[modExample]\nEnabled=0\nPriority=5\n");
++    const ini = await parser.read(file);
++    ini.data.modExample.Enabled = "1";
++    ini.data.modExample.Priority = "2";
++    await parser.write(file, ini);
++    expect((await parser.read(file)).data.modExample).toEqual({ Enabled: "1", Priority: "2" });
++  });
++});
+diff --git a/src/util/linuxIni.ts b/src/util/linuxIni.ts
+new file mode 100644
+index 0000000..a64516e
+--- /dev/null
++++ b/src/util/linuxIni.ts
+@@ -0,0 +1,138 @@
++import * as fs from "node:fs";
++
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
++
++interface IniDocument {
++  filePath: string;
++  text: string;
++  encoding: BufferEncoding;
++  bom: Buffer;
++}
++
++function readDocument(input: string): IniDocument {
++  const filePath = resolveCaseInsensitiveSync(input);
++  let bytes: Buffer;
++  try {
++    bytes = fs.readFileSync(filePath);
++  } catch (err) {
++    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
++    bytes = Buffer.alloc(0);
++  }
++  const utf16 = bytes[0] === 0xff && bytes[1] === 0xfe;
++  const utf8Bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
++  const bom = bytes.subarray(0, utf16 ? 2 : utf8Bom ? 3 : 0);
++  const body = bytes.subarray(bom.length);
++  const encoding = utf16
++    ? "utf16le"
++    : Buffer.from(body.toString("utf8")).equals(body)
++      ? "utf8"
++      : "latin1";
++  return { filePath, text: body.toString(encoding), encoding, bom };
++}
++
++function sectionName(line: string): string | undefined {
++  return /^\s*\[([^\]]+)\]\s*$/.exec(line)?.[1].trim();
++}
++
++function entry(line: string): { key: string; value: string } | undefined {
++  const match = /^\s*([^;#=\s][^=]*?)\s*=\s*(.*?)\s*$/.exec(line);
++  return match === null ? undefined : { key: match[1], value: match[2] };
++}
++
++function sectionBounds(lines: string[], section: string): [number, number] | undefined {
++  const start = lines.findIndex(
++    (line) => sectionName(line)?.toLowerCase() === section.toLowerCase(),
++  );
++  if (start === -1) return undefined;
++  let end = start + 1;
++  while (end < lines.length && sectionName(lines[end]) === undefined) end += 1;
++  return [start, end];
++}
++
++export function GetPrivateProfileSectionNames(filePath: string): string[] {
++  const names = new Map<string, string>();
++  for (const line of readDocument(filePath).text.split(/\r\n|\n|\r/)) {
++    const name = sectionName(line);
++    if (name !== undefined && !names.has(name.toLowerCase())) names.set(name.toLowerCase(), name);
++  }
++  return [...names.values()];
++}
++
++export function GetPrivateProfileSection(
++  section: string,
++  filePath: string,
++): Record<string, string> {
++  const lines = readDocument(filePath).text.split(/\r\n|\n|\r/);
++  const bounds = sectionBounds(lines, section);
++  const result: Record<string, string> = Object.create(null);
++  const keys = new Set<string>();
++  if (bounds === undefined) return result;
++  for (const line of lines.slice(bounds[0] + 1, bounds[1])) {
++    const item = entry(line);
++    if (item !== undefined && !keys.has(item.key.toLowerCase())) {
++      result[item.key] = item.value;
++      keys.add(item.key.toLowerCase());
++    }
++  }
++  return result;
++}
++
++export function GetPrivateProfileString(
++  section: string,
++  key: string,
++  fallback: string,
++  filePath: string,
++): string[] {
++  const values = GetPrivateProfileSection(section, filePath);
++  const actual = Object.keys(values).find((name) => name.toLowerCase() === key.toLowerCase());
++  const value = actual === undefined ? fallback : values[actual];
++  return [value.replace(/^(["'])(.*)\1$/, "$2")];
++}
++
++export function WritePrivateProfileString(
++  section: string,
++  key: string | null,
++  value: string | null | undefined,
++  input: string,
++): void {
++  if (
++    /[\r\n\0\[\]]/.test(section) ||
++    (key !== null && /[\r\n\0=]/.test(key)) ||
++    /[\r\n\0]/.test(value ?? "")
++  ) {
++    throw new Error("INI names and values must fit on one line");
++  }
++  const document = readDocument(input);
++  const eol = /\r\n|\n|\r/.exec(document.text)?.[0] ?? "\r\n";
++  const lines = document.text === "" ? [] : document.text.split(/\r\n|\n|\r/);
++  const bounds = sectionBounds(lines, section);
++  const deleting = value === null || value === undefined || key === null;
++  if (bounds === undefined) {
++    if (deleting) return;
++    if (lines.length > 0 && lines.at(-1) !== "") lines.push("");
++    lines.push(`[${section}]`, `${key}=${value}`, "");
++  } else if (key === null) {
++    lines.splice(bounds[0], bounds[1] - bounds[0]);
++  } else {
++    const matches: number[] = [];
++    for (let i = bounds[0] + 1; i < bounds[1]; i += 1) {
++      if (entry(lines[i])?.key.toLowerCase() === key.toLowerCase()) matches.push(i);
++    }
++    if (matches.length > 0) {
++      for (const index of matches.slice().reverse()) {
++        if (deleting || index !== matches[0]) lines.splice(index, 1);
++        else lines[index] = lines[index].replace(/=.*/, () => `=${value}`);
++      }
++    } else if (!deleting) {
++      let insert = bounds[1];
++      while (insert > bounds[0] + 1 && lines[insert - 1] === "") insert -= 1;
++      lines.splice(insert, 0, `${key}=${value}`);
++    } else return;
++  }
++  const text = lines.join(eol);
++  const body = Buffer.from(text, document.encoding);
++  if (body.toString(document.encoding) !== text)
++    throw new Error("INI value cannot be represented in the file's encoding");
++  // Keep symlinks and hardlinks intact when updating a deployed configuration.
++  fs.writeFileSync(document.filePath, Buffer.concat([document.bom, body]));
++}
+diff --git a/src/util/linuxPeResources.ts b/src/util/linuxPeResources.ts
+new file mode 100644
+index 0000000..61df6c0
+--- /dev/null
++++ b/src/util/linuxPeResources.ts
+@@ -0,0 +1,299 @@
++/**
++ * Shared PE (Portable Executable) resource section parser.
++ *
++ * Provides low-level primitives for navigating the resource directory tree
++ * inside Windows .exe/.dll files. Used by higher-level packages (exe-version,
++ * icon-extract) that each need a specific resource type.
++ *
++ * ## PE file layout (what we navigate)
++ *
++ *   DOS Header (offset 0)
++ *     - Starts with "MZ" magic
++ *     - e_lfanew (offset 0x3C): pointer to the PE header
++ *
++ *   PE Header (at e_lfanew)
++ *     - PE signature "PE\0\0"
++ *     - COFF header: number of sections, size of optional header
++ *     - Optional header: PE32 (32-bit) or PE32+ (64-bit)
++ *       - Data directories array — index 2 is the Resource Directory (RVA + size)
++ *
++ *   Section Headers (after optional header)
++ *     - Each section maps an RVA range to a file offset
++ *     - We find which section contains the resource directory RVA
++ *
++ * ## Resource directory (what we search)
++ *
++ * The resource directory is a tree with three levels: Type -> Name -> Language.
++ * Callers specify which resource type they want (RT_VERSION=16, RT_ICON=3, etc.)
++ * and this module navigates the tree to reach the data entries.
++ */
++
++import * as fs from "fs";
++import type { FileHandle } from "fs/promises";
++
++// --- PE constants ---
++
++const PE_SIGNATURE = 0x00004550; // "PE\0\0"
++const PE32_MAGIC = 0x10b;
++const PE32PLUS_MAGIC = 0x20b;
++
++// --- Types ---
++
++export interface ResourceSection {
++  /** Buffer containing the entire resource section data */
++  buf: Buffer;
++  /** Virtual address of the section in the PE image */
++  sectionVA: number;
++  /** RVA of the resource directory within the PE image */
++  resourceRVA: number;
++}
++
++export interface ResourceDataEntry {
++  /** RVA of the resource data in the PE image */
++  dataRVA: number;
++  /** Size of the resource data in bytes */
++  dataSize: number;
++}
++
++// --- PE header parsing ---
++
++/**
++ * Locate the resource section in a PE file (async).
++ *
++ * Reads the DOS header, PE header, optional header, and section table to find
++ * the section containing the resource directory. Returns the section data as a
++ * Buffer along with addressing info needed to convert RVAs to buffer offsets.
++ *
++ * @param fh An open file handle (from fs.promises.open)
++ * @param maxReadSize Cap on how many bytes to read from the section (default 20MB)
++ */
++export async function findResourceSection(
++  fh: FileHandle,
++  maxReadSize: number = 20 * 1024 * 1024,
++): Promise<ResourceSection | undefined> {
++  const dosHeader = Buffer.alloc(64);
++  await fh.read(dosHeader, 0, 64, 0);
++  if (dosHeader.readUInt16LE(0) !== 0x5a4d) return undefined; // "MZ"
++
++  const peOffset = dosHeader.readUInt32LE(0x3c);
++  const peHeader = Buffer.alloc(264); // enough for PE sig + COFF + largest optional header
++  await fh.read(peHeader, 0, 264, peOffset);
++
++  if (peHeader.readUInt32LE(0) !== PE_SIGNATURE) return undefined;
++
++  // COFF header starts at offset 4
++  const numberOfSections = peHeader.readUInt16LE(6);
++  const sizeOfOptionalHeader = peHeader.readUInt16LE(20);
++
++  // Optional header starts at offset 24
++  const optMagic = peHeader.readUInt16LE(24);
++  let dataDirOffset: number;
++  if (optMagic === PE32_MAGIC) {
++    dataDirOffset = 24 + 96; // offset within peHeader
++  } else if (optMagic === PE32PLUS_MAGIC) {
++    dataDirOffset = 24 + 112;
++  } else {
++    return undefined;
++  }
++
++  // Resource directory is data directory index 2
++  const resourceRVA = peHeader.readUInt32LE(dataDirOffset + 2 * 8);
++  const resourceSize = peHeader.readUInt32LE(dataDirOffset + 2 * 8 + 4);
++  if (resourceRVA === 0 || resourceSize === 0) return undefined;
++
++  // Read section headers
++  const sectionsOffset = peOffset + 24 + sizeOfOptionalHeader;
++  const sectionsSize = numberOfSections * 40;
++  const sections = Buffer.alloc(sectionsSize);
++  await fh.read(sections, 0, sectionsSize, sectionsOffset);
++
++  // Find the section containing the resource RVA
++  for (let i = 0; i < numberOfSections; i++) {
++    const sectionVA = sections.readUInt32LE(i * 40 + 12);
++    const rawSize = sections.readUInt32LE(i * 40 + 16);
++    const rawOffset = sections.readUInt32LE(i * 40 + 20);
++    const virtualSize = sections.readUInt32LE(i * 40 + 8);
++    const endVA = sectionVA + Math.max(rawSize, virtualSize);
++
++    if (resourceRVA >= sectionVA && resourceRVA < endVA) {
++      const readSize = Math.min(rawSize, maxReadSize);
++      const buf = Buffer.alloc(readSize);
++      await fh.read(buf, 0, readSize, rawOffset);
++      return { buf, sectionVA, resourceRVA };
++    }
++  }
++
++  return undefined;
++}
++
++/**
++ * Locate the resource section in a PE file (synchronous).
++ *
++ * Same as {@link findResourceSection} but uses synchronous I/O. Prefer the
++ * async version in event-loop-sensitive contexts (renderer process, servers).
++ *
++ * @param fd An open file descriptor (from fs.openSync)
++ * @param maxReadSize Cap on how many bytes to read from the section (default 20MB)
++ */
++export function findResourceSectionSync(
++  fd: number,
++  maxReadSize: number = 20 * 1024 * 1024,
++): ResourceSection | undefined {
++  const dosHeader = Buffer.alloc(64);
++  fs.readSync(fd, dosHeader, 0, 64, 0);
++  if (dosHeader.readUInt16LE(0) !== 0x5a4d) return undefined; // "MZ"
++
++  const peOffset = dosHeader.readUInt32LE(0x3c);
++  const peHeader = Buffer.alloc(264); // enough for PE sig + COFF + largest optional header
++  fs.readSync(fd, peHeader, 0, 264, peOffset);
++
++  if (peHeader.readUInt32LE(0) !== PE_SIGNATURE) return undefined;
++
++  // COFF header starts at offset 4
++  const numberOfSections = peHeader.readUInt16LE(6);
++  const sizeOfOptionalHeader = peHeader.readUInt16LE(20);
++
++  // Optional header starts at offset 24
++  const optMagic = peHeader.readUInt16LE(24);
++  let dataDirOffset: number;
++  if (optMagic === PE32_MAGIC) {
++    dataDirOffset = 24 + 96; // offset within peHeader
++  } else if (optMagic === PE32PLUS_MAGIC) {
++    dataDirOffset = 24 + 112;
++  } else {
++    return undefined;
++  }
++
++  // Resource directory is data directory index 2
++  const resourceRVA = peHeader.readUInt32LE(dataDirOffset + 2 * 8);
++  const resourceSize = peHeader.readUInt32LE(dataDirOffset + 2 * 8 + 4);
++  if (resourceRVA === 0 || resourceSize === 0) return undefined;
++
++  // Read section headers
++  const sectionsOffset = peOffset + 24 + sizeOfOptionalHeader;
++  const sectionsSize = numberOfSections * 40;
++  const sections = Buffer.alloc(sectionsSize);
++  fs.readSync(fd, sections, 0, sectionsSize, sectionsOffset);
++
++  // Find the section containing the resource RVA
++  for (let i = 0; i < numberOfSections; i++) {
++    const sectionVA = sections.readUInt32LE(i * 40 + 12);
++    const rawSize = sections.readUInt32LE(i * 40 + 16);
++    const rawOffset = sections.readUInt32LE(i * 40 + 20);
++    const virtualSize = sections.readUInt32LE(i * 40 + 8);
++    const endVA = sectionVA + Math.max(rawSize, virtualSize);
++
++    if (resourceRVA >= sectionVA && resourceRVA < endVA) {
++      const readSize = Math.min(rawSize, maxReadSize);
++      const buf = Buffer.alloc(readSize);
++      fs.readSync(fd, buf, 0, readSize, rawOffset);
++      return { buf, sectionVA, resourceRVA };
++    }
++  }
++
++  return undefined;
++}
++
++// --- Resource directory navigation ---
++
++/**
++ * Find a specific resource type in the root resource directory.
++ *
++ * Scans the top-level resource directory entries for one matching the given
++ * type ID (e.g. RT_VERSION=16, RT_ICON=3, RT_GROUP_ICON=14). Returns the
++ * offset of that type's subdirectory within the section buffer.
++ */
++export function findResourceType(
++  buf: Buffer,
++  baseOffset: number,
++  resourceType: number,
++): number | undefined {
++  const numberOfNamedEntries = buf.readUInt16LE(baseOffset + 12);
++  const numberOfIdEntries = buf.readUInt16LE(baseOffset + 14);
++  const totalEntries = numberOfNamedEntries + numberOfIdEntries;
++
++  for (let i = 0; i < totalEntries; i++) {
++    const entryOffset = baseOffset + 16 + i * 8;
++    const nameOrId = buf.readUInt32LE(entryOffset);
++    const offsetOrData = buf.readUInt32LE(entryOffset + 4);
++
++    if (nameOrId === resourceType && offsetOrData & 0x80000000) {
++      return offsetOrData & 0x7fffffff;
++    }
++  }
++
++  return undefined;
++}
++
++/**
++ * Recursively descend a resource subtree until we reach the first data entry.
++ *
++ * At each directory level, takes the first entry and recurses if it points to
++ * another subdirectory. Returns the raw IMAGE_RESOURCE_DATA_ENTRY (16 bytes)
++ * when a leaf is reached.
++ */
++export function findFirstDataEntry(buf: Buffer, dirOffset: number): ResourceDataEntry | undefined {
++  const numberOfNamedEntries = buf.readUInt16LE(dirOffset + 12);
++  const numberOfIdEntries = buf.readUInt16LE(dirOffset + 14);
++  const totalEntries = numberOfNamedEntries + numberOfIdEntries;
++
++  if (totalEntries === 0) return undefined;
++
++  // Take the first entry
++  const entryOffset = dirOffset + 16;
++  const offsetOrData = buf.readUInt32LE(entryOffset + 4);
++
++  return resolveToDataEntry(buf, offsetOrData);
++}
++
++/**
++ * Collect all data entries under a resource type subtree, keyed by name/ID.
++ *
++ * Iterates through all entries at the given directory level and resolves each
++ * to its final data entry. Useful when multiple resources of the same type
++ * exist (e.g. multiple icon sizes under RT_ICON).
++ */
++export function collectDataEntries(buf: Buffer, dirOffset: number): Map<number, ResourceDataEntry> {
++  const entries = new Map<number, ResourceDataEntry>();
++  const numberOfNamedEntries = buf.readUInt16LE(dirOffset + 12);
++  const numberOfIdEntries = buf.readUInt16LE(dirOffset + 14);
++  const totalEntries = numberOfNamedEntries + numberOfIdEntries;
++
++  for (let i = 0; i < totalEntries; i++) {
++    const entryOffset = dirOffset + 16 + i * 8;
++    const nameOrId = buf.readUInt32LE(entryOffset);
++    const offsetOrData = buf.readUInt32LE(entryOffset + 4);
++
++    const dataEntry = resolveToDataEntry(buf, offsetOrData);
++    if (dataEntry !== undefined) {
++      entries.set(nameOrId, dataEntry);
++    }
++  }
++
++  return entries;
++}
++
++/**
++ * Resolve an offset-or-data value to a data entry, recursing through
++ * subdirectories as needed.
++ */
++function resolveToDataEntry(buf: Buffer, offsetOrData: number): ResourceDataEntry | undefined {
++  if (offsetOrData & 0x80000000) {
++    // Subdirectory — take the first entry and recurse
++    const subDirOffset = offsetOrData & 0x7fffffff;
++    const subNamedCount = buf.readUInt16LE(subDirOffset + 12);
++    const subIdCount = buf.readUInt16LE(subDirOffset + 14);
++    if (subNamedCount + subIdCount === 0) return undefined;
++
++    const firstSubEntry = subDirOffset + 16;
++    const firstSubData = buf.readUInt32LE(firstSubEntry + 4);
++    return resolveToDataEntry(buf, firstSubData);
++  }
++
++  // Data entry: IMAGE_RESOURCE_DATA_ENTRY
++  if (offsetOrData + 16 > buf.length) return undefined;
++  return {
++    dataRVA: buf.readUInt32LE(offsetOrData),
++    dataSize: buf.readUInt32LE(offsetOrData + 4),
++  };
++}
+diff --git a/src/util/linuxPeVersion.ts b/src/util/linuxPeVersion.ts
+new file mode 100644
+index 0000000..fec4940
+--- /dev/null
++++ b/src/util/linuxPeVersion.ts
+@@ -0,0 +1,232 @@
++/**
++ * Pure TypeScript PE version resource parser.
++ *
++ * Reads VS_FIXEDFILEINFO and StringFileInfo from Windows PE executables
++ * without native addons. Uses the shared pe-resources package for PE header
++ * parsing and resource directory navigation, then handles the VS_VERSIONINFO-
++ * specific data format.
++ *
++ * ## VS_VERSIONINFO (what we parse)
++ *
++ * The version data blob starts with a VS_VERSIONINFO header:
++ *   - wLength, wValueLength, wType
++ *   - Key: "VS_VERSION_INFO" (UTF-16, null-terminated)
++ *   - Padding to DWORD boundary
++ *   - VS_FIXEDFILEINFO (52 bytes, starts with signature 0xFEEF04BD):
++ *       dwFileVersionMS / dwFileVersionLS → 4-part file version (e.g. 10.0.22621.1)
++ *       dwProductVersionMS / dwProductVersionLS → 4-part product version
++ *   - Children:
++ *     - StringFileInfo → StringTable → String entries (key/value pairs)
++ *       We look for keys "FileVersion" and "ProductVersion" which contain
++ *       the human-readable localized version strings.
++ *     - VarFileInfo (ignored — contains translation code page info)
++ */
++
++import * as fs from "fs";
++
++import { findResourceSectionSync, findResourceType, findFirstDataEntry } from "./linuxPeResources";
++
++// --- Constants ---
++
++const RT_VERSION = 16;
++const VS_FFI_SIGNATURE = 0xfeef04bd;
++
++// --- Result types ---
++
++export interface VersionInfo {
++  fileVersion: [number, number, number, number];
++  productVersion: [number, number, number, number];
++  /** Localized FileVersion string from StringFileInfo, or formatted fixed version */
++  fileVersionString: string;
++  /** Localized ProductVersion string from StringFileInfo, or formatted fixed version */
++  productVersionString: string;
++}
++
++// --- Helpers ---
++
++function align(offset: number, boundary: number): number {
++  return (offset + boundary - 1) & ~(boundary - 1);
++}
++
++function readWideString(buf: Buffer, offset: number): { str: string; end: number } {
++  const codes: number[] = [];
++  let pos = offset;
++  while (pos + 1 < buf.length) {
++    const code = buf.readUInt16LE(pos);
++    pos += 2;
++    if (code === 0) break;
++    codes.push(code);
++  }
++  return { str: String.fromCharCode(...codes), end: pos };
++}
++
++// --- VS_VERSIONINFO parsing ---
++
++function parseFixedFileInfo(
++  buf: Buffer,
++  offset: number,
++):
++  | {
++      fileVersion: [number, number, number, number];
++      productVersion: [number, number, number, number];
++    }
++  | undefined {
++  if (offset + 52 > buf.length) return undefined;
++  const signature = buf.readUInt32LE(offset);
++  if (signature !== VS_FFI_SIGNATURE) return undefined;
++
++  const fileVersionMS = buf.readUInt32LE(offset + 8);
++  const fileVersionLS = buf.readUInt32LE(offset + 12);
++  const productVersionMS = buf.readUInt32LE(offset + 16);
++  const productVersionLS = buf.readUInt32LE(offset + 20);
++
++  return {
++    fileVersion: [
++      (fileVersionMS >>> 16) & 0xffff,
++      fileVersionMS & 0xffff,
++      (fileVersionLS >>> 16) & 0xffff,
++      fileVersionLS & 0xffff,
++    ],
++    productVersion: [
++      (productVersionMS >>> 16) & 0xffff,
++      productVersionMS & 0xffff,
++      (productVersionLS >>> 16) & 0xffff,
++      productVersionLS & 0xffff,
++    ],
++  };
++}
++
++function parseStringFileInfo(
++  buf: Buffer,
++  offset: number,
++  endOffset: number,
++): { fileVersionString?: string; productVersionString?: string } {
++  const result: { fileVersionString?: string; productVersionString?: string } = {};
++
++  let pos = offset;
++
++  while (pos < endOffset) {
++    pos = align(pos, 4);
++    if (pos + 6 > endOffset) break;
++
++    const childLength = buf.readUInt16LE(pos);
++    if (childLength === 0) break;
++    const childEnd = pos + childLength;
++
++    const { str: childKey } = readWideString(buf, pos + 6);
++
++    if (childKey === "StringFileInfo") {
++      parseStringTables(buf, align(pos + 6 + (childKey.length + 1) * 2, 4), childEnd, result);
++    }
++
++    pos = childEnd;
++  }
++
++  return result;
++}
++
++function parseStringTables(
++  buf: Buffer,
++  offset: number,
++  endOffset: number,
++  result: { fileVersionString?: string; productVersionString?: string },
++): void {
++  let pos = offset;
++
++  while (pos < endOffset) {
++    pos = align(pos, 4);
++    if (pos + 6 > endOffset) break;
++
++    const tableLength = buf.readUInt16LE(pos);
++    if (tableLength === 0) break;
++    const tableEnd = pos + tableLength;
++
++    const { end: afterKey } = readWideString(buf, pos + 6);
++    let strPos = align(afterKey, 4);
++
++    while (strPos < tableEnd) {
++      strPos = align(strPos, 4);
++      if (strPos + 6 > tableEnd) break;
++
++      const strLength = buf.readUInt16LE(strPos);
++      if (strLength === 0) break;
++      const strValueLength = buf.readUInt16LE(strPos + 2);
++
++      const { str: key, end: afterStrKey } = readWideString(buf, strPos + 6);
++      const valueOffset = align(afterStrKey, 4);
++
++      if (strValueLength > 0 && valueOffset < tableEnd) {
++        const { str: value } = readWideString(buf, valueOffset);
++        if (key === "FileVersion") result.fileVersionString = value;
++        if (key === "ProductVersion") result.productVersionString = value;
++      }
++
++      strPos += strLength;
++    }
++
++    pos = tableEnd;
++  }
++}
++
++// --- Public API ---
++
++export function readVersionInfo(filePath: string): VersionInfo | undefined {
++  let fd: number;
++  try {
++    fd = fs.openSync(filePath, "r");
++  } catch {
++    return undefined;
++  }
++
++  try {
++    const section = findResourceSectionSync(fd);
++    if (section === undefined) return undefined;
++
++    const { buf: sectionBuf, sectionVA, resourceRVA } = section;
++    const resourceOffset = resourceRVA - sectionVA;
++
++    // Navigate resource directory to find RT_VERSION
++    const typeDirOffset = findResourceType(sectionBuf, resourceOffset, RT_VERSION);
++    if (typeDirOffset === undefined) return undefined;
++
++    const dataEntry = findFirstDataEntry(sectionBuf, typeDirOffset);
++    if (dataEntry === undefined) return undefined;
++
++    const dataOffset = dataEntry.dataRVA - sectionVA;
++    if (dataOffset < 0 || dataOffset + dataEntry.dataSize > sectionBuf.length) return undefined;
++
++    const versionBuf = sectionBuf.subarray(dataOffset, dataOffset + dataEntry.dataSize);
++
++    // Parse VS_VERSIONINFO header
++    const viLength = versionBuf.readUInt16LE(0);
++    const viValueLength = versionBuf.readUInt16LE(2);
++    const { str: viKey, end: afterKey } = readWideString(versionBuf, 6);
++
++    if (viKey !== "VS_VERSION_INFO") return undefined;
++
++    // VS_FIXEDFILEINFO follows after alignment
++    const fixedOffset = align(afterKey, 4);
++    const fixed = parseFixedFileInfo(versionBuf, fixedOffset);
++    if (fixed === undefined) return undefined;
++
++    // Parse children (StringFileInfo/VarFileInfo) after VS_FIXEDFILEINFO
++    const childrenStart = align(fixedOffset + viValueLength, 4);
++    const strings = parseStringFileInfo(
++      versionBuf,
++      childrenStart,
++      Math.min(viLength, versionBuf.length),
++    );
++
++    const fmtFile = fixed.fileVersion.join(".");
++    const fmtProduct = fixed.productVersion.join(".");
++
++    return {
++      fileVersion: fixed.fileVersion,
++      productVersion: fixed.productVersion,
++      fileVersionString: strings.fileVersionString ?? fmtFile,
++      productVersionString: strings.productVersionString ?? fmtProduct,
++    };
++  } finally {
++    fs.closeSync(fd);
++  }
++}
+diff --git a/src/util/linuxWinapi.test.ts b/src/util/linuxWinapi.test.ts
+new file mode 100644
+index 0000000..8589f7e
+--- /dev/null
++++ b/src/util/linuxWinapi.test.ts
+@@ -0,0 +1,51 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import linuxWinapi from "./linuxWinapi";
++
++describe.runIf(process.platform === "linux")("Linux winapi compatibility", () => {
++  let tempDir: string;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-winapi-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++  });
++
++  it("provides portable volume and process information", () => {
++    expect(linuxWinapi.GetVolumePathName(tempDir)).not.toBe("");
++    expect(linuxWinapi.GetDiskFreeSpaceEx(tempDir).freeToCaller).toBeGreaterThan(0);
++    expect(linuxWinapi.GetProcessList().some((entry) => entry.processID === process.pid)).toBe(
++      true,
++    );
++  });
++
++  it("reports the executable path and parent of the current Linux process", () => {
++    const executable = fs.readlinkSync(`/proc/${process.pid}/exe`);
++    expect(linuxWinapi.GetModuleList(process.pid)).toEqual([{ exePath: executable }]);
++    expect(linuxWinapi.GetProcessList().find((entry) => entry.processID === process.pid))
++      .toMatchObject({ exeFile: path.basename(executable), parentProcessID: process.ppid });
++  });
++
++  it("represents the unavailable registry as an empty key tree", () => {
++    const callback = vi.fn((key: Buffer) => {
++      expect(linuxWinapi.RegEnumKeys(key)).toEqual([]);
++      expect(linuxWinapi.RegEnumValues(key)).toEqual([]);
++    });
++
++    linuxWinapi.WithRegOpen("HKEY_CURRENT_USER", "Software", callback);
++    expect(callback).toHaveBeenCalledOnce();
++    expect(() => linuxWinapi.RegGetValue()).toThrow(/not available/);
++  });
++
++  it("reports unsupported isolation without throwing", () => {
++    expect(linuxWinapi.SupportsAppContainer()).toBe(false);
++    expect(linuxWinapi.GetTasks()).toEqual([]);
++    expect(linuxWinapi.GetProcessWindowList()).toEqual([]);
++  });
++});
+diff --git a/src/util/linuxWinapi.ts b/src/util/linuxWinapi.ts
+new file mode 100644
+index 0000000..e49b8dd
+--- /dev/null
++++ b/src/util/linuxWinapi.ts
+@@ -0,0 +1,139 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import {
++  GetPrivateProfileSection,
++  GetPrivateProfileSectionNames,
++  GetPrivateProfileString,
++  WritePrivateProfileString,
++} from "./linuxIni";
++import { getDiskSpace, getVolumePath } from "./volume";
++
++export {
++  GetPrivateProfileSection,
++  GetPrivateProfileSectionNames,
++  GetPrivateProfileString,
++  WritePrivateProfileString,
++};
++
++function platformError(operation: string, code = "ENOSYS"): NodeJS.ErrnoException {
++  return Object.assign(new Error(`${operation} is not available on this platform`), { code });
++}
++
++export const GetDiskFreeSpaceEx = getDiskSpace;
++export const GetVolumePathName = getVolumePath;
++
++export function GetProcessList() {
++  try {
++    return fs
++      .readdirSync("/proc", { withFileTypes: true })
++      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
++      .flatMap((entry) => {
++        const processID = Number(entry.name);
++        try {
++          return [
++            {
++              exeFile: path.win32.basename(processExecutable(processID).replace(/\//g, "\\")),
++              numThreads: 0,
++              parentProcessID: Number(fs.readFileSync(`/proc/${processID}/stat`, "utf8").replace(/^.*\) /, "").split(" ")[1]),
++              priClassBase: 0,
++              processID,
++            },
++          ];
++        } catch {
++          return [];
++        }
++      });
++  } catch {
++    return [];
++  }
++}
++
++function processExecutable(pid: number): string {
++  const executable = fs.readlinkSync(`/proc/${pid}/exe`);
++  const firstArgument = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")[0];
++  return /\.(?:exe|com)$/i.test(firstArgument) ? firstArgument : executable;
++}
++
++export function GetModuleList(pid: number) {
++  try { return [{ exePath: processExecutable(pid) }]; } catch { return []; }
++}
++export const GetProcessWindowList = () => [];
++export const SetForegroundWindow = () => false;
++export const GetTasks = () => [];
++export const CheckYourPrivilege = () => [];
++export const GetUserSID = () => `unix:${process.getuid?.() ?? "unknown"}`;
++export const SupportsAppContainer = () => false;
++export const IsThisWine = () => false;
++export const WhoLocks = () => [];
++export const AbortSystemShutdown = () => false;
++export const InitiateSystemShutdown = () => false;
++
++export const GetNativeArch = () => ({
++  nativeArch: process.arch,
++  nativeMachineCode: 0,
++  usedFallback: true,
++});
++
++export const GetSystemPreferredUILanguages = () => [Intl.DateTimeFormat().resolvedOptions().locale];
++export const GetUserPreferredUILanguages = GetSystemPreferredUILanguages;
++export const GetProcessPreferredUILanguages = GetSystemPreferredUILanguages;
++export const SetProcessPreferredUILanguages = () => undefined;
++
++export function WithRegOpen(_hive: string, _keyPath: string, callback: (key: Buffer) => void) {
++  callback(Buffer.alloc(0));
++}
++
++export const RegEnumKeys = (_key?: Buffer) => [];
++export const RegEnumValues = (_key?: Buffer) => [];
++
++export function RegGetValue(): never {
++  throw platformError("Registry lookup", "ENOENT");
++}
++
++export function RegSetKeyValue(): never {
++  throw platformError("Registry update");
++}
++
++export function ShellExecuteEx(): never {
++  throw platformError("ShellExecuteEx");
++}
++
++export function RunTask(): never {
++  throw platformError("RunTask");
++}
++
++const linuxWinapi = {
++  GetPrivateProfileSection,
++  GetPrivateProfileSectionNames,
++  GetPrivateProfileString,
++  WritePrivateProfileString,
++  AbortSystemShutdown,
++  CheckYourPrivilege,
++  GetDiskFreeSpaceEx,
++  GetModuleList,
++  GetNativeArch,
++  GetProcessList,
++  GetProcessPreferredUILanguages,
++  GetProcessWindowList,
++  GetSystemPreferredUILanguages,
++  GetTasks,
++  GetUserPreferredUILanguages,
++  GetUserSID,
++  GetVolumePathName,
++  InitiateSystemShutdown,
++  IsThisWine,
++  RegEnumKeys,
++  RegEnumValues,
++  RegGetValue,
++  RegSetKeyValue,
++  RunTask,
++  SetForegroundWindow,
++  SetProcessPreferredUILanguages,
++  ShellExecuteEx,
++  SupportsAppContainer,
++  WhoLocks,
++  WithRegOpen,
++};
++
++export default linuxWinapi;
+diff --git a/src/util/monkeyPatching.ts b/src/util/monkeyPatching.ts
+index 64d8791..51b5bef 100644
+--- a/src/util/monkeyPatching.ts
++++ b/src/util/monkeyPatching.ts
+@@ -1,4 +1,5 @@
+ import * as pathT from "path";
++import { patchPathCompatibility, patchWin32NormalizeCompatibility } from "./pathCompatibility";
+ 
+ /**
+  * Monkey patching is obviously considered evil but there may be cases where the alternative
+@@ -141,26 +142,8 @@ function applyMonkeyPatches() {
+   );
+ 
+   const path: typeof pathT = require("path");
+-  const oldJoin = path.join;
+-  const oldResolve = path.resolve;
+-  // tslint:disable-next-line:only-arrow-functions
+-  path.join = function (...paths: string[]) {
+-    try {
+-      return oldJoin(...paths);
+-    } catch (err) {
+-      err["paths"] = paths;
+-      throw err;
+-    }
+-  };
+-
+-  path.resolve = function (...paths: string[]) {
+-    try {
+-      return oldResolve(...paths);
+-    } catch (err) {
+-      err["paths"] = paths;
+-      throw err;
+-    }
+-  };
++  patchWin32NormalizeCompatibility(path.win32, path);
++  patchPathCompatibility(path);
+ }
+ 
+ applyMonkeyPatches();
+diff --git a/src/util/nativeExecutable.test.ts b/src/util/nativeExecutable.test.ts
+new file mode 100644
+index 0000000..b3c2a04
+--- /dev/null
++++ b/src/util/nativeExecutable.test.ts
+@@ -0,0 +1,70 @@
++import * as fs from "fs";
++import * as os from "os";
++import * as path from "path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { resolveNativeExecutable, resolvePlatformPath } from "./nativeExecutable";
++
++describe("native executable resolution", () => {
++  let root: string;
++
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-native-executable-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  function executable(relativePath: string): void {
++    const target = path.join(root, relativePath);
++    fs.mkdirSync(path.dirname(target), { recursive: true });
++    fs.writeFileSync(target, "#!/bin/sh\n");
++    fs.chmodSync(target, 0o755);
++  }
++
++  it("keeps an existing declared executable", () => {
++    executable("bin/sample.exe");
++    executable("bin/sample");
++
++    expect(resolveNativeExecutable(root, "bin/sample.exe", "linux")).toBe("bin/sample.exe");
++  });
++
++  it("finds an executable with the same stem", () => {
++    executable("bin/sample");
++
++    expect(resolveNativeExecutable(root, "bin/sample.exe", "linux")).toBe("bin/sample");
++  });
++
++  it("matches a native executable to a decorated Windows variant", () => {
++    executable("bin/sample");
++    executable("bin/unrelated");
++
++    expect(resolveNativeExecutable(root, "bin/sample_render.exe", "linux")).toBe("bin/sample");
++  });
++
++  it("does not return a non-executable or unrelated file", () => {
++    fs.mkdirSync(path.join(root, "bin"), { recursive: true });
++    fs.writeFileSync(path.join(root, "bin", "sample"), "data");
++    executable("bin/different");
++
++    expect(resolveNativeExecutable(root, "bin/sample_render.exe", "linux")).toBe(
++      "bin/sample_render.exe",
++    );
++  });
++
++  it("does not alter declarations on other platforms", () => {
++    executable("bin/sample");
++
++    expect(resolveNativeExecutable(root, "bin/sample.exe", "win32")).toBe("bin/sample.exe");
++  });
++
++  it("returns an absolute platform path for validation", () => {
++    executable("bin/sample");
++
++    expect(resolvePlatformPath(root, "bin/sample.exe", "linux")).toBe(
++      path.join(root, "bin", "sample"),
++    );
++  });
++});
+diff --git a/src/util/nativeExecutable.ts b/src/util/nativeExecutable.ts
+new file mode 100644
+index 0000000..ac03b41
+--- /dev/null
++++ b/src/util/nativeExecutable.ts
+@@ -0,0 +1,113 @@
++import * as fs from "fs";
++import * as path from "path";
++
++function isExecutableFile(filePath: string): boolean {
++  try {
++    const stat = fs.statSync(filePath);
++    if (!stat.isFile()) {
++      return false;
++    }
++    fs.accessSync(filePath, fs.constants.X_OK);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function normalizedStem(fileName: string): string {
++  return path.basename(fileName, path.extname(fileName)).toLocaleLowerCase();
++}
++
++function scoreCandidate(requestedStem: string, candidateName: string): number {
++  const candidateStem = normalizedStem(candidateName);
++  if (candidateStem === requestedStem) {
++    return 100;
++  }
++
++  const requestedTokens = requestedStem.split(/[^a-z0-9]+/).filter(Boolean);
++  const candidateTokens = candidateStem.split(/[^a-z0-9]+/).filter(Boolean);
++  if (requestedTokens.length === 0 || candidateTokens.length === 0) {
++    return 0;
++  }
++
++  const candidateIsRequestedPrefix =
++    requestedStem.startsWith(candidateStem) &&
++    /[^a-z0-9]/.test(requestedStem.charAt(candidateStem.length));
++  if (candidateIsRequestedPrefix) {
++    return 80 + Math.min(candidateStem.length, 19);
++  }
++
++  const requestedIsCandidatePrefix =
++    candidateStem.startsWith(requestedStem) &&
++    /[^a-z0-9]/.test(candidateStem.charAt(requestedStem.length));
++  if (requestedIsCandidatePrefix) {
++    return 70 + Math.min(requestedStem.length, 19);
++  }
++
++  const commonTokens = candidateTokens.filter((token) => requestedTokens.includes(token));
++  return commonTokens.length === Math.min(requestedTokens.length, candidateTokens.length)
++    ? 50 + commonTokens.join("").length
++    : 0;
++}
++
++/**
++ * Resolve a Windows executable declared by an extension to a native executable
++ * shipped beside it by the Linux build of the application. The resolver is
++ * deliberately local and name-based: it never contains application IDs or a
++ * catalogue of special cases.
++ */
++export function resolveNativeExecutable(
++  basePath: string,
++  declaredPath: string,
++  platform: NodeJS.Platform = process.platform,
++): string {
++  if (platform !== "linux" || !declaredPath?.toLocaleLowerCase().endsWith(".exe")) {
++    return declaredPath;
++  }
++
++  const absoluteDeclared = path.isAbsolute(declaredPath)
++    ? declaredPath
++    : path.join(basePath, declaredPath);
++  if (fs.existsSync(absoluteDeclared)) {
++    return declaredPath;
++  }
++
++  const directory = path.dirname(absoluteDeclared);
++  const requestedStem = normalizedStem(absoluteDeclared);
++  let candidates: string[];
++  try {
++    candidates = fs.readdirSync(directory);
++  } catch {
++    return declaredPath;
++  }
++
++  const best = candidates
++    .filter((candidate) => !candidate.toLocaleLowerCase().endsWith(".exe"))
++    .map((candidate) => ({
++      candidate,
++      score: scoreCandidate(requestedStem, candidate),
++    }))
++    .filter(
++      ({ candidate, score }) => score >= 50 && isExecutableFile(path.join(directory, candidate)),
++    )
++    .sort((lhs, rhs) => rhs.score - lhs.score || lhs.candidate.localeCompare(rhs.candidate))[0];
++
++  if (best === undefined) {
++    return declaredPath;
++  }
++
++  const resolvedAbsolute = path.join(directory, best.candidate);
++  return path.isAbsolute(declaredPath)
++    ? resolvedAbsolute
++    : path.relative(basePath, resolvedAbsolute);
++}
++
++export function resolvePlatformPath(
++  basePath: string,
++  declaredPath: string,
++  platform: NodeJS.Platform = process.platform,
++): string {
++  return path.isAbsolute(declaredPath)
++    ? resolveNativeExecutable(basePath, declaredPath, platform)
++    : path.join(basePath, resolveNativeExecutable(basePath, declaredPath, platform));
++}
+diff --git a/src/util/opn.linux.test.ts b/src/util/opn.linux.test.ts
+new file mode 100644
+index 0000000..ab044d2
+--- /dev/null
++++ b/src/util/opn.linux.test.ts
+@@ -0,0 +1,23 @@
++import { ipcRenderer, shell } from "electron";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import * as winapi from "winapi-bindings";
++
++import opn from "./opn";
++
++afterEach(() => vi.restoreAllMocks());
++
++describe.runIf(process.platform === "linux")("Linux external links", () => {
++  it.each(["steam://rungameid/377160", "https://www.nexusmods.com/fallout4"])(
++    "opens %s through Electron despite the Windows-shaped compatibility API",
++    async (target) => {
++      expect(typeof winapi.ShellExecuteEx).toBe("function");
++      const openExternal = vi.spyOn(shell, "openExternal").mockResolvedValue();
++      const send = vi.spyOn(ipcRenderer, "send");
++
++      await opn(target);
++
++      expect(openExternal).toHaveBeenCalledWith(target, { activate: true });
++      expect(send).not.toHaveBeenCalled();
++    },
++  );
++});
+diff --git a/src/util/opn.ts b/src/util/opn.ts
+index c6ebc4b..149b24f 100644
+--- a/src/util/opn.ts
++++ b/src/util/opn.ts
+@@ -16,7 +16,7 @@ try {
+ 
+ // apparently the browser process is treated as the foreground process and only it
+ // can bring a window to the foreground
+-if (ipcMain !== undefined && winapi?.ShellExecuteEx !== undefined) {
++if (process.platform === "win32" && ipcMain !== undefined && winapi?.ShellExecuteEx !== undefined) {
+   ipcMain.on("__opn_win32", (evt, target) => {
+     try {
+       winapi.ShellExecuteEx({
+@@ -33,7 +33,7 @@ if (ipcMain !== undefined && winapi?.ShellExecuteEx !== undefined) {
+ 
+ function open(target: string, wait?: boolean): Promise<void> {
+   // TODO: technically with ShellExecuteEx we should be able to reproduce the wait behaviour
+-  if (winapi?.ShellExecuteEx !== undefined && !wait) {
++  if (process.platform === "win32" && winapi?.ShellExecuteEx !== undefined && !wait) {
+     try {
+       if (ipcRenderer !== undefined) {
+         ipcRenderer.send("__opn_win32", target);
+diff --git a/src/util/pathCompatibility.test.ts b/src/util/pathCompatibility.test.ts
+new file mode 100644
+index 0000000..71600be
+--- /dev/null
++++ b/src/util/pathCompatibility.test.ts
+@@ -0,0 +1,78 @@
++import * as path from "node:path";
++
++import { describe, expect, it } from "vitest";
++
++import {
++  extensionPathInput,
++  patchPathCompatibility,
++  patchWin32NormalizeCompatibility,
++} from "./pathCompatibility";
++
++function linuxPath(): Pick<typeof path, "join" | "normalize" | "resolve"> {
++  return {
++    join: path.posix.join,
++    normalize: path.posix.normalize,
++    resolve: path.posix.resolve,
++  };
++}
++
++function windowsNormalize(): Pick<typeof path, "normalize"> {
++  return { normalize: path.win32.normalize };
++}
++
++describe("extension path compatibility", () => {
++  it("translates Windows-authored separators only on Linux", () => {
++    expect(extensionPathInput("tools\\redmod\\bin\\redMod.exe", "linux")).toBe(
++      "tools/redmod/bin/redMod.exe",
++    );
++    expect(extensionPathInput("tools\\redmod\\bin\\redMod.exe", "win32")).toBe(
++      "tools\\redmod\\bin\\redMod.exe",
++    );
++  });
++
++  it("joins Windows-authored extension paths under a native game directory", () => {
++    const patched = linuxPath();
++    patchPathCompatibility(patched, "linux");
++
++    expect(patched.join("/games/Cyberpunk 2077", "tools\\redmod\\bin\\redMod.exe")).toBe(
++      "/games/Cyberpunk 2077/tools/redmod/bin/redMod.exe",
++    );
++  });
++
++  it("normalizes Windows-authored installer layouts for native comparisons", () => {
++    const patched = linuxPath();
++    patchPathCompatibility(patched, "linux");
++
++    expect(patched.normalize("engine\\tools\\scc.exe")).toBe("engine/tools/scc.exe");
++    expect(patched.normalize("r6/config/cybercmd/scc.toml")).toBe("r6/config/cybercmd/scc.toml");
++  });
++
++  it("normalizes mixed separators before resolving a path", () => {
++    const patched = linuxPath();
++    patchPathCompatibility(patched, "linux");
++
++    expect(patched.resolve("/games/Cyberpunk 2077", "r6\\cache/../scripts")).toBe(
++      "/games/Cyberpunk 2077/r6/scripts",
++    );
++  });
++
++  it("normalizes explicit win32 layout identifiers for native comparisons", () => {
++    const explicitWin32 = windowsNormalize();
++    const native = linuxPath();
++    patchWin32NormalizeCompatibility(explicitWin32, native, "linux");
++
++    expect(explicitWin32.normalize("bin/x64/plugins/cyber_engine_tweaks.asi")).toBe(
++      "bin/x64/plugins/cyber_engine_tweaks.asi",
++    );
++  });
++
++  it("does not change explicit win32 normalization on Windows", () => {
++    const explicitWin32 = windowsNormalize();
++    const native = linuxPath();
++    patchWin32NormalizeCompatibility(explicitWin32, native, "win32");
++
++    expect(explicitWin32.normalize("bin/x64/plugins/cyber_engine_tweaks.asi")).toBe(
++      "bin\\x64\\plugins\\cyber_engine_tweaks.asi",
++    );
++  });
++});
+diff --git a/src/util/pathCompatibility.ts b/src/util/pathCompatibility.ts
+new file mode 100644
+index 0000000..07f687f
+--- /dev/null
++++ b/src/util/pathCompatibility.ts
+@@ -0,0 +1,70 @@
++import type * as pathT from "path";
++
++function unknownToError(error: unknown): Error {
++  return error instanceof Error ? error : new Error(String(error));
++}
++
++type PatchablePath = Pick<typeof pathT, "join" | "normalize" | "resolve">;
++type PatchableNormalize = Pick<typeof pathT, "normalize">;
++
++/**
++ * Community extensions were historically authored for the Windows-only
++ * Vortex runtime and commonly embed backslashes in relative path fragments.
++ * Native Linux path helpers treat those backslashes as ordinary filename
++ * characters. Translate them at the path API boundary so the extensions can
++ * keep producing native host paths without knowing which host Vortex uses.
++ */
++export function extensionPathInput(input: string, platform = process.platform): string {
++  return platform === "linux" ? input.replaceAll("\\", "/") : input;
++}
++
++/**
++ * A few legacy extensions explicitly use path.win32.normalize() for archive
++ * layout identifiers and then compare them with native paths supplied by
++ * Vortex. Keep every other win32 helper intact for Wine command construction,
++ * but normalize those identifiers with the host implementation on Linux.
++ */
++export function patchWin32NormalizeCompatibility(
++  win32Path: PatchableNormalize,
++  nativePath: PatchableNormalize,
++  platform = process.platform,
++): void {
++  if (platform !== "linux") {
++    return;
++  }
++
++  const nativeNormalize = nativePath.normalize;
++  win32Path.normalize = function (input: string) {
++    return nativeNormalize(extensionPathInput(input, platform));
++  };
++}
++
++export function patchPathCompatibility(path: PatchablePath, platform = process.platform): void {
++  const oldJoin = path.join;
++  const oldNormalize = path.normalize;
++  const oldResolve = path.resolve;
++
++  path.join = function (...paths: string[]) {
++    try {
++      return oldJoin(...paths.map((input) => extensionPathInput(input, platform)));
++    } catch (unknownError) {
++      const err = unknownToError(unknownError);
++      err["paths"] = paths;
++      throw err;
++    }
++  };
++
++  path.normalize = function (input: string) {
++    return oldNormalize(extensionPathInput(input, platform));
++  };
++
++  path.resolve = function (...paths: string[]) {
++    try {
++      return oldResolve(...paths.map((input) => extensionPathInput(input, platform)));
++    } catch (unknownError) {
++      const err = unknownToError(unknownError);
++      err["paths"] = paths;
++      throw err;
++    }
++  };
++}
+diff --git a/src/util/requireRemap.ts b/src/util/requireRemap.ts
+index f19bb9d..59bfc3c 100644
+--- a/src/util/requireRemap.ts
++++ b/src/util/requireRemap.ts
+@@ -1,30 +1,248 @@
+-// tslint:disable-next-line:no-var-requires
+-const Module = require("module");
++import Module from "module";
++import path from "node:path";
++import { promisify } from "node:util";
+ 
+-import * as path from "path";
+ import * as electron from "./electron";
++import {
++  filterSuccessfulWineStderr,
++  prepareWindowsProcess,
++  prepareWindowsShellCommand,
++  resolveCaseInsensitiveSync,
++  withCaseInsensitiveFallback,
++  withCaseInsensitiveFallbackSync,
++} from "./linuxCompatibility";
++import linuxWinapi from "./linuxWinapi";
++import * as linuxExeVersion from "./linuxExeVersion";
++
++interface InternalModule extends Module {
++  _load(request: string, parent?: Module | null, isMain?: boolean): unknown;
++}
++
++function unpackedApplicationPath(input: string): string {
++  const appAsar = `${path.sep}app.asar${path.sep}`;
++  return input.replaceAll(appAsar, `${path.sep}app.asar.unpacked${path.sep}`);
++}
+ 
+ // when spawning a binary, the code doing the spawning will be baked by webpack
+ // in release builds and thus reside in the app.asar file.
+ // The binaries being spawned however have to be unpacked, so if the path being spawned
+ // includes something like __dirname we have to update that path to work.
+ class ChildProcessProxy {
++  private mExec: (...args: any[]) => any;
++  private mExecFile: (...args: any[]) => any;
++  private mSpawn: (...args: any[]) => any;
++
++  constructor(private mTarget: any) {
++    this.mExec = this.wrapExec();
++    this.mExecFile = this.wrapExecFile();
++    this.mSpawn = this.wrapSpawn();
++  }
++
+   public get(target, key: PropertyKey): any {
+     if (key === "__isProxied") {
+       return true;
+     } else if (key === "spawn") {
+-      return (command: string, ...args) => {
+-        const appAsar = `${path.sep}app.asar${path.sep}`;
+-        command = command.replace(
+-          appAsar,
+-          `${path.sep}app.asar.unpacked${path.sep}`,
+-        );
+-        return target.spawn(command, ...args);
+-      };
++      return this.mSpawn;
++    } else if (key === "exec") {
++      return this.mExec;
++    } else if (key === "execFile") {
++      return this.mExecFile;
+     } else {
+       return target[key];
+     }
+   }
++
++  private wrapSpawn(): (...args: any[]) => any {
++    return (command: string, argsOrOptions?: readonly string[] | any, options?: any) => {
++      const args = Array.isArray(argsOrOptions) ? argsOrOptions : [];
++      const normalizedOptions = Array.isArray(argsOrOptions)
++        ? (options ?? {})
++        : (argsOrOptions ?? {});
++      const unpackedCommand = unpackedApplicationPath(command);
++      const prepared = prepareWindowsProcess(unpackedCommand, args, normalizedOptions);
++      return this.mTarget.spawn(prepared.command, prepared.args, prepared.options);
++    };
++  }
++
++  private wrapExec(): (...args: any[]) => any {
++    const wrapped: any = (command: string, options?: any, callback?: any) => {
++      if (typeof options === "function") {
++        callback = options;
++        options = {};
++      }
++      const prepared = prepareWindowsShellCommand(unpackedApplicationPath(command), options ?? {});
++      const wrappedCallback = this.outputCallback(prepared.translated, callback);
++      return this.mTarget.exec(prepared.command, prepared.options, wrappedCallback);
++    };
++    wrapped[promisify.custom] = (command: string, options?: any) => {
++      let child;
++      const promise: any = new Promise((resolve, reject) => {
++        child = wrapped(command, options, (err, stdout, stderr) => {
++          if (err !== null && err !== undefined) {
++            err.stdout = stdout;
++            err.stderr = stderr;
++            reject(err);
++          } else {
++            resolve({ stdout, stderr });
++          }
++        });
++      });
++      promise.child = child;
++      return promise;
++    };
++    return wrapped;
++  }
++
++  private wrapExecFile(): (...args: any[]) => any {
++    const wrapped: any = (
++      command: string,
++      args?: readonly string[] | any,
++      options?: any,
++      callback?: any,
++    ) => {
++      if (!Array.isArray(args)) {
++        callback =
++          typeof options === "function" ? options : typeof args === "function" ? args : callback;
++        options = typeof args === "object" && args !== null ? args : {};
++        args = [];
++      } else if (typeof options === "function") {
++        callback = options;
++        options = {};
++      }
++      const prepared = prepareWindowsProcess(unpackedApplicationPath(command), args, options ?? {});
++      const wrappedCallback = this.outputCallback(prepared.translated, callback);
++      return this.mTarget.execFile(
++        prepared.command,
++        prepared.args,
++        prepared.options,
++        wrappedCallback,
++      );
++    };
++    wrapped[promisify.custom] = (
++      command: string,
++      args?: readonly string[] | any,
++      options?: any,
++    ) => {
++      let child;
++      const promise: any = new Promise((resolve, reject) => {
++        child = wrapped(command, args, options, (err, stdout, stderr) => {
++          if (err !== null && err !== undefined) {
++            err.stdout = stdout;
++            err.stderr = stderr;
++            reject(err);
++          } else {
++            resolve({ stdout, stderr });
++          }
++        });
++      });
++      promise.child = child;
++      return promise;
++    };
++    return wrapped;
++  }
++
++  private outputCallback(translated: boolean, callback: any): any {
++    if (typeof callback !== "function") {
++      return undefined;
++    }
++    return (err, stdout, stderr) =>
++      callback(
++        err,
++        stdout,
++        translated && (err === null || err === undefined)
++          ? filterSuccessfulWineStderr(stderr)
++          : stderr,
++      );
++  }
++}
++
++class FileSystemProxy {
++  private static readonly CALLBACK_METHODS = new Set([
++    "access",
++    "lstat",
++    "open",
++    "readFile",
++    "stat",
++  ]);
++  private static readonly PROMISE_METHODS = new Set([
++    "access",
++    "lstat",
++    "open",
++    "readFile",
++    "stat",
++  ]);
++  private static readonly SYNC_METHODS = new Set([
++    "accessSync",
++    "lstatSync",
++    "openSync",
++    "readFileSync",
++    "statSync",
++  ]);
++  private mPromiseProxy: any;
++
++  constructor(
++    private mTarget: any,
++    private mPromises: boolean,
++  ) {}
++
++  public get(target, key: PropertyKey): any {
++    if (key === "__isLinuxCompatProxied") {
++      return true;
++    }
++    if (process.platform !== "linux" || typeof key !== "string") {
++      return target[key];
++    }
++    if (!this.mPromises && key === "promises") {
++      this.mPromiseProxy ??= new Proxy(target.promises, new FileSystemProxy(target.promises, true));
++      return this.mPromiseProxy;
++    }
++    if (this.mPromises && FileSystemProxy.PROMISE_METHODS.has(key)) {
++      return (input: unknown, ...args: unknown[]) =>
++        typeof input === "string"
++          ? withCaseInsensitiveFallback(input, (resolved) => target[key](resolved, ...args))
++          : target[key](input, ...args);
++    }
++    if (!this.mPromises && FileSystemProxy.CALLBACK_METHODS.has(key)) {
++      return (input: unknown, ...args: unknown[]) => {
++        if (typeof input !== "string") {
++          return target[key](input, ...args);
++        }
++        const callbackIndex = args.length - 1;
++        const callback = args[callbackIndex];
++        if (typeof callback !== "function") {
++          return target[key](input, ...args);
++        }
++        const retry = (err: NodeJS.ErrnoException | null, ...values: unknown[]) => {
++          if (err?.code !== "ENOENT") {
++            callback(err, ...values);
++            return;
++          }
++          const resolved = resolveCaseInsensitiveSync(input);
++          if (resolved === input) {
++            callback(err, ...values);
++            return;
++          }
++          target[key](resolved, ...args.slice(0, callbackIndex), callback);
++        };
++        return target[key](input, ...args.slice(0, callbackIndex), retry);
++      };
++    }
++    if (!this.mPromises && FileSystemProxy.SYNC_METHODS.has(key)) {
++      return (input: unknown, ...args: unknown[]) =>
++        typeof input === "string"
++          ? withCaseInsensitiveFallbackSync(input, (resolved) => target[key](resolved, ...args))
++          : target[key](input, ...args);
++    }
++    if (!this.mPromises && key === "existsSync") {
++      return (input: unknown) => {
++        if (typeof input !== "string" || target.existsSync(input)) {
++          return target.existsSync(input);
++        }
++        return target.existsSync(resolveCaseInsensitiveSync(input));
++      };
++    }
++    return target[key];
++  }
+ }
+ 
+ const originalRequire = Module.prototype.require;
+@@ -37,25 +255,34 @@ Module.prototype.require = function (modulePath) {
+   return originalRequire.apply(this, arguments);
+ };
+ 
+-function patchedLoad(orig) {
+-  // tslint:disable-next-line:only-arrow-functions
+-  return function (request: string, parent, ...rest) {
++function patchedLoad(orig: InternalModule["_load"]): InternalModule["_load"] {
++  return function (request, parent, ...rest) {
+     if (
+       request === "fs" &&
+-      (parent.filename.indexOf("graceful-fs") !== -1 ||
+-        parent.filename.indexOf("rimraf") !== -1)
++      (parent.filename.indexOf("graceful-fs") !== -1 || parent.filename.indexOf("rimraf") !== -1)
+     ) {
+       request = "original-fs";
+     } else if (request === "electron") {
++      // Let the preload script get the real electron module
++      if (parent.filename.indexOf("preload") !== -1) {
++        return orig.apply(this, [request, parent, ...rest]);
++      }
++
+       return electron;
+     } else if (request === "@electron/remote" && process.type !== "renderer") {
+       return undefined;
++    } else if (request === "exe-version" && process.platform === "linux") {
++      return linuxExeVersion;
++    } else if (request === "winapi-bindings" && process.platform === "linux") {
++      return linuxWinapi;
+     }
+ 
+     let res = orig.apply(this, [request, parent, ...rest]);
+ 
+     if (request === "child_process" && !res.__isProxied) {
+-      res = new Proxy(res, new ChildProcessProxy());
++      res = new Proxy(res, new ChildProcessProxy(res));
++    } else if ((request === "fs" || request === "fs/promises") && !res.__isLinuxCompatProxied) {
++      res = new Proxy(res, new FileSystemProxy(res, request === "fs/promises"));
+     }
+ 
+     return res;
+@@ -63,9 +290,11 @@ function patchedLoad(orig) {
+ }
+ 
+ export default function () {
+-  const orig = (Module as any)._load;
+-  (Module as any)._load = patchedLoad(orig);
++  const castModule = Module as unknown as InternalModule;
++
++  const orig = castModule._load;
++  castModule._load = patchedLoad(orig);
+   return () => {
+-    (Module as any)._load = orig;
++    castModule._load = orig;
+   };
+ }
+diff --git a/src/util/volume.test.ts b/src/util/volume.test.ts
+new file mode 100644
+index 0000000..5a885f3
+--- /dev/null
++++ b/src/util/volume.test.ts
+@@ -0,0 +1,51 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import {
++  assertPathWritable,
++  getDiskSpace,
++  getPathDevice,
++  getVolumePath,
++  nearestExistingPath,
++} from "./volume";
++
++describe.runIf(process.platform !== "win32")("portable volume helpers", () => {
++  let tempDir: string;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-volume-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++  });
++
++  it("finds an existing ancestor for a path that has not been created yet", () => {
++    const missing = path.join(tempDir, "future", "mods");
++    expect(nearestExistingPath(missing)).toBe(tempDir);
++  });
++
++  it("returns a volume on the same device as the requested path", () => {
++    const volume = getVolumePath(path.join(tempDir, "future", "mods"));
++    expect(fs.statSync(volume).dev).toBe(fs.statSync(tempDir).dev);
++  });
++
++  it("reports usable disk-space values", () => {
++    const result = getDiskSpace(path.join(tempDir, "future", "mods"));
++    expect(result.total).toBeGreaterThan(0);
++    expect(result.free).toBeGreaterThan(0);
++    expect(result.freeToCaller).toBeGreaterThan(0);
++  });
++
++  it("accepts a future path when its existing parent is writable", () => {
++    const future = path.join(tempDir, "future", "mods");
++    expect(() => assertPathWritable(future)).not.toThrow();
++  });
++
++  it("gets the device from an existing ancestor", () => {
++    expect(getPathDevice(path.join(tempDir, "future", "mods"))).toBe(fs.statSync(tempDir).dev);
++  });
++});
+diff --git a/src/util/volume.ts b/src/util/volume.ts
+new file mode 100644
+index 0000000..e38bcba
+--- /dev/null
++++ b/src/util/volume.ts
+@@ -0,0 +1,70 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import * as winapi from "winapi-bindings";
++
++export interface IDiskSpace {
++  free: number;
++  freeToCaller: number;
++  total: number;
++}
++
++function missingPathError(input: string): NodeJS.ErrnoException {
++  return Object.assign(new Error(`No existing ancestor for ${input}`), {
++    code: "ENOENT",
++    path: input,
++  });
++}
++
++export function nearestExistingPath(input: string): string {
++  let current = path.resolve(input);
++
++  while (!fs.existsSync(current)) {
++    const parent = path.dirname(current);
++    if (parent === current) {
++      throw missingPathError(input);
++    }
++    current = parent;
++  }
++
++  return current;
++}
++
++export function assertPathWritable(input: string): void {
++  fs.accessSync(nearestExistingPath(input), fs.constants.W_OK);
++}
++
++export function getPathDevice(input: string): number {
++  return fs.statSync(nearestExistingPath(input)).dev;
++}
++
++export function getVolumePath(input: string): string {
++  if (process.platform === "win32") {
++    return winapi.GetVolumePathName(input);
++  }
++
++  const existing = nearestExistingPath(input);
++  let current = fs.statSync(existing).isDirectory() ? existing : path.dirname(existing);
++  const device = fs.statSync(current).dev;
++
++  while (true) {
++    const parent = path.dirname(current);
++    if (parent === current || fs.statSync(parent).dev !== device) {
++      return current;
++    }
++    current = parent;
++  }
++}
++
++export function getDiskSpace(input: string): IDiskSpace {
++  if (process.platform === "win32") {
++    return winapi.GetDiskFreeSpaceEx(input);
++  }
++
++  const stats = fs.statfsSync(nearestExistingPath(input));
++  return {
++    free: stats.bfree * stats.bsize,
++    freeToCaller: stats.bavail * stats.bsize,
++    total: stats.blocks * stats.bsize,
++  };
++}

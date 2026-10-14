@@ -1,0 +1,948 @@
+diff --git a/packages/exe-version/src/index.portable.test.ts b/packages/exe-version/src/index.portable.test.ts
+new file mode 100644
+index 000000000..891c1c20a
+--- /dev/null
++++ b/packages/exe-version/src/index.portable.test.ts
+@@ -0,0 +1,46 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++const mocks = vi.hoisted(() => ({
++  readVersionInfo: vi.fn(),
++}));
++
++vi.mock("./peVersion", () => ({
++  readVersionInfo: mocks.readVersionInfo,
++}));
++
++import {
++  getFileVersion,
++  getFileVersionLocalized,
++  getProductVersion,
++  getProductVersionLocalized,
++} from "./index";
++
++describe("portable executable version API", () => {
++  beforeEach(() => {
++    mocks.readVersionInfo.mockReset();
++  });
++
++  it("reads PE metadata on the host platform", () => {
++    mocks.readVersionInfo.mockReturnValue({
++      fileVersion: [1, 2, 3, 4],
++      fileVersionString: "1.2.3-preview",
++      productVersion: [5, 6, 7, 8],
++      productVersionString: "5.6.7-preview",
++    });
++
++    expect(getFileVersion("/games/Generic.exe")).toBe("1.2.3.4");
++    expect(getProductVersion("/games/Generic.exe")).toBe("5.6.7.8");
++    expect(getFileVersionLocalized("/games/Generic.exe")).toBe("1.2.3-preview");
++    expect(getProductVersionLocalized("/games/Generic.exe")).toBe("5.6.7-preview");
++    expect(mocks.readVersionInfo).toHaveBeenCalledTimes(4);
++  });
++
++  it("keeps the public empty-string fallback for unreadable files", () => {
++    mocks.readVersionInfo.mockReturnValue(undefined);
++
++    expect(getFileVersion("/games/Missing.exe")).toBe("");
++    expect(getProductVersion("/games/Missing.exe")).toBe("");
++    expect(getFileVersionLocalized("/games/Missing.exe")).toBe("");
++    expect(getProductVersionLocalized("/games/Missing.exe")).toBe("");
++  });
++});
+diff --git a/packages/exe-version/src/index.ts b/packages/exe-version/src/index.ts
+index a290954d1..54a814ac3 100644
+--- a/packages/exe-version/src/index.ts
++++ b/packages/exe-version/src/index.ts
+@@ -8,28 +8,24 @@
+ import { readVersionInfo } from "./peVersion";
+ 
+ export function getFileVersion(exeFile: string): string {
+-  if (process.platform !== "win32") return "";
+   const info = readVersionInfo(exeFile);
+   if (info === undefined) return "";
+   return info.fileVersion.join(".");
+ }
+ 
+ export function getProductVersion(exeFile: string): string {
+-  if (process.platform !== "win32") return "";
+   const info = readVersionInfo(exeFile);
+   if (info === undefined) return "";
+   return info.productVersion.join(".");
+ }
+ 
+ export function getFileVersionLocalized(exeFile: string): string {
+-  if (process.platform !== "win32") return getFileVersion(exeFile);
+   const info = readVersionInfo(exeFile);
+   if (info === undefined) return "";
+   return info.fileVersionString;
+ }
+ 
+ export function getProductVersionLocalized(exeFile: string): string {
+-  if (process.platform !== "win32") return getProductVersion(exeFile);
+   const info = readVersionInfo(exeFile);
+   if (info === undefined) return "";
+   return info.productVersionString;
+diff --git a/src/main/electron-builder.config.json b/src/main/electron-builder.config.json
+index 080a0afb5..f1d0a19cf 100644
+--- a/src/main/electron-builder.config.json
++++ b/src/main/electron-builder.config.json
+@@ -74,7 +74,6 @@
+     "assets/dotnetprobe*",
+     "assets/*.exe",
+     "assets/css/**",
+-    "**/*.node",
+     "duckdb-extensions"
+   ],
+   "buildDependenciesFromSource": false,
+diff --git a/src/main/package.json b/src/main/package.json
+index f0f5b8bee..9e26507c3 100644
+--- a/src/main/package.json
++++ b/src/main/package.json
+@@ -3,7 +3,7 @@
+   "name": "@vortex/main",
+   "author": "Black Tree Gaming Ltd.",
+   "license": "GPL-3.0-only",
+-  "version": "1.0.0",
++  "version": "2.6.2",
+   "private": true,
+   "type": "commonjs",
+   "main": "build/main.cjs",
+diff --git a/src/renderer/src/util/linuxCompatibility.test.ts b/src/renderer/src/util/linuxCompatibility.test.ts
+new file mode 100644
+index 000000000..c2637d3ec
+--- /dev/null
++++ b/src/renderer/src/util/linuxCompatibility.test.ts
+@@ -0,0 +1,130 @@
++import type { SpawnOptions } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import {
++  filterSuccessfulWineStderr,
++  mapWineArgument,
++  prepareWindowsProcess,
++  prepareWindowsShellCommand,
++  resolveCaseInsensitiveSync,
++  toWinePath,
++} from "./linuxCompatibility";
++
++describe.runIf(process.platform === "linux")("linuxCompatibility", () => {
++  let tempDir: string;
++  let previousRuntimeRoot: string | undefined;
++  let previousWinePrefix: string | undefined;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-linux-compat-"));
++    previousRuntimeRoot = process.env.VORTEX_DOTNET_WIN_ROOT;
++    previousWinePrefix = process.env.VORTEX_WINEPREFIX;
++    process.env.VORTEX_WINEPREFIX = path.join(tempDir, "prefix");
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++    if (previousRuntimeRoot === undefined) {
++      delete process.env.VORTEX_DOTNET_WIN_ROOT;
++    } else {
++      process.env.VORTEX_DOTNET_WIN_ROOT = previousRuntimeRoot;
++    }
++    if (previousWinePrefix === undefined) {
++      delete process.env.VORTEX_WINEPREFIX;
++    } else {
++      process.env.VORTEX_WINEPREFIX = previousWinePrefix;
++    }
++  });
++
++  it("resolves Windows-authored path casing without changing missing paths", () => {
++    const actual = path.join(tempDir, "Tools", "Helper.exe");
++    fs.mkdirSync(path.dirname(actual));
++    fs.writeFileSync(actual, "");
++
++    expect(resolveCaseInsensitiveSync(path.join(tempDir, "tools", "helper.exe"))).toBe(actual);
++    expect(resolveCaseInsensitiveSync(path.join(tempDir, "tools", "missing.exe"))).toBe(
++      path.join(tempDir, "tools", "missing.exe"),
++    );
++  });
++
++  it("maps local absolute arguments into Wine's Z drive", () => {
++    const localPath = path.join(tempDir, "Data", "input.pak");
++    fs.mkdirSync(path.dirname(localPath));
++    fs.writeFileSync(localPath, "");
++
++    expect(mapWineArgument(localPath)).toBe(toWinePath(localPath));
++    expect(mapWineArgument("--silent")).toBe("--silent");
++    expect(mapWineArgument("/silent")).toBe("/silent");
++  });
++
++  it("runs a managed Windows helper through the packaged runtime", () => {
++    const runtimeRoot = path.join(tempDir, "runtime");
++    const dotnet = path.join(runtimeRoot, "dotnet.exe");
++    const helper = path.join(tempDir, "Helper.exe");
++    const helperDll = path.join(tempDir, "Helper.dll");
++    const input = path.join(tempDir, "Data", "input.bin");
++    fs.mkdirSync(runtimeRoot);
++    fs.mkdirSync(path.dirname(input));
++    for (const file of [
++      dotnet,
++      helper,
++      helperDll,
++      `${path.join(tempDir, "Helper")}.runtimeconfig.json`,
++      input,
++    ]) {
++      fs.writeFileSync(file, "");
++    }
++    process.env.VORTEX_DOTNET_WIN_ROOT = runtimeRoot;
++
++    const options: SpawnOptions = { env: {} };
++    const result = prepareWindowsProcess(helper, ["--source", input], options);
++    expect(result.command).toBe("wine");
++    expect(result.args).toEqual([dotnet, toWinePath(helperDll), "--source", toWinePath(input)]);
++    expect(result.options.env?.WINEPREFIX).toBe(path.join(tempDir, "prefix"));
++    expect(result.options.env?.PATH).toBe(process.env.PATH);
++    expect(result.translated).toBe(true);
++  });
++
++  it("rewrites a shell invocation without knowing the helper or game", () => {
++    const helper = path.join(tempDir, "Generic Tool.exe");
++    const input = path.join(tempDir, "Data", "input.bin");
++    fs.mkdirSync(path.dirname(input));
++    fs.writeFileSync(helper, "");
++    fs.writeFileSync(input, "");
++
++    const result = prepareWindowsShellCommand(`"${helper}" --source "${input}"`);
++    expect(result.command).toContain("'wine'");
++    expect(result.command).toContain(`'${helper}'`);
++    expect(result.command).toContain(toWinePath(input));
++    expect(result.translated).toBe(true);
++  });
++
++  it("maps unquoted local paths in shell invocations", () => {
++    const helper = path.join(tempDir, "Helper.exe");
++    const input = path.join(tempDir, "Data", "input.bin");
++    fs.mkdirSync(path.dirname(input));
++    fs.writeFileSync(helper, "");
++    fs.writeFileSync(input, "");
++
++    const result = prepareWindowsShellCommand(`${helper} --source ${input}`);
++    expect(result.command).toContain(shellFragment(toWinePath(input)));
++    expect(result.translated).toBe(true);
++  });
++
++  it("removes known graphics diagnostics only from successful Wine output", () => {
++    const stderr = [
++      "libEGL warning: failed to create dri2 screen",
++      "pci id for fd 20: 10de:0000, driver (null)",
++      "real helper warning",
++    ].join("\n");
++    expect(filterSuccessfulWineStderr(stderr)).toBe("real helper warning");
++  });
++});
++
++function shellFragment(input: string): string {
++  return `'${input}'`;
++}
+diff --git a/src/renderer/src/util/linuxCompatibility.ts b/src/renderer/src/util/linuxCompatibility.ts
+new file mode 100644
+index 000000000..b52bb76ff
+--- /dev/null
++++ b/src/renderer/src/util/linuxCompatibility.ts
+@@ -0,0 +1,251 @@
++import type { ExecOptions, SpawnOptions } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { resolveWindowsUserPathSync } from "./compatibilityPaths";
++
++export interface IPreparedProcess<TOptions extends ExecOptions | SpawnOptions> {
++  args: string[];
++  command: string;
++  options: TOptions;
++  translated: boolean;
++}
++
++export interface IPreparedShellCommand {
++  command: string;
++  options: ExecOptions;
++  translated: boolean;
++}
++
++const WINE_NOISE = [
++  /^libEGL warning:/,
++  /^MESA-LOADER:/,
++  /^pci id for fd /,
++  /^ATTENTION: default value of option /,
++];
++
++function isMissingPathError(err: unknown): boolean {
++  return (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
++}
++
++function stripMatchingQuotes(input: string): { quote: string; value: string } {
++  const first = input[0];
++  const last = input[input.length - 1];
++  if ((first === '"' || first === "'") && first === last) {
++    return { quote: first, value: input.slice(1, -1) };
++  }
++  return { quote: "", value: input };
++}
++
++function shellQuote(input: string): string {
++  return `'${input.replaceAll("'", `'"'"'`)}'`;
++}
++
++function linuxRuntimeRoot(): string {
++  return process.env.VORTEX_DOTNET_WIN_ROOT ?? "/opt/Vortex/dotnet-win-x64";
++}
++
++function linuxWinePrefix(): string {
++  return (
++    process.env.VORTEX_WINEPREFIX ??
++    path.join(
++      process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"),
++      "vortex-linux",
++      "wineprefix",
++    )
++  );
++}
++
++function wineExecutable(): string {
++  return process.env.VORTEX_WINE ?? "wine";
++}
++
++function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
++  return {
++    ...process.env,
++    ...input,
++    WINEDEBUG: input?.WINEDEBUG ?? "-all",
++    WINEPREFIX: input?.WINEPREFIX ?? linuxWinePrefix(),
++  };
++}
++
++export function resolveCaseInsensitiveSync(input: string): string {
++  if (process.platform !== "linux" || !path.isAbsolute(input) || fs.existsSync(input)) {
++    return input;
++  }
++
++  const normalized = path.normalize(input);
++  const root = path.parse(normalized).root;
++  const parts = path.relative(root, normalized).split(path.sep).filter(Boolean);
++  let current = root;
++
++  try {
++    for (const part of parts) {
++      const exact = path.join(current, part);
++      if (fs.existsSync(exact)) {
++        current = exact;
++        continue;
++      }
++
++      const match = fs
++        .readdirSync(current)
++        .find((entry) => entry.toLowerCase() === part.toLowerCase());
++      if (match === undefined) {
++        return resolveWindowsUserPathSync(input);
++      }
++      current = path.join(current, match);
++    }
++    return current;
++  } catch {
++    return resolveWindowsUserPathSync(input);
++  }
++}
++
++export function toWinePath(input: string): string {
++  const resolved = resolveCaseInsensitiveSync(path.resolve(input));
++  return `Z:${resolved.replaceAll(path.sep, "\\")}`;
++}
++
++export function mapWineArgument(input: string): string {
++  const { quote, value } = stripMatchingQuotes(input);
++  if (!path.isAbsolute(value) || !value.slice(1).includes(path.sep)) {
++    return input;
++  }
++
++  const resolved = resolveCaseInsensitiveSync(value);
++  const parent = path.dirname(resolved);
++  if (!fs.existsSync(resolved) && !fs.existsSync(parent)) {
++    return input;
++  }
++
++  const mapped = toWinePath(resolved);
++  return quote ? `${quote}${mapped}${quote}` : mapped;
++}
++
++function managedEntryPoint(executable: string): string | undefined {
++  const stem = executable.slice(0, -path.extname(executable).length);
++  const dll = resolveCaseInsensitiveSync(`${stem}.dll`);
++  const runtimeConfig = resolveCaseInsensitiveSync(`${stem}.runtimeconfig.json`);
++  return fs.existsSync(dll) && fs.existsSync(runtimeConfig) ? dll : undefined;
++}
++
++export function prepareWindowsProcess<TOptions extends ExecOptions | SpawnOptions>(
++  command: string,
++  args: readonly string[] = [],
++  options: TOptions,
++): IPreparedProcess<TOptions> {
++  const resolvedCommand = resolveCaseInsensitiveSync(command);
++  if (process.platform !== "linux" || path.extname(resolvedCommand).toLowerCase() !== ".exe") {
++    return { args: [...args], command, options, translated: false };
++  }
++
++  const mappedArgs = args.map(mapWineArgument);
++  const managed = managedEntryPoint(resolvedCommand);
++  const dotnet = path.join(linuxRuntimeRoot(), "dotnet.exe");
++  const translatedArgs =
++    managed !== undefined && fs.existsSync(dotnet)
++      ? [dotnet, toWinePath(managed), ...mappedArgs]
++      : [resolvedCommand, ...mappedArgs];
++
++  return {
++    args: translatedArgs,
++    command: wineExecutable(),
++    options: {
++      ...options,
++      env: wineEnvironment(options.env),
++      shell: false,
++    },
++    translated: true,
++  };
++}
++
++function mapQuotedShellPaths(input: string): string {
++  return input
++    .replace(/"(\/[^"\n]+)"/g, (_match, value: string) => `"${mapWineArgument(value)}"`)
++    .replace(/'(\/[^'\n]+)'/g, (_match, value: string) => shellQuote(mapWineArgument(value)))
++    .replace(/(^|\s)(\/[^\s"'|;&<>]+)/g, (_match, prefix: string, value: string) => {
++      return `${prefix}${shellQuote(mapWineArgument(value))}`;
++    });
++}
++
++export function prepareWindowsShellCommand(
++  command: string,
++  options: ExecOptions = {},
++): IPreparedShellCommand {
++  if (process.platform !== "linux") {
++    return { command, options, translated: false };
++  }
++
++  const match = command.match(
++    /^\s*(?:"([^"]+\.exe)"|'([^']+\.exe)'|([^\s"']+\.exe))(?=\s|$)([\s\S]*)$/i,
++  );
++  if (match === null) {
++    return { command, options, translated: false };
++  }
++
++  const executable = resolveCaseInsensitiveSync(match[1] ?? match[2] ?? match[3]);
++  const managed = managedEntryPoint(executable);
++  const dotnet = path.join(linuxRuntimeRoot(), "dotnet.exe");
++  const runner = [shellQuote(wineExecutable())];
++  if (managed !== undefined && fs.existsSync(dotnet)) {
++    runner.push(shellQuote(dotnet), shellQuote(toWinePath(managed)));
++  } else {
++    runner.push(shellQuote(executable));
++  }
++
++  return {
++    command: `${runner.join(" ")}${mapQuotedShellPaths(match[4])}`,
++    options: {
++      ...options,
++      env: wineEnvironment(options.env),
++    },
++    translated: true,
++  };
++}
++
++export function filterSuccessfulWineStderr(stderr: string | Buffer): string | Buffer {
++  if (typeof stderr !== "string") {
++    return stderr;
++  }
++  return stderr
++    .split(/\r?\n/)
++    .filter((line) => line.trim().length > 0 && !WINE_NOISE.some((pattern) => pattern.test(line)))
++    .join("\n");
++}
++
++export async function withCaseInsensitiveFallback<T>(
++  input: string,
++  operation: (resolved: string) => Promise<T>,
++): Promise<T> {
++  try {
++    return await operation(input);
++  } catch (err) {
++    if (!isMissingPathError(err)) {
++      throw err;
++    }
++    const resolved = resolveCaseInsensitiveSync(input);
++    if (resolved === input) {
++      throw err;
++    }
++    return operation(resolved);
++  }
++}
++
++export function withCaseInsensitiveFallbackSync<T>(
++  input: string,
++  operation: (resolved: string) => T,
++): T {
++  try {
++    return operation(input);
++  } catch (err) {
++    if (!isMissingPathError(err)) {
++      throw err;
++    }
++    const resolved = resolveCaseInsensitiveSync(input);
++    if (resolved === input) {
++      throw err;
++    }
++    return operation(resolved);
++  }
++}
+diff --git a/src/renderer/src/util/linuxWinapi.test.ts b/src/renderer/src/util/linuxWinapi.test.ts
+new file mode 100644
+index 000000000..fa1ca56c4
+--- /dev/null
++++ b/src/renderer/src/util/linuxWinapi.test.ts
+@@ -0,0 +1,44 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import linuxWinapi from "./linuxWinapi";
++
++describe.runIf(process.platform === "linux")("Linux winapi compatibility", () => {
++  let tempDir: string;
++
++  beforeEach(() => {
++    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-winapi-"));
++  });
++
++  afterEach(() => {
++    fs.rmSync(tempDir, { force: true, recursive: true });
++  });
++
++  it("provides portable volume and process information", () => {
++    expect(linuxWinapi.GetVolumePathName(tempDir)).not.toBe("");
++    expect(linuxWinapi.GetDiskFreeSpaceEx(tempDir).freeToCaller).toBeGreaterThan(0);
++    expect(linuxWinapi.GetProcessList().some((entry) => entry.processID === process.pid)).toBe(
++      true,
++    );
++  });
++
++  it("represents the unavailable registry as an empty key tree", () => {
++    const callback = vi.fn((key: Buffer) => {
++      expect(linuxWinapi.RegEnumKeys(key)).toEqual([]);
++      expect(linuxWinapi.RegEnumValues(key)).toEqual([]);
++    });
++
++    linuxWinapi.WithRegOpen("HKEY_CURRENT_USER", "Software", callback);
++    expect(callback).toHaveBeenCalledOnce();
++    expect(() => linuxWinapi.RegGetValue()).toThrow(/not available/);
++  });
++
++  it("reports unsupported isolation without throwing", () => {
++    expect(linuxWinapi.SupportsAppContainer()).toBe(false);
++    expect(linuxWinapi.GetTasks()).toEqual([]);
++    expect(linuxWinapi.GetProcessWindowList()).toEqual([]);
++  });
++});
+diff --git a/src/renderer/src/util/linuxWinapi.ts b/src/renderer/src/util/linuxWinapi.ts
+new file mode 100644
+index 000000000..0831bdbcb
+--- /dev/null
++++ b/src/renderer/src/util/linuxWinapi.ts
+@@ -0,0 +1,114 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import { getDiskSpace, getVolumePath } from "./volume";
++
++function platformError(operation: string, code = "ENOSYS"): NodeJS.ErrnoException {
++  return Object.assign(new Error(`${operation} is not available on this platform`), { code });
++}
++
++export const GetDiskFreeSpaceEx = getDiskSpace;
++export const GetVolumePathName = getVolumePath;
++
++export function GetProcessList() {
++  try {
++    return fs
++      .readdirSync("/proc", { withFileTypes: true })
++      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
++      .flatMap((entry) => {
++        const processID = Number(entry.name);
++        try {
++          return [
++            {
++              exeFile: path.basename(fs.readlinkSync(`/proc/${entry.name}/exe`)),
++              numThreads: 0,
++              parentProcessID: 0,
++              priClassBase: 0,
++              processID,
++            },
++          ];
++        } catch {
++          return [];
++        }
++      });
++  } catch {
++    return [];
++  }
++}
++
++export const GetModuleList = () => [];
++export const GetProcessWindowList = () => [];
++export const SetForegroundWindow = () => false;
++export const GetTasks = () => [];
++export const CheckYourPrivilege = () => [];
++export const GetUserSID = () => `unix:${process.getuid?.() ?? "unknown"}`;
++export const SupportsAppContainer = () => false;
++export const IsThisWine = () => false;
++export const WhoLocks = () => [];
++export const AbortSystemShutdown = () => false;
++export const InitiateSystemShutdown = () => false;
++
++export const GetNativeArch = () => ({
++  nativeArch: process.arch,
++  nativeMachineCode: 0,
++  usedFallback: true,
++});
++
++export const GetSystemPreferredUILanguages = () => [Intl.DateTimeFormat().resolvedOptions().locale];
++export const GetUserPreferredUILanguages = GetSystemPreferredUILanguages;
++export const GetProcessPreferredUILanguages = GetSystemPreferredUILanguages;
++export const SetProcessPreferredUILanguages = () => undefined;
++
++export function WithRegOpen(_hive: string, _keyPath: string, callback: (key: Buffer) => void) {
++  callback(Buffer.alloc(0));
++}
++
++export const RegEnumKeys = (_key?: Buffer) => [];
++export const RegEnumValues = (_key?: Buffer) => [];
++
++export function RegGetValue(): never {
++  throw platformError("Registry lookup", "ENOENT");
++}
++
++export function RegSetKeyValue(): never {
++  throw platformError("Registry update");
++}
++
++export function ShellExecuteEx(): never {
++  throw platformError("ShellExecuteEx");
++}
++
++export function RunTask(): never {
++  throw platformError("RunTask");
++}
++
++const linuxWinapi = {
++  AbortSystemShutdown,
++  CheckYourPrivilege,
++  GetDiskFreeSpaceEx,
++  GetModuleList,
++  GetNativeArch,
++  GetProcessList,
++  GetProcessPreferredUILanguages,
++  GetProcessWindowList,
++  GetSystemPreferredUILanguages,
++  GetTasks,
++  GetUserPreferredUILanguages,
++  GetUserSID,
++  GetVolumePathName,
++  InitiateSystemShutdown,
++  IsThisWine,
++  RegEnumKeys,
++  RegEnumValues,
++  RegGetValue,
++  RegSetKeyValue,
++  RunTask,
++  SetForegroundWindow,
++  SetProcessPreferredUILanguages,
++  ShellExecuteEx,
++  SupportsAppContainer,
++  WhoLocks,
++  WithRegOpen,
++};
++
++export default linuxWinapi;
+diff --git a/src/renderer/src/util/requireRemap.ts b/src/renderer/src/util/requireRemap.ts
+index 280ea17d6..1b2bba993 100644
+--- a/src/renderer/src/util/requireRemap.ts
++++ b/src/renderer/src/util/requireRemap.ts
+@@ -1,30 +1,247 @@
+ import Module from "module";
+ import path from "node:path";
++import { promisify } from "node:util";
+ 
+ import * as electron from "./electron";
++import {
++  filterSuccessfulWineStderr,
++  prepareWindowsProcess,
++  prepareWindowsShellCommand,
++  resolveCaseInsensitiveSync,
++  withCaseInsensitiveFallback,
++  withCaseInsensitiveFallbackSync,
++} from "./linuxCompatibility";
++import linuxWinapi from "./linuxWinapi";
+ 
+ interface InternalModule extends Module {
+   _load(request: string, parent?: Module | null, isMain?: boolean): unknown;
+ }
+ 
++function unpackedApplicationPath(input: string): string {
++  const appAsar = `${path.sep}app.asar${path.sep}`;
++  return input.replaceAll(appAsar, `${path.sep}app.asar.unpacked${path.sep}`);
++}
++
+ // when spawning a binary, the code doing the spawning will be baked by webpack
+ // in release builds and thus reside in the app.asar file.
+ // The binaries being spawned however have to be unpacked, so if the path being spawned
+ // includes something like __dirname we have to update that path to work.
+ class ChildProcessProxy {
++  private mExec: (...args: any[]) => any;
++  private mExecFile: (...args: any[]) => any;
++  private mSpawn: (...args: any[]) => any;
++
++  constructor(private mTarget: any) {
++    this.mExec = this.wrapExec();
++    this.mExecFile = this.wrapExecFile();
++    this.mSpawn = this.wrapSpawn();
++  }
++
+   public get(target, key: PropertyKey): any {
+     if (key === "__isProxied") {
+       return true;
+     } else if (key === "spawn") {
+-      return (command: string, ...args: readonly unknown[]) => {
+-        const appAsar = `${path.sep}app.asar${path.sep}`;
+-        command = command.replace(appAsar, `${path.sep}app.asar.unpacked${path.sep}`);
+-        return target.spawn(command, ...args);
+-      };
++      return this.mSpawn;
++    } else if (key === "exec") {
++      return this.mExec;
++    } else if (key === "execFile") {
++      return this.mExecFile;
+     } else {
+       return target[key];
+     }
+   }
++
++  private wrapSpawn(): (...args: any[]) => any {
++    return (command: string, argsOrOptions?: readonly string[] | any, options?: any) => {
++      const args = Array.isArray(argsOrOptions) ? argsOrOptions : [];
++      const normalizedOptions = Array.isArray(argsOrOptions)
++        ? (options ?? {})
++        : (argsOrOptions ?? {});
++      const unpackedCommand = unpackedApplicationPath(command);
++      const prepared = prepareWindowsProcess(unpackedCommand, args, normalizedOptions);
++      return this.mTarget.spawn(prepared.command, prepared.args, prepared.options);
++    };
++  }
++
++  private wrapExec(): (...args: any[]) => any {
++    const wrapped: any = (command: string, options?: any, callback?: any) => {
++      if (typeof options === "function") {
++        callback = options;
++        options = {};
++      }
++      const prepared = prepareWindowsShellCommand(unpackedApplicationPath(command), options ?? {});
++      const wrappedCallback = this.outputCallback(prepared.translated, callback);
++      return this.mTarget.exec(prepared.command, prepared.options, wrappedCallback);
++    };
++    wrapped[promisify.custom] = (command: string, options?: any) => {
++      let child;
++      const promise: any = new Promise((resolve, reject) => {
++        child = wrapped(command, options, (err, stdout, stderr) => {
++          if (err !== null && err !== undefined) {
++            err.stdout = stdout;
++            err.stderr = stderr;
++            reject(err);
++          } else {
++            resolve({ stdout, stderr });
++          }
++        });
++      });
++      promise.child = child;
++      return promise;
++    };
++    return wrapped;
++  }
++
++  private wrapExecFile(): (...args: any[]) => any {
++    const wrapped: any = (
++      command: string,
++      args?: readonly string[] | any,
++      options?: any,
++      callback?: any,
++    ) => {
++      if (!Array.isArray(args)) {
++        callback =
++          typeof options === "function" ? options : typeof args === "function" ? args : callback;
++        options = typeof args === "object" && args !== null ? args : {};
++        args = [];
++      } else if (typeof options === "function") {
++        callback = options;
++        options = {};
++      }
++      const prepared = prepareWindowsProcess(unpackedApplicationPath(command), args, options ?? {});
++      const wrappedCallback = this.outputCallback(prepared.translated, callback);
++      return this.mTarget.execFile(
++        prepared.command,
++        prepared.args,
++        prepared.options,
++        wrappedCallback,
++      );
++    };
++    wrapped[promisify.custom] = (
++      command: string,
++      args?: readonly string[] | any,
++      options?: any,
++    ) => {
++      let child;
++      const promise: any = new Promise((resolve, reject) => {
++        child = wrapped(command, args, options, (err, stdout, stderr) => {
++          if (err !== null && err !== undefined) {
++            err.stdout = stdout;
++            err.stderr = stderr;
++            reject(err);
++          } else {
++            resolve({ stdout, stderr });
++          }
++        });
++      });
++      promise.child = child;
++      return promise;
++    };
++    return wrapped;
++  }
++
++  private outputCallback(translated: boolean, callback: any): any {
++    if (typeof callback !== "function") {
++      return undefined;
++    }
++    return (err, stdout, stderr) =>
++      callback(
++        err,
++        stdout,
++        translated && (err === null || err === undefined)
++          ? filterSuccessfulWineStderr(stderr)
++          : stderr,
++      );
++  }
++}
++
++class FileSystemProxy {
++  private static readonly CALLBACK_METHODS = new Set([
++    "access",
++    "lstat",
++    "open",
++    "readFile",
++    "stat",
++  ]);
++  private static readonly PROMISE_METHODS = new Set([
++    "access",
++    "lstat",
++    "open",
++    "readFile",
++    "stat",
++  ]);
++  private static readonly SYNC_METHODS = new Set([
++    "accessSync",
++    "lstatSync",
++    "openSync",
++    "readFileSync",
++    "statSync",
++  ]);
++  private mPromiseProxy: any;
++
++  constructor(
++    private mTarget: any,
++    private mPromises: boolean,
++  ) {}
++
++  public get(target, key: PropertyKey): any {
++    if (key === "__isLinuxCompatProxied") {
++      return true;
++    }
++    if (process.platform !== "linux" || typeof key !== "string") {
++      return target[key];
++    }
++    if (!this.mPromises && key === "promises") {
++      this.mPromiseProxy ??= new Proxy(target.promises, new FileSystemProxy(target.promises, true));
++      return this.mPromiseProxy;
++    }
++    if (this.mPromises && FileSystemProxy.PROMISE_METHODS.has(key)) {
++      return (input: unknown, ...args: unknown[]) =>
++        typeof input === "string"
++          ? withCaseInsensitiveFallback(input, (resolved) => target[key](resolved, ...args))
++          : target[key](input, ...args);
++    }
++    if (!this.mPromises && FileSystemProxy.CALLBACK_METHODS.has(key)) {
++      return (input: unknown, ...args: unknown[]) => {
++        if (typeof input !== "string") {
++          return target[key](input, ...args);
++        }
++        const callbackIndex = args.length - 1;
++        const callback = args[callbackIndex];
++        if (typeof callback !== "function") {
++          return target[key](input, ...args);
++        }
++        const retry = (err: NodeJS.ErrnoException | null, ...values: unknown[]) => {
++          if (err?.code !== "ENOENT") {
++            callback(err, ...values);
++            return;
++          }
++          const resolved = resolveCaseInsensitiveSync(input);
++          if (resolved === input) {
++            callback(err, ...values);
++            return;
++          }
++          target[key](resolved, ...args.slice(0, callbackIndex), callback);
++        };
++        return target[key](input, ...args.slice(0, callbackIndex), retry);
++      };
++    }
++    if (!this.mPromises && FileSystemProxy.SYNC_METHODS.has(key)) {
++      return (input: unknown, ...args: unknown[]) =>
++        typeof input === "string"
++          ? withCaseInsensitiveFallbackSync(input, (resolved) => target[key](resolved, ...args))
++          : target[key](input, ...args);
++    }
++    if (!this.mPromises && key === "existsSync") {
++      return (input: unknown) => {
++        if (typeof input !== "string" || target.existsSync(input)) {
++          return target.existsSync(input);
++        }
++        return target.existsSync(resolveCaseInsensitiveSync(input));
++      };
++    }
++    return target[key];
++  }
+ }
+ 
+ const originalRequire = Module.prototype.require;
+@@ -51,12 +268,16 @@ function patchedLoad(orig: InternalModule["_load"]): InternalModule["_load"] {
+       }
+ 
+       return electron;
++    } else if (request === "winapi-bindings" && process.platform === "linux") {
++      return linuxWinapi;
+     }
+ 
+     let res = orig.apply(this, [request, parent, ...rest]);
+ 
+     if (request === "child_process" && !res.__isProxied) {
+-      res = new Proxy(res, new ChildProcessProxy());
++      res = new Proxy(res, new ChildProcessProxy(res));
++    } else if ((request === "fs" || request === "fs/promises") && !res.__isLinuxCompatProxied) {
++      res = new Proxy(res, new FileSystemProxy(res, request === "fs/promises"));
+     }
+ 
+     return res;

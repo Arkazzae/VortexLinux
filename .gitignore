@@ -6,3 +6,4 @@ pkg/
 *.AppImage
 dist/
 vortex/
+__pycache__/

@@ -1,0 +1,104 @@
+diff --git a/src/renderer/src/util/EpicGamesLauncher.linux.test.ts b/src/renderer/src/util/EpicGamesLauncher.linux.test.ts
+new file mode 100644
+index 000000000..9b3e4e2ab
+--- /dev/null
++++ b/src/renderer/src/util/EpicGamesLauncher.linux.test.ts
+@@ -0,0 +1,32 @@
++import { describe, expect, it } from "vitest";
++
++import { GameEntryNotFound, GameStoreNotFound } from "../types/api";
++import epicGamesLauncher, { epicGamesLauncherApi } from "./EpicGamesLauncher";
++
++describe.runIf(process.platform !== "win32")("Epic Games extension API fallback", () => {
++  it("does not register Epic as an available native game store", () => {
++    expect(epicGamesLauncher).toBeUndefined();
++  });
++
++  it("reports that Epic and its games are unavailable", async () => {
++    await expect(epicGamesLauncherApi.allGames()).resolves.toEqual([]);
++    await expect(epicGamesLauncherApi.getGameStorePath()).resolves.toBeUndefined();
++    await expect(epicGamesLauncherApi.isGameInstalled?.("Example")).resolves.toBe(false);
++    await expect(epicGamesLauncherApi.isGameStoreInstalled?.()).resolves.toBe(false);
++  });
++
++  it("rejects lookups with the normal missing-entry error", async () => {
++    await expect(epicGamesLauncherApi.findByAppId("Example")).rejects.toBeInstanceOf(
++      GameEntryNotFound,
++    );
++    await expect(epicGamesLauncherApi.findByName("Example")).rejects.toBeInstanceOf(
++      GameEntryNotFound,
++    );
++  });
++
++  it("rejects launch attempts with the normal missing-store error", async () => {
++    await expect(epicGamesLauncherApi.launchGame("Example")).rejects.toBeInstanceOf(
++      GameStoreNotFound,
++    );
++  });
++});
+diff --git a/src/renderer/src/util/EpicGamesLauncher.ts b/src/renderer/src/util/EpicGamesLauncher.ts
+index 5f2f4d0f2..0fe59ba75 100644
+--- a/src/renderer/src/util/EpicGamesLauncher.ts
++++ b/src/renderer/src/util/EpicGamesLauncher.ts
+@@ -4,7 +4,7 @@ import PromiseBB from "bluebird";
+ import type * as winapiT from "winapi-bindings";
+ 
+ import type { IExtensionApi, IGameStore, IGameStoreEntry } from "../types/api";
+-import { GameEntryNotFound } from "../types/api";
++import { GameEntryNotFound, GameStoreNotFound } from "../types/api";
+ import * as fs from "./fs";
+ import lazyRequire from "./lazyRequire";
+ import { log } from "./log";
+@@ -227,4 +227,30 @@ class EpicGamesLauncher implements IGameStore {
+ const instance: IGameStore | undefined =
+   process.platform === "win32" ? new EpicGamesLauncher() : undefined;
+ 
++const unavailableInstance: IGameStore = {
++  id: STORE_ID,
++  name: STORE_NAME,
++  priority: STORE_PRIORITY,
++  allGames: () => PromiseBB.resolve([]),
++  findByAppId: (appId: string | string[]) =>
++    PromiseBB.reject(
++      new GameEntryNotFound(Array.isArray(appId) ? appId.join(", ") : appId, STORE_ID),
++    ),
++  findByName: (name: string) => PromiseBB.reject(new GameEntryNotFound(name, STORE_ID)),
++  getGameStorePath: () => PromiseBB.resolve(undefined),
++  launchGame: () => PromiseBB.reject(new GameStoreNotFound(STORE_NAME)),
++  isGameInstalled: () => PromiseBB.resolve(false),
++  isGameStoreInstalled: () => PromiseBB.resolve(false),
++  reloadGames: () => PromiseBB.resolve(),
++};
++
++/**
++ * Bundled game extensions predate Linux support and call the public Epic
++ * helper without checking whether it exists. Keep the real store out of
++ * discovery on non-Windows hosts, but expose a total, rejecting API so those
++ * extensions can fall back to Steam/manual discovery instead of throwing a
++ * TypeError while dereferencing `undefined`.
++ */
++export const epicGamesLauncherApi: IGameStore = instance ?? unavailableInstance;
++
+ export default instance;
+diff --git a/src/renderer/src/util/api.ts b/src/renderer/src/util/api.ts
+index 9095a0b63..f991a158f 100644
+--- a/src/renderer/src/util/api.ts
++++ b/src/renderer/src/util/api.ts
+@@ -73,7 +73,7 @@ import {
+   UserCanceled,
+ } from "./CustomErrors";
+ import Debouncer from "./Debouncer";
+-import epicGamesLauncher from "./EpicGamesLauncher";
++import { epicGamesLauncherApi } from "./EpicGamesLauncher";
+ import {
+   getVisibleWindow,
+   terminate,
+@@ -217,7 +217,7 @@ export {
+   deepMerge,
+   delay,
+   deriveModInstallName as deriveInstallName,
+-  epicGamesLauncher,
++  epicGamesLauncherApi as epicGamesLauncher,
+   // extend is renderer-only, available via renderer/controls/ComponentEx
+   extractExeIcon,
+   fileMD5,

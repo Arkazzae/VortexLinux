@@ -1,0 +1,556 @@
+diff --git a/src/renderer/src/ExtensionManager.ts b/src/renderer/src/ExtensionManager.ts
+index 220d69f..c53b742 100644
+--- a/src/renderer/src/ExtensionManager.ts
++++ b/src/renderer/src/ExtensionManager.ts
+@@ -83,6 +83,7 @@ import type {
+ import { getApplication } from "./util/application";
+ import { Archive } from "./util/archives";
+ import { fileMD5 } from "./util/checksum";
++import { type CompatibilityGame, setCompatibilityGameProvider } from "./util/compatibilityPaths";
+ import { COMPANY_ID } from "./util/constants";
+ import {
+   MissingDependency,
+@@ -958,6 +959,28 @@ class ExtensionManager {
+    * @memberOf ExtensionManager
+    */
+   public setStore<S extends IState>(store: ThunkStore<S>) {
++    let previousDiscovery: unknown;
++    let previousGame: unknown;
++    let compatibilityGame: CompatibilityGame | undefined;
++    setCompatibilityGameProvider(() => {
++      const state = store.getState();
++      const gameId = activeGameId(state);
++      if (gameId === undefined) {
++        previousDiscovery = previousGame = compatibilityGame = undefined;
++        return undefined;
++      }
++      const discovery = state.settings.gameMode.discovered[gameId];
++      const game = state.session.gameMode.known.find((entry) => entry.id === gameId);
++      if (discovery !== previousDiscovery || game !== previousGame) {
++        previousDiscovery = discovery;
++        previousGame = game;
++        compatibilityGame = { ...discovery };
++        if (discovery?.path && !compatibilityGame.executable) {
++          compatibilityGame.executable = game?.executable;
++        }
++      }
++      return compatibilityGame;
++    });
+     this.mReduxWatcher = new ReduxWatcher(store, this.watcherError);
+ 
+     // Process any pending actions that were deferred during construction
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+index a6f2ec8..058df74 100644
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -2,12 +2,77 @@ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+ 
++import { canonicalPath, findSteamInstallation, steamLibraries } from "./linux/steamLibraries";
++
+ interface ICandidate {
+   existingParts: number;
+-  mtime: number;
+   path: string;
+ }
+ 
++export interface CompatibilityGame {
++  path?: string;
++  store?: string;
++  executable?: string;
++  environment?: Record<string, string>;
++}
++
++type PrefixResolver = (game: CompatibilityGame) => string | null | undefined;
++let gameProvider: (() => CompatibilityGame | undefined) | undefined;
++let selectedPrefixCache: { key: string; prefix: string | null } | undefined;
++const storeResolvers = new Map<string, PrefixResolver>();
++
++export function setCompatibilityGameProvider(provider: typeof gameProvider): void {
++  gameProvider = provider;
++  resetCompatibilityPathCache();
++}
++
++export function registerCompatibilityStore(store: string, resolver: PrefixResolver): void {
++  storeResolvers.set(store, resolver);
++  resetCompatibilityPathCache();
++}
++
++export function selectedGamePrefix(game = gameProvider?.()): string | null | undefined {
++  if (game === undefined) return undefined;
++  const key = JSON.stringify([
++    game.path,
++    game.store,
++    game.executable,
++    game.environment?.WINEPREFIX,
++  ]);
++  if (selectedPrefixCache?.key === key) return selectedPrefixCache.prefix;
++  const prefix = resolveGamePrefix(game);
++  if (prefix !== undefined) selectedPrefixCache = { key, prefix };
++  return prefix;
++}
++
++function resolveGamePrefix(game: CompatibilityGame): string | null | undefined {
++  if (game.environment?.WINEPREFIX) return path.resolve(expandHome(game.environment.WINEPREFIX));
++  if (game.path === undefined) return null;
++  if (game.executable) {
++    if (/\.(?:sh|x86_64|x86)$/i.test(game.executable)) return null;
++    let fd: number | undefined;
++    try {
++      fd = fs.openSync(path.resolve(game.path, game.executable), "r");
++      const header = Buffer.alloc(4);
++      fs.readSync(fd, header, 0, 4, 0);
++      if (header.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return null;
++    } catch {
++      /* The game may have been moved or uninstalled. */
++    } finally {
++      if (fd !== undefined) fs.closeSync(fd);
++    }
++  }
++  const custom = storeResolvers.get(game.store ?? "");
++  if (custom !== undefined) return custom(game);
++  if (game.store === "steam") {
++    const installation = findSteamInstallation(game.path);
++    if (installation !== undefined) {
++      return installation.prefix;
++    }
++  }
++  return undefined;
++}
++
+ interface IUserPathMapping {
+   linuxRoot: string;
+   windowsRoot: string[];
+@@ -26,7 +91,13 @@ function xdgDocumentsPath(): string {
+   }
+ 
+   try {
+-    const config = fs.readFileSync(path.join(os.homedir(), ".config", "user-dirs.dirs"), "utf8");
++    const config = fs.readFileSync(
++      path.join(
++        process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
++        "user-dirs.dirs",
++      ),
++      "utf8",
++    );
+     const match = config.match(/^XDG_DOCUMENTS_DIR=(?:"([^"]*)"|'([^']*)'|([^\n]*))$/m);
+     const value = match?.[1] ?? match?.[2] ?? match?.[3];
+     if (value !== undefined && value.length > 0) {
+@@ -80,33 +151,6 @@ function linuxUserPathMappings(): IUserPathMapping[] {
+   ];
+ }
+ 
+-function steamLibraries(): string[] {
+-  const steamRoots = [
+-    path.join(os.homedir(), ".local", "share", "Steam"),
+-    path.join(os.homedir(), ".steam", "steam"),
+-  ];
+-  const libraries = new Set(steamRoots.filter(fs.existsSync));
+-
+-  for (const steamRoot of steamRoots) {
+-    const manifests = [
+-      path.join(steamRoot, "steamapps", "libraryfolders.vdf"),
+-      path.join(steamRoot, "config", "libraryfolders.vdf"),
+-    ];
+-    for (const manifest of manifests) {
+-      try {
+-        const contents = fs.readFileSync(manifest, "utf8");
+-        for (const match of contents.matchAll(/"path"\s+"([^"]+)"/g)) {
+-          libraries.add(match[1].replaceAll("\\\\", "\\"));
+-        }
+-      } catch {
+-        // A missing Steam installation or manifest is expected.
+-      }
+-    }
+-  }
+-
+-  return [...libraries];
+-}
+-
+ function findSteamPrefixes(): string[] {
+   return steamLibraries().flatMap((library) => {
+     const compatData = path.join(library, "steamapps", "compatdata");
+@@ -123,6 +167,20 @@ function findSteamPrefixes(): string[] {
+ }
+ 
+ function compatibilityPrefixes(): string[] {
++  const game = gameProvider?.();
++  if (game !== undefined) {
++    const prefix = selectedGamePrefix(game);
++    if (prefix === null) return [];
++    if (prefix === undefined || !fs.existsSync(path.join(prefix, "drive_c", "users"))) {
++      throw Object.assign(
++        new Error(
++          "The selected game's Wine/Proton prefix is unavailable. Launch the game once, or configure its WINEPREFIX.",
++        ),
++        { code: "ENOENT" },
++      );
++    }
++    return [prefix];
++  }
+   const configured = process.env.VORTEX_COMPAT_PREFIXES ?? "";
+   const cacheKey = `${os.homedir()}\0${configured}`;
+   if (cacheKey === cachedPrefixKey) {
+@@ -133,7 +191,7 @@ function compatibilityPrefixes(): string[] {
+     .split(path.delimiter)
+     .filter(Boolean)
+     .map((entry) => path.resolve(expandHome(entry)));
+-  cachedPrefixes = [...new Set([...explicit, ...findSteamPrefixes()])];
++  cachedPrefixes = [...new Set([...explicit, ...findSteamPrefixes()].map(canonicalPath))];
+   cachedPrefixKey = cacheKey;
+   return cachedPrefixes;
+ }
+@@ -184,7 +242,6 @@ function resolveCandidate(root: string, relative: string): ICandidate | undefine
+     }
+     return {
+       existingParts,
+-      mtime: fs.statSync(nearestExisting(current)).mtimeMs,
+       path: current,
+     };
+   } catch {
+@@ -192,12 +249,8 @@ function resolveCandidate(root: string, relative: string): ICandidate | undefine
+   }
+ }
+ 
+-function nearestExisting(input: string): string {
+-  let current = input;
+-  while (!fs.existsSync(current) && path.dirname(current) !== current) {
+-    current = path.dirname(current);
+-  }
+-  return current;
++export function resolveSelectedWindowsUserPathSync(input: string): string {
++  return gameProvider?.() === undefined ? input : resolveWindowsUserPathSync(input);
+ }
+ 
+ export function resolveWindowsUserPathSync(input: string): string {
+@@ -217,18 +270,22 @@ export function resolveWindowsUserPathSync(input: string): string {
+       }
+       return windowsUserRoots(mapping.windowsRoot).map((root) => resolveCandidate(root, relative));
+     })
+-    .filter((candidate): candidate is ICandidate => candidate !== undefined)
+-    .sort(
+-      (lhs, rhs) =>
+-        Number(fs.existsSync(rhs.path)) - Number(fs.existsSync(lhs.path)) ||
+-        rhs.existingParts - lhs.existingParts ||
+-        rhs.mtime - lhs.mtime,
+-    );
++    .filter((candidate): candidate is ICandidate => candidate !== undefined);
+ 
++  const destinations = [...new Set(candidates.map((candidate) => canonicalPath(candidate.path)))];
++  if (destinations.length > 1) {
++    throw Object.assign(
++      new Error(
++        "Several compatibility prefixes contain this game data. Select the game's installation or configure its WINEPREFIX.",
++      ),
++      { code: "EAMBIGUOUS" },
++    );
++  }
+   return candidates[0]?.path ?? input;
+ }
+ 
+ export function resetCompatibilityPathCache() {
+   cachedPrefixKey = undefined;
+   cachedPrefixes = [];
++  selectedPrefixCache = undefined;
+ }
+diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer/src/util/compatibilitySelection.test.ts
+new file mode 100644
+index 0000000..fb672cd
+--- /dev/null
++++ b/src/renderer/src/util/compatibilitySelection.test.ts
+@@ -0,0 +1,137 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import {
++  resetCompatibilityPathCache,
++  resolveWindowsUserPathSync,
++  setCompatibilityGameProvider,
++} from "./compatibilityPaths";
++import { findSteamInstallation, steamLibraries, steamRoots } from "./linux/steamLibraries";
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
++
++vi.mock("node:os", async (original) => ({
++  ...(await original<typeof os>()),
++  homedir: vi.fn(),
++}));
++
++describe.runIf(process.platform === "linux")("selected compatibility prefix", () => {
++  let home: string;
++  let documents: string;
++  const relative = "My Games/Example/settings.ini";
++  function fixture(prefix: string): string {
++    const file = path.join(prefix, "drive_c/users/steamuser/Documents", relative);
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, "[General]\n");
++    return file;
++  }
++  beforeEach(() => {
++    home = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-selected-prefix-"));
++    documents = path.join(home, "Documents");
++    vi.mocked(os.homedir).mockReturnValue(home);
++    vi.stubEnv("XDG_DATA_HOME", path.join(home, ".local/share"));
++    vi.stubEnv("VORTEX_LINUX_DOCUMENTS", documents);
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", "");
++    setCompatibilityGameProvider(undefined);
++  });
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    vi.restoreAllMocks();
++    vi.unstubAllEnvs();
++    fs.rmSync(home, { force: true, recursive: true });
++  });
++
++  it.each(["data/Steam", ".local/share/Steam"])("finds Steam Flatpak at %s", (suffix) => {
++    const root = path.join(home, ".var/app/com.valvesoftware.Steam", suffix);
++    const expected = fixture(path.join(root, "steamapps/compatdata/123/pfx"));
++    expect(steamRoots()).toContain(root);
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++
++  it("refuses ambiguous prefixes regardless of timestamps", () => {
++    const a = path.join(home, "a"),
++      b = path.join(home, "b");
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", `${a}:${b}`);
++    const fa = fixture(a),
++      fb = fixture(b);
++    fs.utimesSync(fa, 1000, 1000);
++    fs.utimesSync(fb, 2000, 2000);
++    expect(() => resolveWindowsUserPathSync(path.join(documents, relative))).toThrow(/Several/);
++    fs.mkdirSync(path.dirname(path.join(documents, relative)), { recursive: true });
++    fs.writeFileSync(path.join(documents, relative), "stale host copy");
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: a } }));
++    expect(resolveCaseInsensitiveSync(path.join(documents, relative))).toBe(fa);
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(fa);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: b } }));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(fb);
++  });
++
++  it("uses the selected Steam installation on another library and accepts library symlinks", () => {
++    const root = path.join(home, ".local/share/Steam");
++    const library = path.join(home, "external disk");
++    fs.mkdirSync(path.join(root, "steamapps"), { recursive: true });
++    fs.writeFileSync(
++      path.join(root, "steamapps/libraryfolders.vdf"),
++      `"libraryfolders"\n{\n"0"\n{\n"path" "${library}"\n}\n}`,
++    );
++    const gamePath = path.join(library, "steamapps/common/Example");
++    fs.mkdirSync(gamePath, { recursive: true });
++    fs.writeFileSync(
++      path.join(library, "steamapps/appmanifest_123.acf"),
++      '"AppState"\n{\n"appid" "123"\n"installdir" "Example"\n}',
++    );
++    const prefix = path.join(library, "steamapps/compatdata/123/pfx");
++    const expected = fixture(prefix);
++    fixture(path.join(root, "steamapps/compatdata/999/pfx"));
++    const alias = path.join(home, "game-link");
++    fs.symlinkSync(gamePath, alias);
++    expect(steamLibraries()).toContain(library);
++    expect(findSteamInstallation(alias)?.prefix).toBe(prefix);
++    setCompatibilityGameProvider(() => ({
++      path: alias,
++      store: "steam",
++      executable: "Example.exe",
++    }));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++
++  it("does not fall back to another installation when the selected prefix is missing", () => {
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", path.join(home, "backup"));
++    fixture(path.join(home, "backup"));
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(home, "missing") },
++    }));
++    expect(() => resolveWindowsUserPathSync(path.join(documents, relative))).toThrow(/unavailable/);
++    expect(resolveWindowsUserPathSync(path.join(home, "Downloads/mod.zip"))).toBe(
++      path.join(home, "Downloads/mod.zip"),
++    );
++    const expected = fixture(path.join(home, "missing"));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++
++  it("keeps native game paths and Vortex state outside Proton", () => {
++    const gamePath = path.join(home, "native");
++    fs.mkdirSync(gamePath);
++    fs.writeFileSync(path.join(gamePath, "Game"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
++    fixture(path.join(home, "backup"));
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", path.join(home, "backup"));
++    setCompatibilityGameProvider(() => ({ path: gamePath, executable: "Game", store: "steam" }));
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(
++      path.join(documents, relative),
++    );
++    vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(home, ".config"));
++    const state = path.join(home, ".config/Vortex/state.v2");
++    expect(resolveWindowsUserPathSync(state)).toBe(state);
++  });
++
++  it("deduplicates aliases of the same prefix", () => {
++    const prefix = path.join(home, "prefix");
++    const expected = fixture(prefix);
++    fs.symlinkSync(prefix, path.join(home, "alias"));
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", `${prefix}:${home}/alias`);
++    resetCompatibilityPathCache();
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
++  });
++});
+diff --git a/src/renderer/src/util/linux/steamLibraries.ts b/src/renderer/src/util/linux/steamLibraries.ts
+new file mode 100644
+index 0000000..4b832f0
+--- /dev/null
++++ b/src/renderer/src/util/linux/steamLibraries.ts
+@@ -0,0 +1,94 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { parse } from "simple-vdf";
++
++export function steamRoots(home = os.homedir()): string[] {
++  return [
++    path.join(process.env.XDG_DATA_HOME ?? path.join(home, ".local", "share"), "Steam"),
++    path.join(home, ".steam", "debian-installation"),
++    path.join(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"),
++    path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
++    path.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
++    path.join(home, ".steam", "steam"),
++  ];
++}
++
++export function canonicalPath(input: string): string {
++  try {
++    return fs.realpathSync(input);
++  } catch {
++    return path.resolve(input);
++  }
++}
++
++export function steamLibraries(roots = steamRoots()): string[] {
++  const libraries = new Set<string>();
++  for (const root of roots) {
++    if (fs.existsSync(root)) libraries.add(canonicalPath(root));
++    for (const directory of ["steamapps", "config"]) {
++      try {
++        const data = parse(
++          fs.readFileSync(path.join(root, directory, "libraryfolders.vdf"), "utf8"),
++        ) as any;
++        for (const library of Object.values(
++          data.libraryfolders ?? data.LibraryFolders ?? {},
++        ) as any[]) {
++          const location = typeof library === "string" ? library : library?.path;
++          if (typeof location === "string" && path.isAbsolute(location))
++            libraries.add(canonicalPath(location));
++        }
++      } catch {
++        /* Steam may be absent or still writing its manifest. */
++      }
++    }
++  }
++  return [...libraries];
++}
++
++export interface SteamInstallation {
++  appId: string;
++  gamePath: string;
++  steamAppsPath: string;
++  prefix: string;
++}
++
++export function findSteamInstallation(gamePath: string): SteamInstallation | undefined {
++  const target = canonicalPath(gamePath);
++  // Include the selected library even when Steam lives at a custom location.
++  const common = path.dirname(target);
++  const selectedRoot =
++    path.basename(common) === "common" && path.basename(path.dirname(common)) === "steamapps"
++      ? path.dirname(path.dirname(common))
++      : undefined;
++  const libraries = new Set([...steamLibraries(), ...(selectedRoot ? [selectedRoot] : [])]);
++  for (const library of libraries) {
++    const steamAppsPath = path.join(library, "steamapps");
++    let names: string[];
++    try {
++      names = fs.readdirSync(steamAppsPath);
++    } catch {
++      continue;
++    }
++    for (const name of names.filter((entry) => /^appmanifest_\d+\.acf$/.test(entry))) {
++      try {
++        const manifest = (parse(fs.readFileSync(path.join(steamAppsPath, name), "utf8")) as any)
++          .AppState;
++        const appId = String(manifest?.appid ?? "");
++        if (!/^\d+$/.test(appId) || typeof manifest?.installdir !== "string") continue;
++        const installed = canonicalPath(path.join(steamAppsPath, "common", manifest.installdir));
++        if (installed === target)
++          return {
++            appId,
++            gamePath: installed,
++            steamAppsPath,
++            prefix: path.join(steamAppsPath, "compatdata", appId, "pfx"),
++          };
++      } catch {
++        /* Ignore incomplete manifests. */
++      }
++    }
++  }
++  return undefined;
++}
+diff --git a/src/renderer/src/util/linux/steamPaths.ts b/src/renderer/src/util/linux/steamPaths.ts
+index 8f518d3..0aea742 100644
+--- a/src/renderer/src/util/linux/steamPaths.ts
++++ b/src/renderer/src/util/linux/steamPaths.ts
+@@ -2,21 +2,14 @@ import * as fs from "fs";
+ import * as path from "path";
+ 
+ import getVortexPath from "../getVortexPath";
++import { steamRoots } from "./steamLibraries";
+ 
+ /**
+  * Default Steam installation paths for Linux systems
+  * Ordered by likelihood (most common first)
+  */
+ export function getLinuxSteamPaths(): string[] {
+-  const home = getVortexPath("home");
+-  return [
+-    path.join(home, ".local", "share", "Steam"), // XDG standard (native)
+-    path.join(home, ".steam", "debian-installation"), // Debian/Ubuntu symlink
+-    path.join(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"), // Flatpak
+-    path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
+-    path.join(home, "snap", "steam", "common", ".local", "share", "Steam"), // Snap
+-    path.join(home, ".steam", "steam"), // Legacy
+-  ];
++  return steamRoots(getVortexPath("home"));
+ }
+ 
+ /**
+diff --git a/src/renderer/src/util/linuxCompatibility.ts b/src/renderer/src/util/linuxCompatibility.ts
+index 167f7b6..1be0938 100644
+--- a/src/renderer/src/util/linuxCompatibility.ts
++++ b/src/renderer/src/util/linuxCompatibility.ts
+@@ -3,7 +3,10 @@ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+ 
+-import { resolveWindowsUserPathSync } from "./compatibilityPaths";
++import {
++  resolveWindowsUserPathSync,
++  resolveSelectedWindowsUserPathSync,
++} from "./compatibilityPaths";
+ 
+ export interface IPreparedProcess<TOptions extends ExecOptions | SpawnOptions> {
+   args: string[];
+@@ -78,9 +81,9 @@ function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEn
+ }
+ 
+ export function resolveCaseInsensitiveSync(input: string): string {
+-  if (process.platform !== "linux" || !path.isAbsolute(input) || fs.existsSync(input)) {
+-    return input;
+-  }
++  if (process.platform !== "linux" || !path.isAbsolute(input)) return input;
++  input = resolveSelectedWindowsUserPathSync(input);
++  if (fs.existsSync(input)) return input;
+ 
+   const normalized = path.normalize(input);
+   const root = path.parse(normalized).root;

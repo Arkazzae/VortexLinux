@@ -1,0 +1,20 @@
+diff --git a/src/main/postinstall.mjs b/src/main/postinstall.mjs
+index 16a3092..2f6a3ca 100644
+--- a/src/main/postinstall.mjs
++++ b/src/main/postinstall.mjs
+@@ -11,7 +11,14 @@ switch (process.env.VORTEX_ELECTRON_REBUILD) {
+     break;
+ }
+ 
+-const result = spawnSync("pnpm", ["exec", "electron-rebuild"], {
++const args = ["exec", "electron-rebuild"];
++if (process.platform === "linux") {
++  args.push(
++    "--only",
++    "@nexusmods/fomod-installer-native,drivelist,leveldown,xxhash-addon,@parcel/watcher",
++  );
++}
++const result = spawnSync("pnpm", args, {
+   shell: process.platform === "win32",
+   stdio: "inherit",
+ });

@@ -1,0 +1,1493 @@
+diff --git a/src/util/EpicGamesLauncher.linux.test.ts b/src/util/EpicGamesLauncher.linux.test.ts
+new file mode 100644
+index 0000000..499da48
+--- /dev/null
++++ b/src/util/EpicGamesLauncher.linux.test.ts
+@@ -0,0 +1,49 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { GameEntryNotFound, GameStoreNotFound, type IGameStore } from "../types/IGameStore";
++import epicGamesLauncher from "./EpicGamesLauncher";
++
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++// The legacy barrel also exports UI modules; the store only needs these errors.
++vi.mock("../types/api", async () => import("../types/IGameStore"));
++
++describe.runIf(process.platform === "linux")("Epic Games store without Heroic", () => {
++  let root: string;
++  let store: IGameStore;
++  beforeEach(async () => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-epic-absent-"));
++    vi.mocked(os.homedir).mockReturnValue(root);
++    vi.stubEnv("XDG_CONFIG_HOME", path.join(root, ".config"));
++    store = epicGamesLauncher!;
++    await store.reloadGames();
++  });
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    vi.restoreAllMocks();
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++  it("exposes the Heroic store on Linux", () => {
++    expect(store).toBeDefined();
++    expect(store.id).toBe("epic");
++  });
++
++  it("reports that Epic and its games are unavailable", async () => {
++    await expect(store.allGames()).resolves.toEqual([]);
++    await expect(store.getGameStorePath()).resolves.toBeUndefined();
++    await expect(store.isGameInstalled?.("Example")).resolves.toBe(false);
++    await expect(store.isGameStoreInstalled?.()).resolves.toBe(false);
++  });
++
++  it("rejects lookups with the normal missing-entry error", async () => {
++    await expect(store.findByAppId("Example")).rejects.toBeInstanceOf(GameEntryNotFound);
++    await expect(store.findByName("Example")).rejects.toBeInstanceOf(GameEntryNotFound);
++  });
++
++  it("rejects launch attempts with the normal missing-store error", async () => {
++    await expect(store.launchGame("Example")).rejects.toBeInstanceOf(GameStoreNotFound);
++  });
++});
+diff --git a/src/util/EpicGamesLauncher.ts b/src/util/EpicGamesLauncher.ts
+index a0330a1..fc2a317 100644
+--- a/src/util/EpicGamesLauncher.ts
++++ b/src/util/EpicGamesLauncher.ts
+@@ -1,3 +1,4 @@
++import { HeroicStore } from "./Heroic";
+ import { log } from "./log";
+ 
+ import Promise from "bluebird";
+@@ -247,6 +248,6 @@ class EpicGamesLauncher implements IGameStore {
+ }
+ 
+ const instance: IGameStore =
+-  process.platform === "win32" ? new EpicGamesLauncher() : undefined;
++  process.platform === "win32" ? new EpicGamesLauncher() : process.platform === "linux" ? new HeroicStore("epic") : undefined;
+ 
+ export default instance;
+diff --git a/src/util/ExtensionManager.ts b/src/util/ExtensionManager.ts
+index 3ae76fa..a82cbde 100644
+--- a/src/util/ExtensionManager.ts
++++ b/src/util/ExtensionManager.ts
+@@ -55,6 +55,8 @@ import {
+ } from "../types/IState";
+ 
+ import { Archive } from "./archives";
++import { CompatibilityGame, getCompatibilityGame, setCompatibilityGameProvider } from "./compatibilityPaths";
++import { resolveGameTool } from "./linux/gameTools";
+ import { COMPANY_ID } from "./constants";
+ import {
+   MissingDependency,
+@@ -1115,6 +1117,28 @@ class ExtensionManager {
+    * @memberOf ExtensionManager
+    */
+   public setStore<S extends IState>(store: ThunkStore<S>) {
++    let previousDiscovery: unknown;
++    let previousGame: unknown;
++    let compatibilityGame: CompatibilityGame | undefined;
++    setCompatibilityGameProvider(() => {
++      const state = store.getState();
++      const gameId = activeGameId(state);
++      if (gameId === undefined) {
++        previousDiscovery = previousGame = compatibilityGame = undefined;
++        return undefined;
++      }
++      const discovery = state.settings.gameMode.discovered[gameId];
++      const game = state.session.gameMode.known.find((entry) => entry.id === gameId);
++      if (discovery !== previousDiscovery || game !== previousGame) {
++        previousDiscovery = discovery;
++        previousGame = game;
++        compatibilityGame = { ...discovery };
++        if (discovery?.path && !compatibilityGame.executable) {
++          compatibilityGame.executable = game?.executable;
++        }
++      }
++      return compatibilityGame;
++    });
+     this.mReduxWatcher = new ReduxWatcher(store, this.watcherError);
+ 
+     this.mExtensionState = getSafe(store.getState(), ["app", "extensions"], {});
+@@ -2314,6 +2338,7 @@ class ExtensionManager {
+     if (!truthy(executable)) {
+       return Promise.reject(new ProcessCanceled("Executable not set"));
+     }
++    const compatibilityGame = getCompatibilityGame();
+     const interpreter =
+       this.mInterpreters[path.extname(executable).toLowerCase()];
+     if (interpreter !== undefined) {
+@@ -2328,7 +2353,7 @@ class ExtensionManager {
+       }
+     }
+ 
+-    const cwd = options.cwd || path.dirname(executable);
++    let cwd = options.cwd || path.dirname(executable);
+ 
+     // Detect if executable is a script file that requires shell: true
+     // Common script extensions that need shell interpretation
+@@ -2347,7 +2372,7 @@ class ExtensionManager {
+     const pathEnvName = Object.keys(process.env).find(
+       (key) => key.toLowerCase() === "path",
+     );
+-    const env = {
++    let env = {
+       ...filteredEnvironment(),
+       [pathEnvName]: process.env["PATH_ORIG"] || process.env["PATH"],
+       ...options.env,
+@@ -2363,7 +2388,15 @@ class ExtensionManager {
+       this.applyStartHooks({ executable, args, options })
+         .then((updatedParameters) => {
+           ({ executable, args, options } = updatedParameters);
+-          return Promise.resolve();
++          return Promise.resolve(resolveGameTool(executable, args, options, compatibilityGame));
++        })
++        .then((command) => {
++          executable = command.executable;
++          args = command.args;
++          options = { ...options, ...command.options };
++          cwd = options.cwd || cwd;
++          env = { ...env, ...options.env };
++          delete env[""];
+         })
+         .then(
+           () =>
+@@ -2390,7 +2423,7 @@ class ExtensionManager {
+ 
+                 const child = spawn(
+                   runExe,
+-                  options.shell
++                  options.shell || process.platform === "linux"
+                     ? args
+                     : args.map((arg) => arg.replace(/"/g, "")),
+                   spawnOptions,
+diff --git a/src/util/Heroic.test.ts b/src/util/Heroic.test.ts
+new file mode 100644
+index 0000000..f56594f
+--- /dev/null
++++ b/src/util/Heroic.test.ts
+@@ -0,0 +1,224 @@
++import { execFile } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { promisify } from "node:util";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { resetCompatibilityPathCache, selectedGamePrefix } from "./compatibilityPaths";
++import { HeroicStore } from "./Heroic";
++import { resolveGameTool } from "./linux/gameTools";
++import {
++  findHeroicGame,
++  heroicLaunchCommand,
++  heroicPrefix,
++  heroicRoots,
++  readHeroicGames,
++} from "./linux/heroic";
++
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++
++describe.runIf(process.platform === "linux")("Heroic integration", () => {
++  let home: string;
++  let config: string;
++  let flatpakConfig: string;
++  let gamePath: string;
++  let prefix: string;
++  function json(file: string, data: unknown): void {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, JSON.stringify(data));
++  }
++  function program(name: string): string {
++    const binary = path.join(home, "bin", name);
++    fs.mkdirSync(path.dirname(binary), { recursive: true });
++    fs.writeFileSync(
++      binary,
++      `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),prefix:process.env.WINEPREFIX}));`,
++      { mode: 0o755 },
++    );
++    return binary;
++  }
++  function epic(root = config, location = gamePath): void {
++    fs.mkdirSync(location, { recursive: true });
++    json(path.join(root, "legendaryConfig/legendary/installed.json"), {
++      Example: {
++        app_name: "Example",
++        title: "Example Game",
++        install_path: location,
++        platform: "Windows",
++      },
++    });
++  }
++  beforeEach(() => {
++    home = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-heroic-"));
++    vi.mocked(os.homedir).mockReturnValue(home);
++    vi.stubEnv("XDG_CONFIG_HOME", path.join(home, ".config"));
++    vi.stubEnv("PATH", path.join(home, "bin"));
++    vi.stubEnv("HEROIC_BINARY", "heroic");
++    [config, flatpakConfig] = heroicRoots().map((root) => root.configPath);
++    gamePath = path.join(home, "Games/Example");
++    prefix = path.join(home, "Prefixes/Example");
++    fs.mkdirSync(path.join(prefix, "drive_c"), { recursive: true });
++  });
++  afterEach(() => {
++    resetCompatibilityPathCache();
++    vi.unstubAllEnvs();
++    vi.restoreAllMocks();
++    fs.rmSync(home, { recursive: true, force: true });
++  });
++  it("discovers all three stores, uses library titles and ignores broken files", async () => {
++    epic();
++    json(path.join(config, "gog_store/installed.json"), {
++      installed: [{ appName: "123", install_path: gamePath, platform: "linux" }],
++    });
++    json(path.join(config, "store_cache/gog_library.json"), {
++      games: [{ app_name: "123", title: "Native Game" }],
++    });
++    json(path.join(flatpakConfig, "nile_config/nile/installed.json"), [
++      { id: "amazon-id", path: gamePath },
++    ]);
++    json(path.join(flatpakConfig, "nile_config/nile/library.json"), [
++      { product: { id: "amazon-id", title: "Amazon Game" } },
++    ]);
++    json(path.join(flatpakConfig, "gog_store/installed.json"), "invalid schema");
++    expect(readHeroicGames().map((game) => [game.gameStoreId, game.name, game.flatpak])).toEqual([
++      ["epic", "Example Game", false],
++      ["gog", "Native Game", false],
++      ["amazon", "Amazon Game", true],
++    ]);
++    const gog = new HeroicStore("gog");
++    expect((await gog.findByName("Native Game")).appid).toBe("123");
++    expect(heroicPrefix(await gog.findByAppId("123"))).toBeNull();
++  });
++  it("keeps game enumeration cached until a store scan refreshes it", async () => {
++    epic();
++    const binary = program("heroic");
++    const store = new HeroicStore("epic");
++    await store.reloadGames();
++    expect((await store.allGames()).map((game) => game.appid)).toEqual(["Example"]);
++    expect(await store.isGameStoreInstalled()).toBe(true);
++
++    fs.rmSync(path.join(config, "legendaryConfig/legendary/installed.json"));
++    fs.rmSync(binary);
++    expect(await store.allGames()).toHaveLength(1);
++    await store.reloadGames();
++    expect(await store.allGames()).toEqual([]);
++    expect(await store.isGameStoreInstalled()).toBe(false);
++  });
++  it("inherits settings, uses the selected prefix and runs the configured Wine", async () => {
++    epic();
++    const wine = program("wine-custom");
++    json(path.join(config, "config.json"), {
++      defaultSettings: { winePrefix: "/unused", wineVersion: { type: "wine", bin: wine } },
++    });
++    json(path.join(config, "GamesConfig/Example.json"), {
++      version: "v0.1",
++      Example: { winePrefix: prefix },
++    });
++    new HeroicStore("epic");
++    const selected = { path: gamePath, store: "epic" };
++    expect(selectedGamePrefix(selected)).toBe(prefix);
++    const input = path.join(gamePath, "Input file.esp");
++    fs.writeFileSync(input, "fixture");
++    const command = await resolveGameTool(
++      "/tools/Editor.exe",
++      [input, 'path "quoted"; literal'],
++      {},
++      selected,
++    );
++    const { stdout } = await promisify(execFile)(command.executable, command.args, {
++      env: { ...process.env, ...command.options.env },
++    });
++    expect(JSON.parse(stdout)).toEqual({
++      args: ["/tools/Editor.exe", `Z:${input.replaceAll("/", "\\")}`, 'path "quoted"; literal'],
++      prefix,
++    });
++  });
++  it("keeps native and Flatpak copies separate and launches the matching launcher", async () => {
++    epic();
++    const secondPath = path.join(home, "Other Game");
++    epic(flatpakConfig, secondPath);
++    program("heroic");
++    const flatpak = program("flatpak");
++    const game = findHeroicGame({ path: secondPath, store: "epic" });
++    const command = heroicLaunchCommand(game, ["100% literal", 'a "b"']);
++    expect(command.executable).toBe(flatpak);
++    expect(command.args.slice(0, 2)).toEqual(["run", "com.heroicgameslauncher.hgl"]);
++    const url = new URL(command.args[2]);
++    expect(url.searchParams.get("runner")).toBe("legendary");
++    expect(url.searchParams.getAll("arg").map(decodeURIComponent)).toEqual([
++      "100% literal",
++      'a "b"',
++    ]);
++    await expect(new HeroicStore("epic").findByAppId("Example")).rejects.toThrow(/Several Heroic/);
++  });
++  it("runs Flatpak tools inside Heroic's sandbox with its environment", async () => {
++    epic(flatpakConfig);
++    const flatpak = program("flatpak");
++    json(path.join(flatpakConfig, "GamesConfig/Example.json"), {
++      Example: {
++        winePrefix: prefix,
++        wineVersion: { type: "wine", bin: "/app/bin/wine" },
++        enviromentOptions: [{ key: "EXAMPLE", value: "a b" }],
++      },
++    });
++    new HeroicStore("epic");
++    const command = await resolveGameTool(
++      "/tools/Editor.exe",
++      ["argument"],
++      { cwd: gamePath },
++      { path: gamePath, store: "epic" },
++    );
++    expect(command.executable).toBe(flatpak);
++    expect(command.args).toEqual([
++      "run",
++      "--command=/app/bin/wine",
++      "--env=EXAMPLE=a b",
++      `--env=WINEPREFIX=${prefix}`,
++      "com.heroicgameslauncher.hgl",
++      "/tools/Editor.exe",
++      "argument",
++    ]);
++    expect(command.options.shell).toBe(false);
++  });
++  it("uses Proton prefixes and UMU without inventing another prefix", async () => {
++    epic();
++    fs.rmSync(path.join(prefix, "drive_c"), { recursive: true });
++    fs.mkdirSync(path.join(prefix, "pfx/drive_c"), { recursive: true });
++    const proton = program("proton");
++    json(path.join(config, "GamesConfig/Example.json"), {
++      Example: {
++        winePrefix: prefix,
++        wineVersion: { type: "proton", bin: proton },
++        disableUMU: true,
++      },
++    });
++    new HeroicStore("epic");
++    const selected = { path: gamePath, store: "epic" };
++    expect(selectedGamePrefix(selected)).toBe(path.join(prefix, "pfx"));
++    let command = await resolveGameTool("Editor.exe", [], {}, selected);
++    expect(command.args).toEqual(["run", "Editor.exe"]);
++    expect(command.options.env.STEAM_COMPAT_DATA_PATH).toBe(prefix);
++    const umu = program("umu-run");
++    json(path.join(config, "GamesConfig/Example.json"), {
++      Example: { winePrefix: prefix, wineVersion: { type: "proton", bin: proton } },
++    });
++    command = await resolveGameTool("Editor.exe", [], {}, selected);
++    expect(command.executable).toBe(umu);
++    expect(command.args).toEqual(["Editor.exe"]);
++    expect(command.options.env.WINEPREFIX).toBe(prefix);
++  });
++  it("refreshes moved installations and reports missing prefixes", async () => {
++    epic();
++    const store = new HeroicStore("epic");
++    expect((await store.allGames()).length).toBe(1);
++    const other = path.join(home, "Moved");
++    epic(config, other);
++    await store.reloadGames();
++    expect((await store.findByAppId("Example")).gamePath).toBe(other);
++    await expect(
++      resolveGameTool("Editor.exe", [], {}, { path: other, store: "epic" }),
++    ).rejects.toThrow(/prefix is unavailable/);
++  });
++});
+diff --git a/src/util/Heroic.ts b/src/util/Heroic.ts
+new file mode 100644
+index 0000000..084f098
+--- /dev/null
++++ b/src/util/Heroic.ts
+@@ -0,0 +1,104 @@
++import Bluebird from "bluebird";
++
++import type { IExtensionApi } from "../types/IExtensionContext";
++import { GameEntryNotFound, GameStoreNotFound, type IGameStore } from "../types/IGameStore";
++import { registerCompatibilityStore, resetCompatibilityPathCache } from "./compatibilityPaths";
++import { registerGameToolRunner } from "./linux/gameTools";
++import {
++  findHeroicGame,
++  heroicLaunchCommand,
++  heroicLauncher,
++  heroicPrefix,
++  heroicRoots,
++  heroicToolCommand,
++  readHeroicGames,
++  type HeroicGame,
++  type HeroicStoreId,
++} from "./linux/heroic";
++
++export class HeroicStore implements IGameStore {
++  public readonly name: string;
++  public readonly priority: number;
++  private games: HeroicGame[] | undefined;
++  private installed = false;
++  public constructor(public readonly id: HeroicStoreId) {
++    this.name = `${{ epic: "Epic Games", gog: "GOG", amazon: "Amazon Games" }[id]} (Heroic)`;
++    this.priority = id === "gog" ? 15 : 55;
++    registerCompatibilityStore(id, (selected) => {
++      const game = findHeroicGame(selected);
++      return game ? heroicPrefix(game) : undefined;
++    });
++    registerGameToolRunner(id, heroicToolCommand);
++  }
++  public allGames(): Bluebird<HeroicGame[]> {
++    return Bluebird.try(() => {
++      if (this.games === undefined) {
++        this.games = readHeroicGames().filter((entry) => entry.gameStoreId === this.id);
++        this.installed = heroicRoots().some((root) => heroicLauncher(root.flatpak) !== undefined);
++      }
++      return this.games;
++    });
++  }
++  public reloadGames(): Bluebird<void> {
++    this.games = undefined;
++    resetCompatibilityPathCache();
++    return this.allGames().then(() => undefined);
++  }
++  private find(predicate: (game: HeroicGame) => boolean, query: string): Bluebird<HeroicGame> {
++    return this.allGames().then((games) => {
++      const matches = games.filter(predicate);
++      if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
++      if (matches.length > 1)
++        throw new Error(
++          "Several Heroic installations match this game. Select the game directory manually.",
++        );
++      return matches[0];
++    });
++  }
++  public findByAppId(id: string | string[]): Bluebird<HeroicGame> {
++    const ids = Array.isArray(id) ? id : [id];
++    return this.find((game) => ids.includes(game.appid), ids.join(", "));
++  }
++  public findByName(name: string): Bluebird<HeroicGame> {
++    return Bluebird.try(() => new RegExp(`^(?:${name})$`, "i")).then((pattern) =>
++      this.find((game) => pattern.test(game.name), name),
++    );
++  }
++  public getGameStorePath(): Bluebird<string | undefined> {
++    return Bluebird.resolve(
++      heroicRoots()
++        .map((root) => heroicLauncher(root.flatpak)?.executable)
++        .find(Boolean),
++    );
++  }
++  public isGameStoreInstalled(): Bluebird<boolean> {
++    return this.getGameStorePath().then(Boolean);
++  }
++  public isGameInstalled(name: string): Bluebird<boolean> {
++    return this.findByName(name)
++      .then(() => true)
++      .catch(GameEntryNotFound, () => false);
++  }
++  public launchGame(
++    appInfo: string | { appId: string; parameters?: string[] },
++    api?: IExtensionApi,
++  ): Bluebird<void> {
++    return this.isGameStoreInstalled()
++      .then((installed) => {
++        if (!installed) throw new GameStoreNotFound(this.name);
++        return this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
++      })
++      .then((game) => {
++        if (!api) throw new Error("Heroic launch requires the Vortex application API");
++        const command = heroicLaunchCommand(
++          game,
++          typeof appInfo === "string" ? [] : appInfo.parameters,
++        );
++        return api.runExecutable(command.executable, command.args, {
++          ...command.options,
++          cwd: game.gamePath,
++          suggestDeploy: true,
++        });
++      });
++  }
++}
+diff --git a/src/util/StarterInfo.linux.test.ts b/src/util/StarterInfo.linux.test.ts
+new file mode 100644
+index 0000000..7069782
+--- /dev/null
++++ b/src/util/StarterInfo.linux.test.ts
+@@ -0,0 +1,68 @@
++import { describe, expect, it } from "vitest";
++
++import { findSteamEntryForStarter, type IStarterInfo } from "./StarterInfo";
++import type { ISteamEntry } from "./Steam";
++
++const starfield: ISteamEntry = {
++  appid: "1716740",
++  gamePath: "/games/SteamLibrary/steamapps/common/Starfield",
++  gameStoreId: "steam",
++  name: "Starfield",
++};
++
++function starter(overrides: Partial<IStarterInfo> = {}): IStarterInfo {
++  return {
++    commandLine: [],
++    detach: true,
++    environment: {},
++    exclusive: true,
++    exePath: `${starfield.gamePath}/Starfield.exe`,
++    extensionPath: "",
++    gameId: "starfield",
++    iconOutPath: "",
++    id: "starfield",
++    isGame: true,
++    logoName: "",
++    name: "Starfield",
++    shell: false,
++    store: "steam",
++    workingDirectory: starfield.gamePath,
++    ...overrides,
++  };
++}
++
++describe("Linux Steam launch routing", () => {
++  it("matches a Steam entry by the executable location", () => {
++    expect(findSteamEntryForStarter(starter(), [starfield], "linux")?.appid).toBe("1716740");
++  });
++
++  it("matches paths without depending on their letter case", () => {
++    expect(
++      findSteamEntryForStarter(
++        starter({ exePath: `${starfield.gamePath.toUpperCase()}/STARFIELD.EXE` }),
++        [starfield],
++        "linux",
++      )?.appid,
++    ).toBe("1716740");
++  });
++
++  it("does not confuse games whose directory names share a prefix", () => {
++    expect(
++      findSteamEntryForStarter(
++        starter({
++          exePath: "/games/SteamLibrary/steamapps/common/StarfieldTools/tool.exe",
++          workingDirectory: "/games/SteamLibrary/steamapps/common/StarfieldTools",
++        }),
++        [starfield],
++        "linux",
++      ),
++    ).toBeUndefined();
++  });
++
++  it("does not reroute non-Steam or Windows launches", () => {
++    expect(
++      findSteamEntryForStarter(starter({ store: "gog" }), [starfield], "linux"),
++    ).toBeUndefined();
++    expect(findSteamEntryForStarter(starter(), [starfield], "win32")).toBeUndefined();
++  });
++});
+diff --git a/src/util/StarterInfo.ts b/src/util/StarterInfo.ts
+index 05317a9..520164e 100644
+--- a/src/util/StarterInfo.ts
++++ b/src/util/StarterInfo.ts
+@@ -1,3 +1,6 @@
++import Steam, { ISteamEntry } from "./Steam";
++import { resolvePlatformPath } from "./nativeExecutable";
++import { findHeroicGame, heroicLaunchCommand } from "./linux/heroic";
+ /* eslint-disable */
+ import { setToolRunning } from "../actions";
+ import { IDiscoveredTool } from "../types/IDiscoveredTool";
+@@ -64,6 +67,45 @@ type OnShowErrorFunc = (
+   allowReport?: boolean,
+ ) => void;
+ 
++function isPathInside(root: string, candidate: string): boolean {
++  const relative = path.relative(root.toLocaleLowerCase(), candidate.toLocaleLowerCase());
++  return (
++    relative === "" ||
++    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
++  );
++}
++
++export function findSteamEntryForStarter(
++  info: IStarterInfo,
++  games: ISteamEntry[],
++  platform: NodeJS.Platform = process.platform,
++): ISteamEntry | undefined {
++  if (platform === "win32" || info.store !== "steam") {
++    return undefined;
++  }
++
++  const candidates = [info.workingDirectory, info.exePath].filter(
++    (candidate): candidate is string => candidate?.length > 0,
++  );
++  return games
++    .filter((game) => candidates.some((candidate) => isPathInside(game.gamePath, candidate)))
++    .sort((lhs, rhs) => rhs.gamePath.length - lhs.gamePath.length)[0];
++}
++
++async function findSteamEntry(info: IStarterInfo): globalThis.Promise<ISteamEntry | undefined> {
++  if (process.platform === "win32" || info.store !== "steam") {
++    return undefined;
++  }
++
++  try {
++    const steamStore = Steam;
++    return findSteamEntryForStarter(info, await steamStore.allGames());
++  } catch (err: any) {
++    log("debug", "Could not resolve Steam game entry", { error: err?.message });
++    return undefined;
++  }
++}
++
+ /**
+  * wrapper for information about a game or tool, combining static and runtime/discovery information
+  * for the purpose of actually starting them in a uniform way.
+@@ -173,7 +215,7 @@ class StarterInfo implements IStarterInfo {
+               err,
+               !game.contributed,
+             );
+-            return StarterInfo.runDirectly(info, api, onShowError, onSpawned);
++            return Promise.resolve(StarterInfo.runDirectly(info, api, onShowError, onSpawned));
+           })
+           .catch(GameStoreNotFound, (err) => {
+             onShowError(
+@@ -181,14 +223,14 @@ class StarterInfo implements IStarterInfo {
+               `Game store "${err.storeName}" not supported, is the extension disabled?`,
+               false,
+             );
+-            return StarterInfo.runDirectly(info, api, onShowError, onSpawned);
++            return Promise.resolve(StarterInfo.runDirectly(info, api, onShowError, onSpawned));
+           })
+           .catch((err) => {
+             onShowError("Failed to start game through launcher", err, true);
+-            return StarterInfo.runDirectly(info, api, onShowError, onSpawned);
++            return Promise.resolve(StarterInfo.runDirectly(info, api, onShowError, onSpawned));
+           });
+       } else {
+-        return StarterInfo.runDirectly(info, api, onShowError, onSpawned);
++        return Promise.resolve(StarterInfo.runDirectly(info, api, onShowError, onSpawned));
+       }
+     });
+   }
+@@ -214,12 +256,12 @@ class StarterInfo implements IStarterInfo {
+     return info["__iconCache"];
+   }
+ 
+-  private static runDirectly(
++  private static async runDirectly(
+     info: IStarterInfo,
+     api: IExtensionApi,
+     onShowError: OnShowErrorFunc,
+     onSpawned: () => void,
+-  ): Promise<void> {
++  ): globalThis.Promise<void> {
+     const spawned = () => {
+       onSpawned();
+       if (["hide", "hide_recover"].includes(info.onStart)) {
+@@ -229,6 +271,57 @@ class StarterInfo implements IStarterInfo {
+       }
+     };
+ 
++    if (
++      process.platform === "linux" &&
++      info.isGame &&
++      ["epic", "gog", "amazon"].includes(info.store)
++    ) {
++      try {
++        const discovery = api.store.getState().settings.gameMode.discovered[info.gameId];
++        const heroicGame = findHeroicGame({ path: discovery?.path, store: info.store });
++        if (heroicGame) {
++          const command = heroicLaunchCommand(heroicGame, info.commandLine);
++          await api.runExecutable(command.executable, command.args, {
++            ...command.options,
++            cwd: heroicGame.gamePath,
++            env: info.environment,
++            suggestDeploy: true,
++            detach: true,
++            // Heroic stays in the tray, so its process may outlive the game.
++            onSpawned: spawned,
++          });
++          return;
++        }
++      } catch (err) {
++        onShowError("Failed to start game through Heroic", err, false);
++        return;
++      }
++    }
++
++    const steamGameEntry = info.isGame ? await findSteamEntry(info) : undefined;
++    if (steamGameEntry !== undefined) {
++      const steamStore = Steam;
++      try {
++        await steamStore.launchGame(
++          { appId: steamGameEntry.appid, parameters: info.commandLine },
++          api,
++        );
++        log("info", "handed game launch to Steam", {
++          appid: steamGameEntry.appid,
++          gameId: info.gameId,
++        });
++        onSpawned();
++        if (["hide", "hide_recover"].includes(info.onStart)) {
++          getCurrentWindow().hide();
++        } else if (info.onStart === "close") {
++          getApplication().quit();
++        }
++      } catch (err) {
++        onShowError("Failed to start game through Steam", err, false);
++      }
++      return;
++    }
++
+     return api
+       .runExecutable(info.exePath, info.commandLine, {
+         cwd: info.workingDirectory || path.dirname(info.exePath),
+@@ -440,10 +533,7 @@ class StarterInfo implements IStarterInfo {
+ 
+   private initFromGame(game: IGameStored, gameDiscovery: IDiscoveryResult) {
+     this.name = gameDiscovery.name || game.name;
+-    this.exePath = path.join(
+-      gameDiscovery.path,
+-      gameDiscovery.executable || game.executable,
+-    );
++    this.exePath = resolvePlatformPath(gameDiscovery.path, gameDiscovery.executable || game.executable);
+     this.commandLine = getSafe(
+       gameDiscovery,
+       ["parameters"],
+diff --git a/src/util/Steam.ts b/src/util/Steam.ts
+index ede8805..2b375f2 100644
+--- a/src/util/Steam.ts
++++ b/src/util/Steam.ts
+@@ -1,3 +1,5 @@
++import { existsSync } from "node:fs";
++import { steamLibraries, steamRoots } from "./linux/steamLibraries";
+ import Promise from "bluebird";
+ 
+ import * as fs from "./fs";
+@@ -72,7 +74,7 @@ class Steam implements IGameStore {
+       }
+     } else {
+       this.mBaseFolder = Promise.resolve(
+-        path.resolve(getVortexPath("home"), ".steam", "steam"),
++        process.platform === "linux" ? steamRoots().find((root) => existsSync(root)) : path.resolve(getVortexPath("home"), ".steam", "steam"),
+       );
+     }
+   }
+@@ -94,6 +96,17 @@ class Steam implements IGameStore {
+   }
+ 
+   public launchGame(appInfo: any, api?: IExtensionApi): Promise<void> {
++    if (process.platform === "linux") {
++      const query = typeof appInfo === "string" ? appInfo : String(appInfo.appId ?? appInfo.steamAppId);
++      const args = typeof appInfo === "object" ? appInfo.parameters ?? [] : [];
++      return this.allGames().then((entries) => {
++        const game = entries.find((entry) => entry.appid === query ||
++          query.toLowerCase().includes(entry.gamePath.toLowerCase()));
++        if (!game) throw new GameEntryNotFound(query, STORE_ID);
++        const uri = `steam://run/${encodeURIComponent(game.appid)}//${args.map(encodeURIComponent).join(" ")}/`;
++        return opn(uri);
++      });
++    }
+     // We expect appInfo to be one of three things at this point:
+     //  - The game extension's details object if provided, in which case
+     //      we want to extract the steamAppId entry. (preferred case as this
+@@ -234,6 +247,7 @@ class Steam implements IGameStore {
+   }
+ 
+   private resolveSteamPaths(): Promise<string[]> {
++    if (process.platform === "linux") return Promise.resolve(steamLibraries());
+     log("debug", "resolving Steam game paths");
+     return this.mBaseFolder.then((basePath: string) => {
+       if (basePath === undefined) {
+diff --git a/src/util/linux/gameTools.test.ts b/src/util/linux/gameTools.test.ts
+new file mode 100644
+index 0000000..e18dcf4
+--- /dev/null
++++ b/src/util/linux/gameTools.test.ts
+@@ -0,0 +1,187 @@
++import { execFile } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { promisify } from "node:util";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { resetCompatibilityPathCache } from "../compatibilityPaths";
++import { resolveGameTool } from "./gameTools";
++import {
++  findLatestProton,
++  getConfiguredProtonName,
++  getProtonInfo,
++  resolveProtonPath,
++} from "./proton";
++
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++
++function vdf(value: Record<string, any>): string {
++  return Object.entries(value)
++    .map(([key, item]) =>
++      typeof item === "object" ? `"${key}"\n{\n${vdf(item)}}\n` : `"${key}" "${item}"\n`,
++    )
++    .join("");
++}
++
++describe.runIf(process.platform === "linux")("game tool runner", () => {
++  let root: string;
++  let steam: string;
++  let library: string;
++  let gamePath: string;
++  let prefix: string;
++  function write(file: string, text: string): void {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, text);
++  }
++  function config(mapping: Record<string, { name: string }>): void {
++    write(
++      path.join(steam, "config/config.vdf"),
++      vdf({
++        InstallConfigStore: { Software: { valve: { Steam: { CompatToolMapping: mapping } } } },
++      }),
++    );
++  }
++  function proton(name: string, internal?: string): string {
++    const directory = path.join(library, "steamapps/common", name);
++    write(
++      path.join(directory, "proton"),
++      `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),prefix:process.env.WINEPREFIX,app:process.env.SteamAppId,cwd:process.cwd()}));`,
++    );
++    fs.chmodSync(path.join(directory, "proton"), 0o755);
++    if (internal)
++      write(
++        path.join(directory, "compatibilitytool.vdf"),
++        vdf({ compatibilitytools: { compat_tools: { [internal]: { install_path: "." } } } }),
++      );
++    return directory;
++  }
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-tool-test-"));
++    vi.mocked(os.homedir).mockReturnValue(root);
++    vi.stubEnv("XDG_DATA_HOME", path.join(root, ".local/share"));
++    steam = path.join(root, ".local/share/Steam");
++    library = path.join(root, "Games with spaces");
++    gamePath = path.join(library, "steamapps/common/Game");
++    prefix = path.join(library, "steamapps/compatdata/42/pfx");
++    fs.mkdirSync(path.join(prefix, "drive_c"), { recursive: true });
++    fs.mkdirSync(gamePath, { recursive: true });
++    write(
++      path.join(steam, "steamapps/libraryfolders.vdf"),
++      vdf({ libraryfolders: { 1: { path: library } } }),
++    );
++    write(
++      path.join(library, "steamapps/appmanifest_42.acf"),
++      vdf({ AppState: { appid: "42", installdir: "Game" } }),
++    );
++  });
++  afterEach(() => {
++    resetCompatibilityPathCache();
++    vi.unstubAllEnvs();
++    vi.restoreAllMocks();
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++  it("uses Steam's default mapping and the tool manifest in an additional library", async () => {
++    const runner = proton("Custom directory", "selected_proton");
++    config({ 0: { name: "selected_proton" } });
++    expect(await getConfiguredProtonName(steam, "42")).toBe("selected_proton");
++    expect(await resolveProtonPath(steam, "selected_proton")).toBe(runner);
++    const input = path.join(gamePath, "Input file.esp");
++    const output = path.join(gamePath, "New output.esp");
++    write(input, "fixture");
++    const literals = ["path with spaces", 'value="quoted"', "literal; $(touch example)"];
++    const args = [input, output, ...literals];
++    const command = await resolveGameTool(
++      "/tools/Editor.exe",
++      args,
++      { cwd: gamePath, shell: true },
++      { path: gamePath, store: "steam" },
++    );
++    expect(command.options.shell).toBe(false);
++    const { stdout } = await promisify(execFile)(command.executable, command.args, {
++      cwd: command.options.cwd,
++      env: { ...process.env, ...command.options.env },
++    });
++    expect(JSON.parse(stdout)).toEqual({
++      args: [
++        "run",
++        "/tools/Editor.exe",
++        `Z:${input.replaceAll("/", "\\")}`,
++        `Z:${output.replaceAll("/", "\\")}`,
++        ...literals,
++      ],
++      prefix,
++      app: "42",
++      cwd: gamePath,
++    });
++  });
++  it("honors a per-game selection and does not replace a missing configured runner", async () => {
++    proton("Proton 10.0");
++    config({ 0: { name: "proton_10" }, 42: { name: "missing" } });
++    expect(await getConfiguredProtonName(steam, "42")).toBe("missing");
++    expect(
++      (await getProtonInfo(steam, path.join(library, "steamapps"), "42")).protonPath,
++    ).toBeUndefined();
++    await expect(
++      resolveGameTool("Tool.exe", [], {}, { path: gamePath, store: "steam" }),
++    ).rejects.toThrow(/selected in Steam/);
++  });
++  it("falls back to Steam's default after a per-game selection is cleared", async () => {
++    config({ 0: { name: "proton_10" }, 42: { name: "" } });
++    expect(await getConfiguredProtonName(steam, "42")).toBe("proton_10");
++  });
++  it("finds compatibility tools in Steam's extra tool directories", async () => {
++    const extra = path.join(root, "extra tools");
++    const runner = path.join(extra, "GE-Proton");
++    write(path.join(runner, "proton"), "");
++    write(
++      path.join(runner, "compatibilitytool.vdf"),
++      vdf({ compatibilitytools: { compat_tools: { "GE-Proton": { install_path: "." } } } }),
++    );
++    vi.stubEnv("STEAM_EXTRA_COMPAT_TOOLS_PATHS", extra);
++    expect(await resolveProtonPath(steam, "GE-Proton")).toBe(runner);
++  });
++  it("compares Proton versions numerically and never matches 9 with 19", async () => {
++    proton("Proton 9.0");
++    const latest = proton("Proton 19.0");
++    proton("Proton 10.0");
++    expect(await resolveProtonPath(steam, "proton_9")).toBe(
++      path.join(library, "steamapps/common/Proton 9.0"),
++    );
++    expect(await findLatestProton(steam)).toBe(latest);
++  });
++  it("keeps native tools native and requires an existing explicit Wine prefix", async () => {
++    const input = path.join(gamePath, "Input.esp");
++    write(input, "fixture");
++    expect(
++      await resolveGameTool("/tools/editor", [input], {}, { path: gamePath, store: "steam" }),
++    ).toEqual({ executable: "/tools/editor", args: [input], options: {} });
++    const command = await resolveGameTool("/tools/Editor.exe", [input, "argument"], {
++      env: { WINEPREFIX: prefix },
++    });
++    expect(command.executable).toBe("wine");
++    expect(command.args).toEqual([
++      "/tools/Editor.exe",
++      `Z:${input.replaceAll("/", "\\")}`,
++      "argument",
++    ]);
++    expect(command.options.env.WINEPREFIX).toBe(prefix);
++    await expect(
++      resolveGameTool("Tool.exe", [], { env: { WINEPREFIX: path.join(root, "missing") } }),
++    ).rejects.toThrow(/prefix is unavailable/);
++  });
++  it("does not launch a Steam tool in a different Wine prefix", async () => {
++    proton("Proton 10.0");
++    const other = path.join(root, "other");
++    fs.mkdirSync(path.join(other, "drive_c"), { recursive: true });
++    await expect(
++      resolveGameTool(
++        "Tool.exe",
++        [],
++        { env: { WINEPREFIX: other } },
++        { path: gamePath, store: "steam" },
++      ),
++    ).rejects.toThrow(/differs/);
++  });
++});
+diff --git a/src/util/linux/gameTools.ts b/src/util/linux/gameTools.ts
+new file mode 100644
+index 0000000..fd35aa1
+--- /dev/null
++++ b/src/util/linux/gameTools.ts
+@@ -0,0 +1,92 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import {
++  type CompatibilityGame,
++  getCompatibilityGame,
++  selectedGamePrefix,
++} from "../compatibilityPaths";
++import { mapWineArgument } from "../linuxCompatibility";
++import {
++  buildProtonCommand,
++  buildProtonEnvironment,
++  getProtonInfo,
++  isWindowsExecutable,
++} from "./proton";
++import { canonicalPath, findSteamInstallation, steamLibraries, steamRoots } from "./steamLibraries";
++
++export interface ToolOptions {
++  cwd?: string;
++  env?: Record<string, string>;
++  shell?: boolean;
++}
++export interface ToolCommand {
++  executable: string;
++  args: string[];
++  options: ToolOptions;
++}
++type StoreRunner = (command: ToolCommand, game: CompatibilityGame) => Promise<ToolCommand>;
++const runners = new Map<string, StoreRunner>();
++export function registerGameToolRunner(store: string, runner: StoreRunner): void {
++  runners.set(store, runner);
++}
++
++export async function resolveGameTool(
++  executable: string,
++  args: string[],
++  options: ToolOptions,
++  game = getCompatibilityGame(),
++): Promise<ToolCommand> {
++  const command = { executable, args, options };
++  if (process.platform !== "linux" || !isWindowsExecutable(executable)) return command;
++  if (!game && !options.env?.WINEPREFIX) return command;
++  const wineArgs = args.map(mapWineArgument);
++  if (game && runners.has(game.store ?? "")) {
++    return runners.get(game.store)({ ...command, args: wineArgs }, game);
++  }
++  const prefix = options.env?.WINEPREFIX ?? selectedGamePrefix(game);
++  if (!prefix || !fs.existsSync(path.join(prefix, "drive_c"))) {
++    throw new Error(
++      "The game's Wine prefix is unavailable. Launch the game once or configure WINEPREFIX for this tool.",
++    );
++  }
++  if (game?.store === "steam") {
++    const installed = game.path ? findSteamInstallation(game.path) : undefined;
++    if (!installed) throw new Error("Cannot find the selected game's Steam installation");
++    const library = canonicalPath(path.dirname(installed.steamAppsPath));
++    const steam = steamRoots().find((root) => steamLibraries([root]).includes(library));
++    if (!steam) throw new Error("Cannot find Steam's configuration for this game library");
++    const proton = await getProtonInfo(steam, installed.steamAppsPath, installed.appId);
++    if (!proton.protonPath)
++      throw new Error(
++        "The Proton version selected in Steam is not installed or could not be identified",
++      );
++    if (options.env?.WINEPREFIX && canonicalPath(prefix) !== canonicalPath(installed.prefix)) {
++      throw new Error(
++        "This tool's WINEPREFIX differs from the selected Steam game. Use the game's prefix with Proton.",
++      );
++    }
++    const result = buildProtonCommand(proton.protonPath, executable, wineArgs);
++    return {
++      ...result,
++      options: {
++        ...options,
++        shell: false,
++        env: {
++          ...buildProtonEnvironment(proton.compatDataPath, steam, options.env),
++          SteamAppId: installed.appId,
++          SteamGameId: installed.appId,
++        },
++      },
++    };
++  }
++  return {
++    executable: "wine",
++    args: [executable, ...wineArgs],
++    options: {
++      ...options,
++      shell: false,
++      env: { ...options.env, WINEPREFIX: prefix },
++    },
++  };
++}
+diff --git a/src/util/linux/heroic.ts b/src/util/linux/heroic.ts
+new file mode 100644
+index 0000000..651a0d4
+--- /dev/null
++++ b/src/util/linux/heroic.ts
+@@ -0,0 +1,248 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import type { CompatibilityGame } from "../compatibilityPaths";
++import type { ToolCommand } from "./gameTools";
++import { canonicalPath, steamRoots } from "./steamLibraries";
++
++export type HeroicStoreId = "epic" | "gog" | "amazon";
++export interface HeroicGame {
++  appid: string;
++  name: string;
++  gamePath: string;
++  gameStoreId: HeroicStoreId;
++  configPath: string;
++  flatpak: boolean;
++  native: boolean;
++}
++const runners = { epic: "legendary", gog: "gog", amazon: "nile" };
++
++export function heroicRoots(): Array<{ configPath: string; flatpak: boolean }> {
++  return [
++    {
++      configPath: path.join(
++        process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
++        "heroic",
++      ),
++      flatpak: false,
++    },
++    {
++      configPath: path.join(os.homedir(), ".var/app/com.heroicgameslauncher.hgl/config/heroic"),
++      flatpak: true,
++    },
++  ];
++}
++function readJson(file: string): any {
++  try {
++    return JSON.parse(fs.readFileSync(file, "utf8"));
++  } catch {
++    return undefined;
++  }
++}
++function absolute(value: unknown): string | undefined {
++  if (typeof value !== "string") return undefined;
++  const expanded = value.replace(/^~(?=\/|$)/, os.homedir());
++  return path.isAbsolute(expanded) ? expanded : undefined;
++}
++export function readHeroicGames(): HeroicGame[] {
++  const games: HeroicGame[] = [];
++  for (const root of heroicRoots()) {
++    if (!fs.existsSync(root.configPath)) continue;
++    const epic =
++      readJson(path.join(root.configPath, "legendaryConfig/legendary/installed.json")) ??
++      readJson(path.join(path.dirname(root.configPath), "legendary/installed.json")) ??
++      {};
++    const gog = readJson(path.join(root.configPath, "gog_store/installed.json"))?.installed ?? [];
++    const gogLibrary = readJson(path.join(root.configPath, "store_cache/gog_library.json"))?.games;
++    const gogTitles = new Map(
++      (Array.isArray(gogLibrary) ? gogLibrary : []).map((entry: any) => [
++        entry?.app_name,
++        entry?.title,
++      ]),
++    );
++    const amazon = readJson(path.join(root.configPath, "nile_config/nile/installed.json")) ?? [];
++    const titleData = readJson(path.join(root.configPath, "nile_config/nile/library.json"));
++    const titles = new Map(
++      (Array.isArray(titleData) ? titleData : []).map((entry: any) => [
++        entry?.product?.id,
++        entry?.product?.title,
++      ]),
++    );
++    const add = (
++      store: HeroicStoreId,
++      id: unknown,
++      title: unknown,
++      location: unknown,
++      platform: unknown,
++    ) => {
++      const gamePath = absolute(location);
++      if (
++        typeof id !== "string" ||
++        !id ||
++        /[\\/]/.test(id) ||
++        !gamePath ||
++        !fs.existsSync(gamePath)
++      )
++        return;
++      games.push({
++        ...root,
++        appid: id,
++        name: typeof title === "string" ? title : id,
++        gamePath: canonicalPath(gamePath),
++        gameStoreId: store,
++        native: typeof platform === "string" && platform.toLowerCase() === "linux",
++      });
++    };
++    for (const [id, game] of Object.entries(epic) as Array<[string, any]>)
++      add("epic", game?.app_name ?? id, game?.title, game?.install_path, game?.platform);
++    if (Array.isArray(gog))
++      for (const game of gog)
++        add(
++          "gog",
++          game?.appName,
++          game?.title ?? gogTitles.get(game?.appName),
++          game?.install_path,
++          game?.platform,
++        );
++    if (Array.isArray(amazon))
++      for (const game of amazon)
++        add("amazon", game?.id, titles.get(game?.id), game?.path, "windows");
++  }
++  return games;
++}
++export function findHeroicGame(game: CompatibilityGame): HeroicGame | undefined {
++  if (!game.path) return undefined;
++  const matches = readHeroicGames().filter(
++    (entry) => entry.gameStoreId === game.store && entry.gamePath === canonicalPath(game.path),
++  );
++  if (matches.length > 1)
++    throw new Error(
++      "This game is registered in several Heroic installations. Remove the stale registration or set WINEPREFIX explicitly.",
++    );
++  return matches[0];
++}
++function settings(game: HeroicGame): any {
++  const defaults = readJson(path.join(game.configPath, "config.json"))?.defaultSettings ?? {};
++  const config = readJson(path.join(game.configPath, "GamesConfig", `${game.appid}.json`));
++  return { ...defaults, ...config?.[game.appid] };
++}
++export function heroicPrefix(game: HeroicGame): string | null | undefined {
++  if (game.native) return null;
++  const config = settings(game);
++  const prefix = absolute(config.winePrefix);
++  if (!prefix) return undefined;
++  const direct = fs.existsSync(path.join(prefix, "drive_c"));
++  const nested = fs.existsSync(path.join(prefix, "pfx/drive_c"));
++  if (direct && nested && canonicalPath(prefix) !== canonicalPath(path.join(prefix, "pfx"))) {
++    throw new Error("Heroic's prefix contains two different Windows installations");
++  }
++  return direct
++    ? prefix
++    : config.wineVersion?.type === "proton"
++      ? path.join(prefix, "pfx")
++      : prefix;
++}
++export function findProgram(name: string): string | undefined {
++  const candidates = path.isAbsolute(name)
++    ? [name]
++    : (process.env.PATH ?? "")
++        .split(path.delimiter)
++        .filter(Boolean)
++        .map((directory) => path.join(directory, name));
++  return candidates.find((candidate) => {
++    try {
++      fs.accessSync(candidate, fs.constants.X_OK);
++      return fs.statSync(candidate).isFile();
++    } catch {
++      return false;
++    }
++  });
++}
++export function heroicLauncher(
++  flatpak: boolean,
++): { executable: string; args: string[] } | undefined {
++  if (!heroicRoots().some((root) => root.flatpak === flatpak && fs.existsSync(root.configPath)))
++    return undefined;
++  const executable = flatpak
++    ? findProgram("flatpak")
++    : findProgram(process.env.HEROIC_BINARY ?? "heroic");
++  return executable
++    ? { executable, args: flatpak ? ["run", "com.heroicgameslauncher.hgl"] : [] }
++    : undefined;
++}
++export function heroicLaunchCommand(game: HeroicGame, args: string[] = []): ToolCommand {
++  const launcher = heroicLauncher(game.flatpak);
++  if (!launcher)
++    throw new Error("Heroic was not found. Install Heroic or set HEROIC_BINARY to its executable.");
++  const url = new URL("heroic://launch");
++  url.searchParams.set("appName", game.appid);
++  url.searchParams.set("runner", runners[game.gameStoreId]);
++  for (const argument of args) url.searchParams.append("arg", encodeURIComponent(argument));
++  return {
++    executable: launcher.executable,
++    args: [...launcher.args, url.toString()],
++    options: { shell: false },
++  };
++}
++export async function heroicToolCommand(
++  command: ToolCommand,
++  selected: CompatibilityGame,
++): Promise<ToolCommand> {
++  const game = findHeroicGame(selected);
++  if (!game) throw new Error("The selected game is not registered in Heroic");
++  const config = settings(game);
++  const prefix = command.options.env?.WINEPREFIX ?? heroicPrefix(game);
++  if (!prefix || !fs.existsSync(path.join(prefix, "drive_c")))
++    throw new Error("The Heroic Wine prefix is unavailable. Launch the game once in Heroic.");
++  const runner = config.wineVersion;
++  const binary = absolute(runner?.bin);
++  if (!binary) throw new Error("Select a Wine or Proton version for this game in Heroic");
++  let executable = binary;
++  let args = [command.executable, ...command.args];
++  const environment = Object.fromEntries(
++    (config.enviromentOptions ?? [])
++      .filter((entry: any) => typeof entry.key === "string" && typeof entry.value === "string")
++      .map((entry: any) => [entry.key, entry.value]),
++  );
++  const env: Record<string, string> = {
++    ...environment,
++    ...command.options.env,
++    WINEPREFIX: prefix,
++  };
++  if (runner.type === "proton") {
++    const umu = !game.flatpak ? findProgram("umu-run") : undefined;
++    const bundledUmu = path.join(game.configPath, "tools/runtimes/umu/umu_run.py");
++    const umuBinary = umu ?? (fs.existsSync(bundledUmu) ? bundledUmu : undefined);
++    env.PROTONPATH = path.dirname(binary);
++    env.GAMEID = "umu-0";
++    env.STORE = { epic: "egs", gog: "gog", amazon: "amazon" }[game.gameStoreId];
++    if (config.disableUMU !== true && umuBinary) {
++      executable = umuBinary;
++      env.PROTON_VERB = "run";
++      // UMU, like Heroic, expects the compatibility data directory that holds pfx.
++      if (path.basename(prefix) === "pfx") env.WINEPREFIX = path.dirname(prefix);
++    } else {
++      if (path.basename(prefix) !== "pfx")
++        throw new Error(
++          "This Heroic prefix requires UMU. Install UMU in Heroic before running tools.",
++        );
++      env.STEAM_COMPAT_DATA_PATH = path.dirname(prefix);
++      env.STEAM_COMPAT_CLIENT_INSTALL_PATH = steamRoots().find((root) => fs.existsSync(root)) ?? "";
++      args = ["run", ...args];
++    }
++  } else if (runner.type !== "wine") throw new Error(`Unsupported Heroic runner: ${runner.type}`);
++  if (game.flatpak) {
++    const flatpak = findProgram("flatpak");
++    if (!flatpak) throw new Error("Flatpak was not found");
++    args = [
++      "run",
++      `--command=${executable}`,
++      ...Object.entries(env).map(([key, value]) => `--env=${key}=${value}`),
++      "com.heroicgameslauncher.hgl",
++      ...args,
++    ];
++    executable = flatpak;
++  } else if (!findProgram(executable)) throw new Error(`Heroic's runner is missing: ${executable}`);
++  return { executable, args, options: { ...command.options, shell: false, env } };
++}
+diff --git a/src/util/linux/proton.ts b/src/util/linux/proton.ts
+new file mode 100644
+index 0000000..65a8d0e
+--- /dev/null
++++ b/src/util/linux/proton.ts
+@@ -0,0 +1,148 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import { parse } from "simple-vdf";
++
++import { steamLibraries } from "./steamLibraries";
++
++export interface IProtonInfo {
++  usesProton: boolean;
++  compatDataPath?: string;
++  protonPath?: string;
++}
++
++function value(object: any, key: string): any {
++  return object?.[Object.keys(object).find((entry) => entry.toLowerCase() === key.toLowerCase())];
++}
++
++export async function detectProtonUsage(steamAppsPath: string, appId: string): Promise<boolean> {
++  return fs.existsSync(path.join(getCompatDataPath(steamAppsPath, appId), "pfx"));
++}
++export function getCompatDataPath(steamAppsPath: string, appId: string): string {
++  return path.join(steamAppsPath, "compatdata", appId);
++}
++export function getWinePrefixPath(compatDataPath: string): string {
++  return path.join(compatDataPath, "pfx");
++}
++
++export async function getConfiguredProtonName(
++  steamPath: string,
++  appId: string,
++): Promise<string | undefined> {
++  try {
++    let config: any = parse(fs.readFileSync(path.join(steamPath, "config", "config.vdf"), "utf8"));
++    for (const key of ["InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping"]) {
++      config = value(config, key);
++    }
++    // Steam keeps an empty name after the per-game override is cleared.
++    const name = (id: string): string | undefined => {
++      const candidate = config?.[id]?.name;
++      return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
++    };
++    return name(appId) ?? name("0");
++  } catch {
++    return undefined;
++  }
++}
++
++function installations(steamPath: string): string[] {
++  const directories = [
++    path.join(steamPath, "compatibilitytools.d"),
++    ...(process.env.STEAM_EXTRA_COMPAT_TOOLS_PATHS ?? "").split(path.delimiter).filter(Boolean),
++    // Distribution packages such as proton-ge-custom install here.
++    "/usr/share/steam/compatibilitytools.d",
++    "/usr/local/share/steam/compatibilitytools.d",
++    ...steamLibraries([steamPath]).map((library) => path.join(library, "steamapps", "common")),
++  ];
++  return directories.flatMap((directory) => {
++    try {
++      return fs
++        .readdirSync(directory)
++        .map((entry) => path.join(directory, entry))
++        .filter((entry) => fs.existsSync(path.join(entry, "proton")));
++    } catch {
++      return [];
++    }
++  });
++}
++
++export async function resolveProtonPath(
++  steamPath: string,
++  protonName: string,
++): Promise<string | undefined> {
++  const installed = installations(steamPath);
++  for (const directory of installed) {
++    try {
++      const manifest = parse(
++        fs.readFileSync(path.join(directory, "compatibilitytool.vdf"), "utf8"),
++      );
++      const tools = value(value(manifest, "compatibilitytools"), "compat_tools");
++      if (Object.hasOwn(tools ?? {}, protonName)) return directory;
++    } catch {
++      /* Older tools may not have a manifest. */
++    }
++  }
++  const exact = installed.find((directory) => path.basename(directory) === protonName);
++  if (exact) return exact;
++  const keyword = /^proton_(.+)$/i.exec(protonName)?.[1];
++  if (!keyword) return undefined;
++  const pattern = /^\d+$/.test(keyword) ? new RegExp(`\\b${keyword}(?:\\.\\d+)?\\b`) : undefined;
++  const matches = installed.filter((directory) => {
++    const name = path.basename(directory).toLowerCase();
++    return (
++      name.startsWith("proton") &&
++      (pattern ? pattern.test(name) : name.includes(keyword.toLowerCase()))
++    );
++  });
++  return matches.length === 1 ? matches[0] : undefined;
++}
++
++export async function findLatestProton(steamPath: string): Promise<string | undefined> {
++  return installations(steamPath)
++    .filter((directory) => /^proton\s+\d/i.test(path.basename(directory)))
++    .sort((left, right) =>
++      path.basename(right).localeCompare(path.basename(left), "en", { numeric: true }),
++    )[0];
++}
++
++export async function getProtonInfo(
++  steamPath: string,
++  steamAppsPath: string,
++  appId: string,
++): Promise<IProtonInfo> {
++  if (!(await detectProtonUsage(steamAppsPath, appId))) return { usesProton: false };
++  const protonName = await getConfiguredProtonName(steamPath, appId);
++  const protonPath =
++    protonName !== undefined
++      ? await resolveProtonPath(steamPath, protonName)
++      : await findLatestProton(steamPath);
++  return { usesProton: true, compatDataPath: getCompatDataPath(steamAppsPath, appId), protonPath };
++}
++
++export function isWindowsExecutable(filePath: string): boolean {
++  return [".exe", ".bat", ".cmd"].includes(path.extname(filePath).toLowerCase());
++}
++export function buildProtonEnvironment(
++  compatDataPath: string,
++  steamPath: string,
++  existingEnv?: Record<string, string>,
++): Record<string, string> {
++  const preloads = [
++    path.join(steamPath, "ubuntu12_32", "gameoverlayrenderer.so"),
++    path.join(steamPath, "ubuntu12_64", "gameoverlayrenderer.so"),
++  ];
++  return {
++    ...existingEnv,
++    STEAM_COMPAT_DATA_PATH: compatDataPath,
++    STEAM_COMPAT_CLIENT_INSTALL_PATH: steamPath,
++    WINEPREFIX: getWinePrefixPath(compatDataPath),
++    LD_PRELOAD: preloads.join(":"),
++  };
++}
++export function buildProtonCommand(
++  protonPath: string,
++  exePath: string,
++  args: string[],
++): { executable: string; args: string[] } {
++  return { executable: path.join(protonPath, "proton"), args: ["run", exePath, ...args] };
++}

@@ -1,0 +1,249 @@
+diff --git a/src/renderer/src/extensions/extension_manager/dependencyNotifications.test.ts b/src/renderer/src/extensions/extension_manager/dependencyNotifications.test.ts
+new file mode 100644
+index 000000000..56034a2dc
+--- /dev/null
++++ b/src/renderer/src/extensions/extension_manager/dependencyNotifications.test.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from "vitest";
++
++import type { IRegisteredExtension } from "../../types/extensions";
++import { isActionableDependencyFailure } from "./dependencyNotifications";
++
++function extension(name: string, bundled: boolean): IRegisteredExtension {
++  return {
++    dynamic: true,
++    info: {
++      author: "Test",
++      bundled,
++      description: "Test extension",
++      id: name,
++      name,
++      version: "1.0.0",
++    },
++    initFunc: undefined,
++    name,
++    namespace: name,
++    path: `/extensions/${name}`,
++  };
++}
++
++describe("dependency notifications", () => {
++  it("does not offer to install a dependency omitted from a platform build", () => {
++    const extensions = [extension("bundled-consumer", true)];
++    expect(
++      isActionableDependencyFailure("linux", extensions, "bundled-consumer", "omitted-provider"),
++    ).toBe(false);
++  });
++
++  it("keeps missing third-party dependencies actionable", () => {
++    const extensions = [extension("community-consumer", false)];
++    expect(
++      isActionableDependencyFailure("linux", extensions, "community-consumer", "missing-provider"),
++    ).toBe(true);
++  });
++
++  it("keeps version mismatches and Windows dependencies actionable", () => {
++    const extensions = [extension("bundled-consumer", true), extension("provider", true)];
++    expect(isActionableDependencyFailure("linux", extensions, "bundled-consumer", "provider")).toBe(
++      true,
++    );
++    expect(
++      isActionableDependencyFailure("win32", extensions, "bundled-consumer", "missing-provider"),
++    ).toBe(true);
++  });
++});
+diff --git a/src/renderer/src/extensions/extension_manager/dependencyNotifications.ts b/src/renderer/src/extensions/extension_manager/dependencyNotifications.ts
+new file mode 100644
+index 000000000..f6e340536
+--- /dev/null
++++ b/src/renderer/src/extensions/extension_manager/dependencyNotifications.ts
+@@ -0,0 +1,19 @@
++import type { IRegisteredExtension } from "../../types/extensions";
++
++function matches(extension: IRegisteredExtension, id: string): boolean {
++  return extension.name === id || extension.info?.id === id || extension.info?.name === id;
++}
++
++export function isActionableDependencyFailure(
++  platform: NodeJS.Platform,
++  extensions: IRegisteredExtension[],
++  dependentId: string,
++  dependencyId: string,
++): boolean {
++  if (platform === "win32" || extensions.some((extension) => matches(extension, dependencyId))) {
++    return true;
++  }
++
++  const dependent = extensions.find((extension) => matches(extension, dependentId));
++  return dependent?.info?.bundled !== true;
++}
+diff --git a/src/renderer/src/extensions/extension_manager/index.ts b/src/renderer/src/extensions/extension_manager/index.ts
+index a55e3c78b..b3fa7ba07 100644
+--- a/src/renderer/src/extensions/extension_manager/index.ts
++++ b/src/renderer/src/extensions/extension_manager/index.ts
+@@ -19,6 +19,7 @@ import makeReactive from "../../util/makeReactive";
+ import { setAvailableExtensions, setExtensionsUpdate } from "./actions";
+ import BrowseExtensions from "./BrowseExtensions";
+ import type { IBrowseExtensionsProps } from "./BrowseExtensions";
++import { isActionableDependencyFailure } from "./dependencyNotifications";
+ import { ExtensionManager } from "./ExtensionManager";
+ import type { IExtensionManagerProps } from "./ExtensionManager";
+ import sessionReducer from "./reducers";
+@@ -234,16 +235,29 @@ function checkMissingDependencies(
+   api: IExtensionApi,
+   loadFailures: Record<string, IExtensionLoadFailure[]>,
+ ): void {
+-  const missingDependencies = Object.values(loadFailures).reduce<Set<string>>((prev, failures) => {
+-    for (const failure of failures) {
+-      if (failure.id !== "dependency") continue;
++  const extensions = api.getLoadedExtensions();
++  const missingDependencies = Object.entries(loadFailures).reduce<Set<string>>(
++    (prev, [extId, failures]) => {
++      for (const failure of failures) {
++        if (
++          failure.id !== "dependency" ||
++          !isActionableDependencyFailure(
++            process.platform,
++            extensions,
++            extId,
++            failure.args.dependencyId,
++          )
++        ) {
++          continue;
++        }
+ 
+-      const { dependencyId } = failure.args;
+-      prev.add(dependencyId);
+-    }
++        prev.add(failure.args.dependencyId);
++      }
+ 
+-    return prev;
+-  }, new Set<string>());
++      return prev;
++    },
++    new Set<string>(),
++  );
+ 
+   if (missingDependencies.size === 0) return;
+ 
+diff --git a/src/renderer/src/extensions/extension_manager/renderLoadFailure.test.ts b/src/renderer/src/extensions/extension_manager/renderLoadFailure.test.ts
+new file mode 100644
+index 000000000..489166f8e
+--- /dev/null
++++ b/src/renderer/src/extensions/extension_manager/renderLoadFailure.test.ts
+@@ -0,0 +1,30 @@
++import { createInstance } from "i18next";
++import { describe, expect, it } from "vitest";
++
++import { renderLoadFailure } from "./renderLoadFailure";
++
++describe("extension load failure messages", () => {
++  it("names the missing Gamebryo dependency without an unexpanded placeholder", async () => {
++    const i18n = createInstance();
++    await i18n.init({ lng: "en", resources: {} });
++
++    const message = renderLoadFailure(i18n.t, {
++      id: "dependency",
++      args: { dependencyId: "gamebryo-plugin-management" },
++    });
++
++    expect(message).toBe("Depends on 'gamebryo-plugin-management'");
++  });
++
++  it("includes both the dependency name and required version", async () => {
++    const i18n = createInstance();
++    await i18n.init({ lng: "en", resources: {} });
++
++    const message = renderLoadFailure(i18n.t, {
++      id: "dependency",
++      args: { dependencyId: "gamebryo-plugin-management", version: "^0.5.3" },
++    });
++
++    expect(message).toBe("Depends on 'gamebryo-plugin-management' version '^0.5.3'");
++  });
++});
+diff --git a/src/renderer/src/extensions/extension_manager/renderLoadFailure.ts b/src/renderer/src/extensions/extension_manager/renderLoadFailure.ts
+new file mode 100644
+index 000000000..4c72386ca
+--- /dev/null
++++ b/src/renderer/src/extensions/extension_manager/renderLoadFailure.ts
+@@ -0,0 +1,28 @@
++import type { TFunction } from "i18next";
++
++import type { IExtensionLoadFailure } from "../../types/IState";
++
++export function renderLoadFailure(t: TFunction, fail: IExtensionLoadFailure) {
++  if (fail.id === "unsupported-version") {
++    return t("Not compatible with this version of Vortex");
++  }
++
++  if (fail.id === "unsupported-api") {
++    return t("Unsupported API");
++  }
++
++  if (fail.id === "exception") {
++    return t("Failed to load: {{message}}", { replace: fail.args });
++  }
++
++  if (fail.id === "dependency") {
++    if (fail.args.version) {
++      return t("Depends on '{{dependencyId}}' version '{{version}}'", { replace: fail.args });
++    }
++
++    return t("Depends on '{{dependencyId}}'", { replace: fail.args });
++  }
++
++  const id = fail.id satisfies never;
++  return t("Unknown error '{{id}}'", { replace: { id } });
++}
+diff --git a/src/renderer/src/extensions/extension_manager/tableAttributes.tsx b/src/renderer/src/extensions/extension_manager/tableAttributes.tsx
+index 3393e71e1..07fa76d78 100644
+--- a/src/renderer/src/extensions/extension_manager/tableAttributes.tsx
++++ b/src/renderer/src/extensions/extension_manager/tableAttributes.tsx
+@@ -4,12 +4,12 @@ import * as React from "react";
+ 
+ import TableTextFilter from "../../controls/table/TextFilter";
+ import type { IExtensionWithState } from "../../types/extensions";
+-import type { IExtensionLoadFailure } from "../../types/IState";
+ import type { ITableAttribute } from "../../types/ITableAttribute";
+ import { getSafe } from "../../util/storeHelper";
+ import { SITE_ID } from "../gamemode_management/constants";
+ import type { EndorseMod } from "../nexus_integration/attributes";
+ import EndorseModButton from "../nexus_integration/views/EndorseModButton";
++import { renderLoadFailure } from "./renderLoadFailure";
+ 
+ interface IAttributesContext {
+   onSetExtensionEnabled: (extensionName: string, enabled: boolean) => void;
+@@ -17,31 +17,6 @@ interface IAttributesContext {
+   onEndorseMod: (gameId: string, modId: string, endorsed: EndorsedStatus) => void;
+ }
+ 
+-function renderLoadFailure(t: TFunction, fail: IExtensionLoadFailure) {
+-  if (fail.id === "unsupported-version") {
+-    return t("Not compatible with this version of Vortex");
+-  }
+-
+-  if (fail.id === "unsupported-api") {
+-    return t("Unsupported API");
+-  }
+-
+-  if (fail.id === "exception") {
+-    return t("Failed to load: {{message}}", { replace: fail.args });
+-  }
+-
+-  if (fail.id === "dependency") {
+-    if (fail.args.version) {
+-      return t("Depends on '{{dependencyId}}' version '{{version}}'", { replace: fail.args });
+-    }
+-
+-    return t("Depends on '{{dependencyId}}'");
+-  }
+-
+-  const id = fail.id satisfies never;
+-  return t("Unknown error '{{id}}'", { replace: { id } });
+-}
+-
+ function createEndorsedIcon(ext: IExtensionWithState, onEndorse: EndorseMod, t: TFunction) {
+   const endorsed: string = ext.endorsed || "Undecided";
+   return (

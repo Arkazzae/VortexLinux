@@ -1,0 +1,1610 @@
+diff --git a/src/extensions/hardlink_activator/hardlinkIdentity.ts b/src/extensions/hardlink_activator/hardlinkIdentity.ts
+new file mode 100644
+index 0000000..feb6874
+--- /dev/null
++++ b/src/extensions/hardlink_activator/hardlinkIdentity.ts
+@@ -0,0 +1,101 @@
++import * as nodeFs from "fs";
++
++import PromiseBB from "bluebird";
++import type { IEntry } from "turbowalk";
++import turbowalk from "turbowalk";
++
++/**
++ * Resolve a hard-link identity without assuming the Windows-only turbowalk
++ * details are available. Device and inode together are unique within a POSIX
++ * filesystem and bigint stats avoid precision loss for large inode values.
++ */
++export async function resolveHardlinkKey(entry: IEntry): Promise<string | undefined> {
++  if (entry.isDirectory || entry.linkCount === 1) {
++    return undefined;
++  }
++  if (entry.linkCount !== undefined && entry.idStr !== undefined) {
++    return entry.linkCount > 1 ? `native:${entry.idStr}` : undefined;
++  }
++
++  try {
++    const stats = await nodeFs.promises.lstat(entry.filePath, { bigint: true });
++    return stats.nlink > 1n ? `posix:${stats.dev}:${stats.ino}` : undefined;
++  } catch (err) {
++    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
++      return undefined;
++    }
++    throw err;
++  }
++}
++
++export function collectHardlinkKeys(rootPath: string): PromiseBB<Set<string>> {
++  const keys = new Set<string>();
++  let queue = PromiseBB.resolve();
++
++  return turbowalk(
++    rootPath,
++    (entries) => {
++      queue = queue.then(() =>
++        PromiseBB.map(
++          entries,
++          async (entry) => {
++            const key = await resolveHardlinkKey(entry);
++            if (key !== undefined) {
++              keys.add(key);
++            }
++          },
++          { concurrency: 50 },
++        ).then(() => undefined),
++      );
++    },
++    { details: true, skipHidden: false },
++  )
++    .then(() => queue)
++    .then(() => keys);
++}
++
++export function purgeMatchingHardlinks(
++  dataPath: string,
++  keys: Set<string>,
++  onProgress?: (num: number, total: number) => void,
++): PromiseBB<number> {
++  let purged = 0;
++  let queue = PromiseBB.resolve();
++
++  if (keys.size === 0) {
++    return PromiseBB.resolve(0);
++  }
++
++  return turbowalk(
++    dataPath,
++    (entries) => {
++      queue = queue.then(() =>
++        PromiseBB.map(
++          entries,
++          async (entry) => {
++            const key = await resolveHardlinkKey(entry);
++            if (key === undefined || !keys.has(key)) {
++              return;
++            }
++
++            try {
++              await nodeFs.promises.unlink(entry.filePath);
++              ++purged;
++              if (purged % 1000 === 0) {
++                onProgress?.(purged, keys.size);
++              }
++            } catch (err) {
++              if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
++                throw err;
++              }
++            }
++          },
++          { concurrency: 50 },
++        ).then(() => undefined),
++      );
++    },
++    { details: true, skipHidden: false },
++  )
++    .then(() => queue)
++    .then(() => purged);
++}
+diff --git a/src/extensions/hardlink_activator/index.linux.test.ts b/src/extensions/hardlink_activator/index.linux.test.ts
+new file mode 100644
+index 0000000..5b99ef0
+--- /dev/null
++++ b/src/extensions/hardlink_activator/index.linux.test.ts
+@@ -0,0 +1,47 @@
++import * as nodeFs from "fs/promises";
++import * as os from "os";
++import * as path from "path";
++
++import { expect, it } from "vitest";
++
++import { collectHardlinkKeys, purgeMatchingHardlinks } from "./hardlinkIdentity";
++
++it("purges matching POSIX hardlinks and preserves unrelated files", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-hardlink-purge-"));
++  try {
++    const stagingPath = path.join(tempPath, "staging");
++    const dataPath = path.join(tempPath, "game", "Data");
++    const sourcePath = path.join(stagingPath, "example-mod", "Example.esm");
++    const deployedPath = path.join(dataPath, "Example.esm");
++    const unrelatedPath = path.join(dataPath, "Starfield.esm");
++
++    await nodeFs.mkdir(path.dirname(sourcePath), { recursive: true });
++    await nodeFs.mkdir(dataPath, { recursive: true });
++    await nodeFs.writeFile(sourcePath, "mod");
++    await nodeFs.link(sourcePath, deployedPath);
++    await nodeFs.writeFile(unrelatedPath, "game");
++
++    const keys = await collectHardlinkKeys(stagingPath);
++    expect(keys.size).toBe(1);
++    await expect(purgeMatchingHardlinks(dataPath, keys)).resolves.toBe(1);
++
++    await expect(nodeFs.readFile(sourcePath, "utf8")).resolves.toBe("mod");
++    await expect(nodeFs.stat(deployedPath)).rejects.toMatchObject({ code: "ENOENT" });
++    await expect(nodeFs.readFile(unrelatedPath, "utf8")).resolves.toBe("game");
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});
++
++it("does not classify an ordinary single-link file as deployed", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-hardlink-single-"));
++  try {
++    const stagingPath = path.join(tempPath, "staging");
++    await nodeFs.mkdir(stagingPath, { recursive: true });
++    await nodeFs.writeFile(path.join(stagingPath, "only-copy.txt"), "single");
++
++    await expect(collectHardlinkKeys(stagingPath)).resolves.toEqual(new Set());
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});
+diff --git a/src/extensions/hardlink_activator/index.ts b/src/extensions/hardlink_activator/index.ts
+index 186795b..7b9df43 100644
+--- a/src/extensions/hardlink_activator/index.ts
++++ b/src/extensions/hardlink_activator/index.ts
+@@ -6,10 +6,13 @@ import { IGame } from "../../types/IGame";
+ import * as fs from "../../util/fs";
+ import { log } from "../../util/log";
+ import { installPathForGame } from "../../util/selectors";
++import { assertPathWritable, getPathDevice, getVolumePath } from "../../util/volume";
+ 
+ import { IDiscoveryResult } from "../gamemode_management/types/IDiscoveryResult";
+ import { getGame } from "../gamemode_management/util/getGame";
+ import LinkingDeployment from "../mod_management/LinkingDeployment";
++import { applySuggestedStagingPathIfEmpty } from "../mod_management/util/stagingFix";
++import { collectHardlinkKeys, purgeMatchingHardlinks } from "./hardlinkIdentity";
+ import {
+   IDeployedFile,
+   IDeploymentMethod,
+@@ -19,9 +22,7 @@ import {
+ import Promise from "bluebird";
+ import { TFunction } from "i18next";
+ import * as path from "path";
+-import turbowalk from "turbowalk";
+ import * as util from "util";
+-import * as winapi from "winapi-bindings";
+ import { setSettingsPage } from "../../actions/session";
+ 
+ export class FileFound extends Error {
+@@ -90,7 +91,8 @@ class DeploymentMethod extends LinkingDeployment {
+     }
+ 
+     try {
+-      fs.accessSync(modPaths[typeId], fs.constants.W_OK);
++      // Deployment creates missing output directories; check their existing parent.
++      assertPathWritable(modPaths[typeId]);
+     } catch (err) {
+       log(
+         "info",
+@@ -117,7 +119,7 @@ class DeploymentMethod extends LinkingDeployment {
+ 
+     try {
+       if (
+-        fs.statSync(installationPath).dev !== fs.statSync(modPaths[typeId]).dev
++        getPathDevice(installationPath) !== getPathDevice(modPaths[typeId])
+       ) {
+         // hard links work only on the same drive
+         return {
+@@ -129,7 +131,7 @@ class DeploymentMethod extends LinkingDeployment {
+           solution: (t) => {
+             let displayPath = modPaths[typeId];
+             try {
+-              displayPath = winapi.GetVolumePathName(modPaths[typeId]);
++              displayPath = getVolumePath(modPaths[typeId]);
+             } catch (err) {
+               log("warn", "Failed to resolve volume path", {
+                 path: modPaths[typeId],
+@@ -146,7 +148,10 @@ class DeploymentMethod extends LinkingDeployment {
+             );
+           },
+           fixCallback: (api: IExtensionApi) =>
+-            new Promise((resolve, reject) => {
++            Promise.resolve(applySuggestedStagingPathIfEmpty(api, gameId)).then((fixed) => {
++              if (fixed) {
++                return;
++              }
+               api.events.emit("show-main-page", "application_settings");
+               api.store.dispatch(setSettingsPage("Mods"));
+               api.highlightControl(
+@@ -240,78 +245,32 @@ class DeploymentMethod extends LinkingDeployment {
+   ): Promise<void> {
+     let installEntryProm: Promise<Set<string>>;
+ 
+-    // find ids of all files in our mods directory
+-    // using idStr (string) instead of id (number) to avoid precision loss
+-    // for NTFS file IDs exceeding Number.MAX_SAFE_INTEGER
++    // Windows supplies idStr; POSIX requires bigint device/inode identities.
+     if (this.mInstallationFiles !== undefined) {
+       installEntryProm = Promise.resolve(this.mInstallationFiles);
+     } else {
+-      this.mInstallationFiles = new Set<string>();
+-      installEntryProm = turbowalk(
+-        installationPath,
+-        (entries) => {
+-          if (this.mInstallationFiles === undefined) {
+-            // don't know when this would be necessary but apparently
+-            // it is, see https://github.com/Nexus-Mods/Vortex/issues/3684
+-            return;
+-          }
+-          entries.forEach((entry) => {
+-            if (entry.linkCount > 1 && entry.idStr !== undefined) {
+-              this.mInstallationFiles.add(entry.idStr);
+-            }
+-          });
+-        },
+-        {
+-          details: true,
+-          skipHidden: false,
+-        },
+-      )
++      installEntryProm = collectHardlinkKeys(installationPath)
+         .catch((err) =>
+           ["ENOENT", "ENOTFOUND"].includes(err.code)
+-            ? Promise.resolve()
++            ? Promise.resolve(new Set<string>())
+             : Promise.reject(err),
+         )
+-        .then(() => Promise.resolve(this.mInstallationFiles));
++        .then((keys) => {
++          this.mInstallationFiles = keys;
++          return keys;
++        });
+     }
+ 
+-    // now remove all files in the game directory that have the same id
+-    // as a file in the mods directory
+-    return installEntryProm.then((inos) => {
+-      const total = inos.size;
+-      let purged: number = 0;
+-
+-      let queue = Promise.resolve();
+-      if (inos.size === 0) {
+-        return Promise.resolve();
+-      }
+-      return turbowalk(
+-        dataPath,
+-        (entries) => {
+-          queue = queue.then(() =>
+-            Promise.map(entries, (entry) => {
+-              if (
+-                entry.linkCount > 1 &&
+-                entry.idStr !== undefined &&
+-                inos.has(entry.idStr)
+-              ) {
+-                ++purged;
+-                if (purged % 1000 === 0) {
+-                  onProgress?.(purged, total);
+-                }
+-                return fs
+-                  .unlinkAsync(entry.filePath)
+-                  .catch((err) =>
+-                    log("warn", "failed to remove", entry.filePath),
+-                  );
+-              } else {
+-                return Promise.resolve();
+-              }
+-            }).then(() => undefined),
+-          );
+-        },
+-        { details: true, skipHidden: false },
+-      ).then(() => queue);
+-    });
++    // Purge only files whose exact identities are owned by staging.
++    return installEntryProm.then((keys) =>
++      purgeMatchingHardlinks(dataPath, keys, onProgress).then((purged) => {
++        log("debug", "hardlink purge completed", {
++          dataPath,
++          sourceIdentities: keys.size,
++          purged,
++        });
++      }),
++    );
+   }
+ 
+   protected linkFile(
+diff --git a/src/extensions/ini_prep/index.optional.test.ts b/src/extensions/ini_prep/index.optional.test.ts
+new file mode 100644
+index 0000000..f2c8c0f
+--- /dev/null
++++ b/src/extensions/ini_prep/index.optional.test.ts
+@@ -0,0 +1,35 @@
++import * as nodeFs from "fs/promises";
++import * as os from "os";
++import * as path from "path";
++
++import { expect, it } from "vitest";
++
++import { restoreIniBackup } from "./index";
++
++it("skips an optional ini whose backup was never created", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-ini-purge-"));
++  try {
++    const iniPath = path.join(tempPath, "Optional.ini");
++
++    await expect(restoreIniBackup(iniPath)).resolves.toBeUndefined();
++    await expect(nodeFs.stat(iniPath)).rejects.toMatchObject({ code: "ENOENT" });
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});
++
++it("restores existing ini backups during purge", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-ini-purge-"));
++  try {
++    const iniPath = path.join(tempPath, "Existing.ini");
++    const contents = "[General]\nvalue=restored\n";
++    await nodeFs.writeFile(iniPath + ".base", contents);
++
++    await restoreIniBackup(iniPath);
++
++    await expect(nodeFs.readFile(iniPath, "utf8")).resolves.toBe(contents);
++    await expect(nodeFs.readFile(iniPath + ".baked", "utf8")).resolves.toBe(contents);
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});
+diff --git a/src/extensions/ini_prep/index.ts b/src/extensions/ini_prep/index.ts
+index 64667c3..ae6c325 100644
+--- a/src/extensions/ini_prep/index.ts
++++ b/src/extensions/ini_prep/index.ts
+@@ -303,19 +303,26 @@ function bakeSettings(
+     .then(() => undefined);
+ }
+ 
++export function restoreIniBackup(iniFileName: string): Promise<void> {
++  const backupFile = iniFileName + ".base";
++  return fs.copyAsync(backupFile, iniFileName + ".baked", { noSelfCopy: true })
++    .then(() => fs.copyAsync(backupFile, iniFileName, { noSelfCopy: true }))
++    .catch((err) => {
++      if (err.code === "ENOENT") {
++        log("debug", "skipping missing ini backup during purge", { backupFile, iniFileName });
++        return Promise.resolve();
++      }
++      return Promise.reject(err);
++    });
++}
++
+ function purgeChanges(
+   t: TFunction,
+   gameMode: string,
+   discovery: IDiscoveryResult,
+ ) {
+   return Promise.map(iniFiles(gameMode, discovery), (iniFileName) =>
+-    fs
+-      .copyAsync(iniFileName + ".base", iniFileName + ".baked", {
+-        noSelfCopy: true,
+-      })
+-      .then(() =>
+-        fs.copyAsync(iniFileName + ".base", iniFileName, { noSelfCopy: true }),
+-      ),
++    restoreIniBackup(iniFileName),
+   );
+ }
+ 
+diff --git a/src/extensions/mod_management/LinkingDeployment.linux.test.ts b/src/extensions/mod_management/LinkingDeployment.linux.test.ts
+new file mode 100644
+index 0000000..6db23d7
+--- /dev/null
++++ b/src/extensions/mod_management/LinkingDeployment.linux.test.ts
+@@ -0,0 +1,163 @@
++import * as nodeFs from "node:fs";
++import * as path from "node:path";
++
++import { afterEach, expect, vi } from "vitest";
++
++import { test } from "../../test-utils/deploymentTest";
++import type { IGame } from "../../types/IGame";
++import { setCompatibilityGameProvider } from "../../util/compatibilityPaths";
++import { saveActivation } from "./util/activationStore";
++import BlacklistSet from "./util/BlacklistSet";
++
++afterEach(() => {
++  setCompatibilityGameProvider(undefined);
++  vi.unstubAllEnvs();
++});
++
++for (const staleHost of [false, true]) {
++  test.runIf(process.platform === "linux")(
++    `purges Proton config deployment and restores originals with ${staleHost ? "a stale" : "no"} host directory`,
++    async ({ makeDeployment }) => {
++      const gameId = "abioticfactor";
++      const modType = "abioticfactor-config";
++      const modName = "ConfigMod";
++      const original = "[SystemSettings]\nr.Test=0\n";
++      const modified = "[SystemSettings]\nr.Test=1\n";
++      const h = makeDeployment({
++        gameId,
++        modName,
++        files: { "Engine.ini": modified, "ModOnly.ini": "mod-only file" },
++      });
++      const root = path.dirname(h.stagingDir);
++      const localAppData = path.join(root, "Local");
++      const prefix = path.join(root, "prefix");
++      const relative = "AbioticFactor/Saved/Config/Windows";
++      const hostConfig = path.join(localAppData, relative);
++      const prefixConfig = path.join(prefix, "drive_c/users/steamuser/AppData/Local", relative);
++      const engine = path.join(prefixConfig, "Engine.ini");
++      const backup = `${engine}.vortex_backup`;
++      const manifest = `vortex.deployment.${modType}.json`;
++      nodeFs.mkdirSync(prefixConfig, { recursive: true });
++      nodeFs.writeFileSync(engine, original);
++      nodeFs.writeFileSync(path.join(prefixConfig, "GameUserSettings.ini"), "unrelated settings");
++      if (staleHost) {
++        nodeFs.mkdirSync(hostConfig, { recursive: true });
++        nodeFs.writeFileSync(path.join(hostConfig, "Engine.ini"), "stale host settings");
++      }
++      vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", localAppData);
++      vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(root, ".config"));
++      vi.stubEnv("VORTEX_LINUX_DOCUMENTS", path.join(root, "Documents"));
++      vi.stubEnv("VORTEX_USERDATA", path.join(root, "Vortex"));
++      setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++
++      await h.method.prepare(hostConfig, true, [], h.normalize);
++      await h.method.activate(
++        path.join(h.stagingDir, modName),
++        modName,
++        "",
++        new BlacklistSet([], { details: {} } as IGame, h.normalize),
++      );
++      const deployed = await h.method.finalize(gameId, hostConfig, h.stagingDir);
++      expect(deployed).toHaveLength(2);
++      await saveActivation(
++        gameId,
++        modType,
++        "test-instance",
++        hostConfig,
++        h.stagingDir,
++        deployed,
++        h.method.id,
++      );
++      expect(nodeFs.readFileSync(engine, "utf8")).toBe(modified);
++      expect(nodeFs.readFileSync(backup, "utf8")).toBe(original);
++      expect(nodeFs.statSync(engine).ino).toBe(
++        nodeFs.statSync(path.join(h.stagingDir, modName, "Engine.ini")).ino,
++      );
++      expect(
++        JSON.parse(nodeFs.readFileSync(path.join(prefixConfig, manifest), "utf8")).files,
++      ).toHaveLength(2);
++
++      await h.method.prePurge(h.stagingDir);
++      await h.method.purge(h.stagingDir, hostConfig, gameId);
++      await h.method.postPurge();
++      await saveActivation(
++        gameId,
++        modType,
++        "test-instance",
++        hostConfig,
++        h.stagingDir,
++        [],
++        h.method.id,
++      );
++
++      expect(nodeFs.readFileSync(engine, "utf8")).toBe(original);
++      expect(nodeFs.readdirSync(prefixConfig).sort()).toEqual([
++        "Engine.ini",
++        "GameUserSettings.ini",
++      ]);
++      expect(nodeFs.readFileSync(path.join(prefixConfig, "GameUserSettings.ini"), "utf8")).toBe(
++        "unrelated settings",
++      );
++      expect(nodeFs.readFileSync(path.join(h.stagingDir, modName, "Engine.ini"), "utf8")).toBe(
++        modified,
++      );
++      expect(
++        nodeFs.existsSync(path.join(h.stagingDir, `vortex.deployment.${modType}.msgpack`)),
++      ).toBe(false);
++      if (staleHost) {
++        expect(nodeFs.readdirSync(hostConfig)).toEqual(["Engine.ini"]);
++        expect(nodeFs.readFileSync(path.join(hostConfig, "Engine.ini"), "utf8")).toBe(
++          "stale host settings",
++        );
++      } else {
++        expect(nodeFs.existsSync(localAppData)).toBe(false);
++      }
++    },
++  );
++}
++
++test.runIf(process.platform === "linux")(
++  "purges a native game's deployment when the target uses different casing",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "modified" } });
++    const original = "original native configuration";
++    nodeFs.writeFileSync(h.inGame("Engine.ini"), original);
++    nodeFs.writeFileSync(h.inGame("GameUserSettings.ini"), "unrelated native settings");
++    setCompatibilityGameProvider(() => ({ path: h.gameDir, executable: "Game.sh" }));
++
++    await h.deploy();
++    expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe("modified");
++    await h.method.prePurge(h.stagingDir);
++    await h.method.purge(h.stagingDir, path.join(h.gameDir, "..", "data"), "skyrimse");
++    await h.method.postPurge();
++
++    expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe(original);
++    expect(nodeFs.readdirSync(h.gameDir).sort()).toEqual(["Engine.ini", "GameUserSettings.ini"]);
++    expect(nodeFs.readFileSync(h.inGame("GameUserSettings.ini"), "utf8")).toBe(
++      "unrelated native settings",
++    );
++  },
++);
++
++test.runIf(process.platform === "linux")(
++  "rejects purge when the selected Proton prefix is unavailable",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "modified" } });
++    const root = path.dirname(h.stagingDir);
++    const localAppData = path.join(root, "Local");
++    const hostConfig = path.join(localAppData, "AbioticFactor/Saved/Config/Windows");
++    nodeFs.mkdirSync(hostConfig, { recursive: true });
++    nodeFs.writeFileSync(path.join(hostConfig, "Engine.ini"), "host configuration");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", localAppData);
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(root, "missing-prefix") },
++    }));
++
++    await expect(h.method.purge(h.stagingDir, hostConfig, "skyrimse")).rejects.toMatchObject({
++      code: "ENOENT",
++    });
++    expect(nodeFs.readFileSync(path.join(hostConfig, "Engine.ini"), "utf8")).toBe(
++      "host configuration",
++    );
++  },
++);
+diff --git a/src/extensions/mod_management/LinkingDeployment.ts b/src/extensions/mod_management/LinkingDeployment.ts
+index 71050ff..5ea1e7c 100644
+--- a/src/extensions/mod_management/LinkingDeployment.ts
++++ b/src/extensions/mod_management/LinkingDeployment.ts
+@@ -5,6 +5,7 @@ import { IState } from "../../types/IState";
+ import { getGame, UserCanceled } from "../../util/api";
+ import * as fs from "../../util/fs";
+ import { Normalize } from "../../util/getNormalizeFunc";
++import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
+ import { log } from "../../util/log";
+ import { activeGameId } from "../../util/selectors";
+ import { truthy } from "../../util/util";
+@@ -444,9 +445,13 @@ abstract class LinkingActivator implements IDeploymentMethod {
+     const game = getGame(gameId);
+     const directoryCleaning = game.directoryCleaning || "tag";
+ 
+-    // stat to ensure the target directory exists
+-    return fs
+-      .statAsync(dataPath)
++    return Promise.try(() => {
++      // Link scanners bypass fs.ts; resolve the same physical roots used when
++      // deploying to Proton Documents/AppData paths and mixed-case game folders.
++      installPath = resolveCaseInsensitiveSync(installPath);
++      dataPath = resolveCaseInsensitiveSync(dataPath);
++      return fs.statAsync(dataPath);
++    })
+       .then(() => this.purgeLinks(installPath, dataPath, onProgress))
+       .then(() => this.postLinkPurge(dataPath, false, true, directoryCleaning))
+       .then(() => undefined);
+@@ -837,15 +842,17 @@ abstract class LinkingActivator implements IDeploymentMethod {
+                 LinkingActivator.isTagName(entry.filePath),
+             ) !== undefined;
+ 
+-    return Promise.resolve(
+-      turbowalk(
++    return Promise.try(() => {
++      // finalize also calls this with the game's logical configuration path.
++      baseDir = resolveCaseInsensitiveSync(baseDir);
++      return turbowalk(
+         baseDir,
+         (entries) => {
+           allEntries = allEntries.concat(entries);
+         },
+         { recurse: false, skipHidden: false, skipLinks: false },
+-      ),
+-    )
++      );
++    })
+       .then(() => {
+         doRemove = doRemove || taggedForRemoval(allEntries);
+ 
+diff --git a/src/extensions/mod_management/eventHandlers.ts b/src/extensions/mod_management/eventHandlers.ts
+index 6868c54..4a42535 100644
+--- a/src/extensions/mod_management/eventHandlers.ts
++++ b/src/extensions/mod_management/eventHandlers.ts
+@@ -12,6 +12,7 @@ import {
+ import { setErrorContext } from "../../util/errorHandling";
+ import * as fs from "../../util/fs";
+ import getNormalizeFunc, { Normalize } from "../../util/getNormalizeFunc";
++import getDeploymentNormalizeFunc from "./util/getDeploymentNormalizeFunc";
+ import { log } from "../../util/log";
+ import { showError } from "../../util/message";
+ import { downloadPathForGame } from "../../util/selectors";
+@@ -734,7 +735,7 @@ function undeploy(
+         return Promise.resolve();
+       }
+       let normalize: Normalize;
+-      return getNormalizeFunc(deployPath)
++      return getDeploymentNormalizeFunc(game, discovery.path, deployPath)
+         .then((norm) => {
+           normalize = norm;
+           return loadActivation(
+diff --git a/src/extensions/mod_management/index.ts b/src/extensions/mod_management/index.ts
+index bd77d4e..f4fb6ea 100644
+--- a/src/extensions/mod_management/index.ts
++++ b/src/extensions/mod_management/index.ts
+@@ -30,7 +30,8 @@ import {
+ import Debouncer from "../../util/Debouncer";
+ import { waitForCondition } from "../../util/waitForCondition";
+ import * as fs from "../../util/fs";
+-import getNormalizeFunc, { Normalize } from "../../util/getNormalizeFunc";
++import { Normalize } from "../../util/getNormalizeFunc";
++import getDeploymentNormalizeFunc from "./util/getDeploymentNormalizeFunc";
+ import getVortexPath from "../../util/getVortexPath";
+ import { laterT, TFunction } from "../../util/i18n";
+ import LazyComponent from "../../renderer/controls/LazyComponent";
+@@ -276,7 +277,8 @@ function deployModType(
+   });
+   let normalize: Normalize;
+ 
+-  return getNormalizeFunc(targetPath)
++  const discoveryPath = api.store.getState().settings.gameMode.discovered?.[game.id]?.path;
++  return getDeploymentNormalizeFunc(game, discoveryPath, targetPath)
+     .then((normalizeIn) => {
+       normalize = normalizeIn;
+       return deployMods(
+@@ -287,6 +289,7 @@ function deployModType(
+         filteredModList,
+         activator,
+         lastDeployment,
++        normalize,
+         typeId,
+         new BlacklistSet(
+           mergeResult[typeId]?.usedInMerge ?? [],
+@@ -1389,7 +1392,7 @@ function onDeploySingleMod(api: IExtensionApi) {
+     const subdir = genSubDirFunc(game, getModType(mod.type));
+     let normalize: Normalize;
+     return withActivationLock(() =>
+-      getNormalizeFunc(dataPath)
++      getDeploymentNormalizeFunc(game, discovery.path, dataPath)
+         .then((norm) => {
+           normalize = norm;
+           return loadActivation(
+diff --git a/src/extensions/mod_management/modActivation.ts b/src/extensions/mod_management/modActivation.ts
+index e2480ae..04a1f07 100644
+--- a/src/extensions/mod_management/modActivation.ts
++++ b/src/extensions/mod_management/modActivation.ts
+@@ -1,7 +1,7 @@
+ /* eslint-disable */
+ import { IExtensionApi } from "../../types/IExtensionContext";
+ import * as fs from "../../util/fs";
+-import getNormalizeFunc, { Normalize } from "../../util/getNormalizeFunc";
++import { Normalize } from "../../util/getNormalizeFunc";
+ import { log } from "../../util/log";
+ import { truthy } from "../../util/util";
+ 
+@@ -57,6 +57,7 @@ function deployMods(
+   mods: IMod[],
+   method: IDeploymentMethod,
+   lastActivation: IDeployedFile[],
++  normalize: Normalize,
+   typeId: string,
+   skipFiles: BlacklistSet,
+   subDir: (mod: IMod) => string,
+@@ -73,13 +74,8 @@ function deployMods(
+     destinationPath,
+   });
+ 
+-  let normalize: Normalize;
+   return ensureWritable(api, destinationPath)
+-    .then(() => getNormalizeFunc(destinationPath))
+-    .then((norm) => {
+-      normalize = norm;
+-      return method.prepare(destinationPath, true, lastActivation, norm);
+-    })
++    .then(() => method.prepare(destinationPath, true, lastActivation, normalize))
+     .then(() =>
+       Promise.each(mods, (mod, idx, length) => {
+         try {
+diff --git a/src/extensions/mod_management/reducers/settings.ts b/src/extensions/mod_management/reducers/settings.ts
+index 30a4ce4..9cd8733 100644
+--- a/src/extensions/mod_management/reducers/settings.ts
++++ b/src/extensions/mod_management/reducers/settings.ts
+@@ -29,7 +29,9 @@ export const settingsReducer: IReducerSpec = {
+   },
+   defaults: {
+     installPath: {},
+-    installPathMode: "userData",
++    // Linux game libraries commonly live on a separate mounted filesystem.
++    // Defaulting to USERDATA there makes hardlink deployment impossible.
++    installPathMode: process.platform === "linux" ? "suggested" : "userData",
+     suggestInstallPathDirectory: "Vortex Mods",
+     modlistState: {},
+     activator: {},
+diff --git a/src/extensions/mod_management/stagingDirectory.ts b/src/extensions/mod_management/stagingDirectory.ts
+index d59e718..49705f5 100644
+--- a/src/extensions/mod_management/stagingDirectory.ts
++++ b/src/extensions/mod_management/stagingDirectory.ts
+@@ -7,11 +7,11 @@ import { IState } from "../../types/IState";
+ import { getApplication } from "../../util/application";
+ import { ProcessCanceled, UserCanceled } from "../../util/CustomErrors";
+ import * as fs from "../../util/fs";
+-import lazyRequire from "../../util/lazyRequire";
+ import { log } from "../../util/log";
+ import { activeGameId, installPathForGame } from "../../util/selectors";
+ import { getSafe } from "../../util/storeHelper";
+ import { truthy } from "../../util/util";
++import { getVolumePath } from "../../util/volume";
+ 
+ import { suggestStagingPath } from "../gamemode_management/util/discovery";
+ 
+@@ -19,10 +19,6 @@ import { setInstallPath } from "./actions/settings";
+ import { fallbackPurge } from "./util/activationStore";
+ import { resolveInstallPath } from "./util/getInstallPath";
+ 
+-import type * as winapiT from "winapi-bindings";
+-
+-const winapi: typeof winapiT = lazyRequire(() => require("winapi-bindings"));
+-
+ export const STAGING_DIR_TAG = "__vortex_staging_folder";
+ 
+ function writeStagingTag(api: IExtensionApi, tagPath: string, gameId: string) {
+@@ -163,14 +159,14 @@ async function ensureStagingDirectoryImpl(
+ 
+   let partitionExists = true;
+   try {
+-    winapi.GetVolumePathName(instPath);
++    getVolumePath(instPath);
+   } catch (err) {
+     // On Windows, error number 2 (0x2) translates to ERROR_FILE_NOT_FOUND.
+     //  the only way for this error to be reported at this point is when
+     //  the destination path is pointing towards a non-existing partition.
+     // If it's a non-existing partition, we want the reinitialization dialog
+     //  to appear so that the user can re-configure his game's staging folder.
+-    if (err.systemCode === 2) {
++    if (err.code === "ENOENT" || err.systemCode === 2) {
+       partitionExists = false;
+     }
+   }
+diff --git a/src/extensions/mod_management/util/deploy.ts b/src/extensions/mod_management/util/deploy.ts
+index 829ed23..19b3e3d 100644
+--- a/src/extensions/mod_management/util/deploy.ts
++++ b/src/extensions/mod_management/util/deploy.ts
+@@ -149,6 +149,10 @@ export function purgeMods(
+       });
+       const deployedActivator = getActivator(manifest?.deploymentMethod);
+       return purgeModsImpl(api, deployedActivator, profile);
++    } else if (isUnmanaging && Object.keys(state.persistent.mods?.[profile.gameId] ?? {}).length === 0) {
++      // A cancelled first-time setup has no deployed files to purge.
++      log("info", "skipping purge for never-deployed game", { gameId: profile.gameId });
++      return Promise.resolve();
+     } else {
+       return purgeModsImpl(api, undefined, profile).catch((err) => {
+         // If the user is unmanaging the game and the purge was unable to find any
+diff --git a/src/extensions/mod_management/util/externalChanges.ts b/src/extensions/mod_management/util/externalChanges.ts
+index cada27e..c9dae48 100644
+--- a/src/extensions/mod_management/util/externalChanges.ts
++++ b/src/extensions/mod_management/util/externalChanges.ts
+@@ -24,6 +24,7 @@ import { MERGED_PATH } from "../modMerging";
+ 
+ import Promise from "bluebird";
+ import * as path from "path";
++import { generate as shortid } from "shortid";
+ 
+ /**
+  * look at the file actions and act accordingly. Depending on the action this can
+@@ -36,7 +37,7 @@ import * as path from "path";
+  * @returns {Promise<IDeployedFile[]>} an updated deployment manifest to use as a reference
+  *                                     for the new one
+  */
+-function applyFileActions(
++export function applyFileActions(
+   api: IExtensionApi,
+   profileId: string,
+   sourcePath: string,
+@@ -89,14 +90,15 @@ function applyFileActions(
+         (entry) => {
+           const source = path.join(sourcePath, entry.source, entry.filePath);
+           const deployed = path.join(outputPath, entry.filePath);
+-          // Very rarely we have a case where the files are links of each other
+-          // (or at least node reports that) so the copy would fail.
+-          // Instead of handling the errors (when we can't be sure if it's due to a bug in node.js
+-          // or the files are actually identical), delete the target first, that way the move
+-          // can't fail
++          const temporary = path.join(sourcePath, ".vortex-import", `${shortid()}-${path.basename(entry.filePath)}`);
++          // Copy to an independent inode before replacing staging; a deployed
++          // hardlink may otherwise be the only recoverable copy of a mod file.
+           return fs
+-            .removeAsync(source)
+-            .then(() => fs.moveAsync(deployed, source, { overwrite: true }))
++            .ensureDirAsync(path.dirname(source))
++            .then(() => fs.ensureDirAsync(path.dirname(temporary)))
++            .then(() => fs.copyAsync(deployed, temporary, { overwrite: false }))
++            .then(() => fs.moveAsync(temporary, source, { overwrite: true }))
++            .then(() => fs.removeAsync(deployed))
+             .catch({ code: "ENOENT" }, (err: any) =>
+               log("warn", "file disappeared", err.path),
+             );
+@@ -150,7 +152,7 @@ function applyFileActions(
+       if (profileId !== undefined) {
+         const profile = profileById(state, profileId);
+         if (profile !== undefined) {
+-          gameId = profile.id;
++          gameId = profile.gameId;
+         }
+       }
+ 
+@@ -176,13 +178,13 @@ function applyFileActions(
+ function defaultAction(changeType: string): FileAction {
+   switch (changeType) {
+     case "refchange":
+-      return "newest";
++      return "drop";
+     case "valchange":
+       return "nop";
+     case "deleted":
+-      return "delete";
++      return "restore";
+     case "srcdeleted":
+-      return "drop";
++      return "import";
+     default:
+       throw new Error("invalid file change " + changeType);
+   }
+diff --git a/src/extensions/mod_management/util/getDeploymentNormalizeFunc.ts b/src/extensions/mod_management/util/getDeploymentNormalizeFunc.ts
+new file mode 100644
+index 0000000..d1e1282
+--- /dev/null
++++ b/src/extensions/mod_management/util/getDeploymentNormalizeFunc.ts
+@@ -0,0 +1,30 @@
++import * as path from "path";
++
++import type { IGame } from "../../../types/IGame";
++import getNormalizeFunc from "../../../util/getNormalizeFunc";
++
++/**
++ * Windows games keep case-insensitive path semantics even when they run via
++ * Wine/Proton on a case-sensitive Linux filesystem. Deployment keys must use
++ * those semantics or two mods can deploy the same Windows path under different
++ * casing and alternate between old and new content.
++ */
++export function hasWindowsPathSemantics(game: IGame, discoveredPath?: string): boolean {
++  try {
++    return path.extname(game?.executable?.(discoveredPath) ?? "").toLowerCase() === ".exe";
++  } catch {
++    // Some extensions inspect the discovered directory in executable(). If an
++    // extension cannot answer here, retain the filesystem-detection fallback.
++    return false;
++  }
++}
++
++export default function getDeploymentNormalizeFunc(
++  game: IGame,
++  discoveredPath: string | undefined,
++  deploymentPath: string,
++) {
++  return getNormalizeFunc(deploymentPath, {
++    caseInsensitive: hasWindowsPathSemantics(game, discoveredPath),
++  });
++}
+diff --git a/src/extensions/mod_management/util/stagingFix.test.ts b/src/extensions/mod_management/util/stagingFix.test.ts
+new file mode 100644
+index 0000000..8f57749
+--- /dev/null
++++ b/src/extensions/mod_management/util/stagingFix.test.ts
+@@ -0,0 +1,14 @@
++import { describe, expect, it } from "vitest";
++
++import { stagingDirectoryHasMods } from "./stagingFix";
++
++describe("stagingDirectoryHasMods", () => {
++  it("treats an absent tag payload as empty", () => {
++    expect(stagingDirectoryHasMods([])).toBe(false);
++    expect(stagingDirectoryHasMods(["__vortex_staging_folder"])).toBe(false);
++  });
++
++  it("does not allow an automatic path change when mod data exists", () => {
++    expect(stagingDirectoryHasMods(["__vortex_staging_folder", "example-mod"])).toBe(true);
++  });
++});
+diff --git a/src/extensions/mod_management/util/stagingFix.ts b/src/extensions/mod_management/util/stagingFix.ts
+new file mode 100644
+index 0000000..dc9419b
+--- /dev/null
++++ b/src/extensions/mod_management/util/stagingFix.ts
+@@ -0,0 +1,52 @@
++import type { IExtensionApi } from "../../../types/IExtensionContext";
++import * as fs from "../../../util/fs";
++import { log } from "../../../util/log";
++import { suggestStagingPath } from "../../gamemode_management/util/discovery";
++import { setInstallPath } from "../actions/settings";
++import { installPathForGame } from "../selectors";
++
++const STAGING_DIR_TAG = "__vortex_staging_folder";
++
++export function stagingDirectoryHasMods(entries: string[]): boolean {
++  return entries.some((entry) => entry !== STAGING_DIR_TAG);
++}
++
++/**
++ * Apply the same-filesystem staging suggestion when doing so cannot orphan any
++ * installed mods. Non-empty staging folders still go through Settings, whose
++ * transfer workflow can move their contents safely.
++ */
++export async function applySuggestedStagingPathIfEmpty(
++  api: IExtensionApi,
++  gameId: string,
++): Promise<boolean> {
++  const currentPath = installPathForGame(api.getState(), gameId);
++  let entries: string[];
++
++  try {
++    entries = await fs.readdirAsync(currentPath);
++  } catch (err) {
++    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
++      log("warn", "failed to inspect staging directory before automatic fix", {
++        gameId,
++        currentPath,
++        error: err,
++      });
++      return false;
++    }
++    entries = [];
++  }
++
++  if (stagingDirectoryHasMods(entries)) {
++    return false;
++  }
++
++  const suggestion = await suggestStagingPath(api, gameId);
++  api.store.dispatch(setInstallPath(gameId, suggestion));
++  log("info", "applied same-filesystem staging suggestion", {
++    gameId,
++    from: currentPath,
++    to: suggestion,
++  });
++  return true;
++}
+diff --git a/src/extensions/mod_management/views/Settings.tsx b/src/extensions/mod_management/views/Settings.tsx
+index 630e22b..36220d7 100644
+--- a/src/extensions/mod_management/views/Settings.tsx
++++ b/src/extensions/mod_management/views/Settings.tsx
+@@ -54,6 +54,7 @@ import {
+ } from "../../gamemode_management/selectors";
+ import { IDiscoveryResult } from "../../gamemode_management/types/IDiscoveryResult";
+ import { IGameStored } from "../../gamemode_management/types/IGameStored";
++import { suggestStagingPath } from "../../gamemode_management/util/discovery";
+ 
+ import { setDeploymentNecessary } from "../actions/deployment";
+ import {
+@@ -91,7 +92,6 @@ import {
+ } from "react-bootstrap";
+ import * as Redux from "redux";
+ import { ThunkDispatch } from "redux-thunk";
+-import * as winapi from "winapi-bindings";
+ import { ProvidePlugin } from "webpack";
+ 
+ interface IBaseProps {
+@@ -1079,21 +1079,10 @@ class Settings extends ComponentEx<IProps, IComponentState> {
+   };
+ 
+   private suggestPath = () => {
+-    const { modPaths, onShowError, suggestInstallPathDirectory } = this.props;
+-    Promise.join(
+-      fs.statAsync(modPaths[""]),
+-      fs.statAsync(remote.app.getPath("userData")),
+-    )
+-      .then((stats) => {
+-        let suggestion: string;
+-        if (stats[0].dev === stats[1].dev) {
+-          suggestion = path.join("{USERDATA}", "{game}", "mods");
+-        } else {
+-          const volume = winapi.GetVolumePathName(modPaths[""]);
+-          suggestion = path.join(volume, suggestInstallPathDirectory, "{game}");
+-        }
+-        this.changePath(suggestion);
+-      })
++    const { gameMode, onShowError } = this.props;
++    // Inspect the game's actual filesystem, including not-yet-created paths.
++    Promise.resolve(suggestStagingPath(this.context.api, gameMode))
++      .then((suggestion) => this.changePath(suggestion))
+       .catch(UserCanceled, () => null)
+       .catch((err) => {
+         onShowError("Failed to suggest path", err);
+diff --git a/src/extensions/move_activator/index.ts b/src/extensions/move_activator/index.ts
+index 7ee04a8..0bb7b39 100644
+--- a/src/extensions/move_activator/index.ts
++++ b/src/extensions/move_activator/index.ts
+@@ -7,6 +7,8 @@ import { IGame } from "../../types/IGame";
+ import { UserCanceled } from "../../util/CustomErrors";
+ import * as fs from "../../util/fs";
+ import { log } from "../../util/log";
++import { assertPathWritable, getPathDevice, getVolumePath } from "../../util/volume";
++import { applySuggestedStagingPathIfEmpty } from "../mod_management/util/stagingFix";
+ 
+ import { IDiscoveryResult } from "../gamemode_management/types/IDiscoveryResult";
+ import { getGame } from "../gamemode_management/util/getGame";
+@@ -25,7 +27,6 @@ import { TFunction } from "i18next";
+ import * as path from "path";
+ import turbowalk, { IEntry } from "turbowalk";
+ import * as util from "util";
+-import * as winapi from "winapi-bindings";
+ 
+ const LNK_EXT = ".vortex_lnk";
+ 
+@@ -98,7 +99,9 @@ class DeploymentMethod extends LinkingDeployment {
+     }
+ 
+     try {
+-      fs.accessSync(modPaths[typeId], fs.constants.W_OK);
++      // The output directory is commonly created during the first deployment.
++      // Its existing parent is the relevant permission boundary until then.
++      assertPathWritable(modPaths[typeId]);
+     } catch (err) {
+       log("info", "move deployment not supported due to lack of write access", {
+         typeId,
+@@ -121,7 +124,7 @@ class DeploymentMethod extends LinkingDeployment {
+     }
+ 
+     try {
+-      if (fs.statSync(instPath).dev !== fs.statSync(modPaths[typeId]).dev) {
++      if (getPathDevice(instPath) !== getPathDevice(modPaths[typeId])) {
+         // actually we could support this but it would be so slow it wouldn't make sense
+ 
+         return {
+@@ -131,7 +134,7 @@ class DeploymentMethod extends LinkingDeployment {
+           solution: (t) => {
+             let displayPath = modPaths[typeId];
+             try {
+-              displayPath = winapi.GetVolumePathName(modPaths[typeId]);
++              displayPath = getVolumePath(modPaths[typeId]);
+             } catch (err) {
+               log("warn", "Failed to resolve volume path", {
+                 path: modPaths[typeId],
+@@ -148,7 +151,10 @@ class DeploymentMethod extends LinkingDeployment {
+             );
+           },
+           fixCallback: (api: IExtensionApi) =>
+-            new Promise((resolve, reject) => {
++            Promise.resolve(applySuggestedStagingPathIfEmpty(api, gameId)).then((fixed) => {
++              if (fixed) {
++                return;
++              }
+               api.events.emit("show-main-page", "application_settings");
+               api.store.dispatch(setSettingsPage("Mods"));
+               api.highlightControl(
+diff --git a/src/test-utils/deploymentTest.ts b/src/test-utils/deploymentTest.ts
+new file mode 100644
+index 0000000..5adc425
+--- /dev/null
++++ b/src/test-utils/deploymentTest.ts
+@@ -0,0 +1,125 @@
++import * as nodeFs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import PromiseBB from "bluebird";
++import { test as baseTest, vi } from "vitest";
++
++import hardlinkInit, { IExtensionContextEx } from "../extensions/hardlink_activator";
++import type { IDeployedFile, IDeploymentMethod } from "../extensions/mod_management/types/IDeploymentMethod";
++import BlacklistSet from "../extensions/mod_management/util/BlacklistSet";
++import type { IExtensionApi } from "../types/IExtensionContext";
++import type { IGame } from "../types/IGame";
++import type { Normalize } from "../util/getNormalizeFunc";
++
++// Keep the game's registry and Electron extension loader out of filesystem
++// integration tests. Deployment, hardlinks and manifest writes remain real.
++const games = vi.hoisted(() => new Map<string, IGame>());
++vi.mock("../extensions/gamemode_management/util/getGame", () => ({
++  getGame: (gameId: string) => games.get(gameId),
++}));
++vi.mock("../util/api", async () => ({
++  getGame: (gameId: string) => games.get(gameId),
++  UserCanceled: (await import("../util/CustomErrors")).UserCanceled,
++}));
++vi.mock("../extensions/gamemode_management/util/discovery", () => ({
++  suggestStagingPath: vi.fn(),
++}));
++
++interface IDeploymentOptions {
++  files: Record<string, string>;
++  modName?: string;
++  gameId?: string;
++}
++
++interface IDeploymentHarness {
++  api: IExtensionApi;
++  method: IDeploymentMethod;
++  gameDir: string;
++  stagingDir: string;
++  normalize: Normalize;
++  deploy: (lastDeployment?: IDeployedFile[]) => Promise<IDeployedFile[]>;
++  inGame: (relativePath: string) => string;
++}
++
++function makeDeploymentHarness(options: IDeploymentOptions) {
++  const gameId = options.gameId ?? "skyrimse";
++  const modName = options.modName ?? "SomeMod";
++  const root = nodeFs.mkdtempSync(path.join(os.tmpdir(), "vortex-legacy-deploy-"));
++  const gameDir = path.join(root, "game", "Data");
++  const stagingDir = path.join(root, "staging");
++  const modDir = path.join(stagingDir, modName);
++  nodeFs.mkdirSync(gameDir, { recursive: true });
++  nodeFs.mkdirSync(modDir, { recursive: true });
++  for (const [relativePath, content] of Object.entries(options.files)) {
++    const source = path.join(modDir, relativePath);
++    nodeFs.mkdirSync(path.dirname(source), { recursive: true });
++    nodeFs.writeFileSync(source, content);
++  }
++
++  const game = {
++    id: gameId,
++    details: {},
++    directoryCleaning: "tag",
++    getModPaths: () => ({ "": gameDir }),
++    executable: () => "Game.exe",
++  } as unknown as IGame;
++  games.set(gameId, game);
++  const state = {
++    settings: {
++      mods: { cleanupOnDeploy: false, installPath: { [gameId]: stagingDir } },
++      profiles: { activeProfileId: "test-profile" },
++      gameMode: { discovered: { [gameId]: { path: path.dirname(gameDir) } } },
++    },
++    persistent: { profiles: { "test-profile": { id: "test-profile", gameId } } },
++  };
++  const api = {
++    getState: () => state,
++    store: { getState: () => state, dispatch: vi.fn() },
++    translate: (message: string) => message,
++    events: { emit: vi.fn() },
++    showErrorNotification: vi.fn(),
++    showDialog: vi.fn(() => PromiseBB.resolve({ action: "Cancel" })),
++  } as unknown as IExtensionApi;
++
++  let method: IDeploymentMethod;
++  hardlinkInit({
++    api,
++    registerDeploymentMethod: (registered: IDeploymentMethod) => { method = registered; },
++  } as IExtensionContextEx);
++  const normalize: Normalize = (input) => input.toLowerCase();
++  const blacklist = new BlacklistSet([], game, normalize);
++  const harness: IDeploymentHarness = {
++    api, method, gameDir, stagingDir, normalize,
++    inGame: (relativePath) => path.join(gameDir, relativePath),
++    deploy: async (lastDeployment = []) => {
++      await method.prepare(gameDir, false, lastDeployment, normalize);
++      await method.activate(modDir, modName, "", blacklist);
++      return method.finalize(gameId, gameDir, stagingDir);
++    },
++  };
++  return {
++    harness,
++    cleanup: () => {
++      games.delete(gameId);
++      nodeFs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
++    },
++  };
++}
++
++export const test = baseTest.extend<{
++  makeDeployment: (options: IDeploymentOptions) => IDeploymentHarness;
++}>({
++  makeDeployment: async ({ task: _task }, use) => {
++    const cleanups: Array<() => void> = [];
++    try {
++      await use((options) => {
++        const { harness, cleanup } = makeDeploymentHarness(options);
++        cleanups.push(cleanup);
++        return harness;
++      });
++    } finally {
++      cleanups.forEach((cleanup) => cleanup());
++    }
++  },
++});
+diff --git a/src/util/fsAtomic.test.ts b/src/util/fsAtomic.test.ts
+new file mode 100644
+index 0000000..b77c752
+--- /dev/null
++++ b/src/util/fsAtomic.test.ts
+@@ -0,0 +1,52 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { copyFileAtomic, writeFileAtomic } from "./fsAtomic";
++
++describe("atomic configuration writes", () => {
++  let directory: string;
++  beforeEach(() => {
++    directory = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-atomic-"));
++  });
++  afterEach(() => fs.rmSync(directory, { recursive: true, force: true }));
++
++  it("preserves the destination and removes temporary files when the copy source is missing", async () => {
++    const destination = path.join(directory, "Settings.ini");
++    fs.writeFileSync(destination, "existing settings");
++
++    await expect(copyFileAtomic(path.join(directory, "missing.ini"), destination))
++      .rejects.toMatchObject({ code: "ENOENT" });
++
++    expect(fs.readFileSync(destination, "utf8")).toBe("existing settings");
++    expect(fs.readdirSync(directory)).toEqual(["Settings.ini"]);
++  });
++
++  it("copies a new configuration without modifying another hardlink to the old destination", async () => {
++    const source = path.join(directory, "new.ini");
++    const destination = path.join(directory, "Settings.ini");
++    const staged = path.join(directory, "staged.ini");
++    fs.writeFileSync(source, "new settings");
++    fs.writeFileSync(staged, "mod settings");
++    fs.linkSync(staged, destination);
++
++    await copyFileAtomic(source, destination);
++
++    expect(fs.readFileSync(destination, "utf8")).toBe("new settings");
++    expect(fs.readFileSync(staged, "utf8")).toBe("mod settings");
++    expect(fs.statSync(destination).ino).not.toBe(fs.statSync(staged).ino);
++    expect(fs.readdirSync(directory).sort()).toEqual(["Settings.ini", "new.ini", "staged.ini"]);
++  });
++
++  it("uses existing filename casing before creating and renaming the temporary file", async () => {
++    const target = path.join(directory, "Config", "Settings.ini");
++    fs.mkdirSync(path.dirname(target));
++    fs.writeFileSync(target, "original");
++
++    await writeFileAtomic(path.join(directory, "config", "settings.ini"), "updated");
++
++    expect(fs.readFileSync(target, "utf8")).toBe("updated");
++    expect(fs.readdirSync(path.dirname(target))).toEqual(["Settings.ini"]);
++  });
++});
+diff --git a/src/util/fsAtomic.ts b/src/util/fsAtomic.ts
+index 1288991..1aff9af 100644
+--- a/src/util/fsAtomic.ts
++++ b/src/util/fsAtomic.ts
+@@ -1,13 +1,16 @@
+ import { checksum } from "./checksum";
+ import * as fs from "./fs";
+ import { log } from "./log";
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
+ 
+ import Promise from "bluebird";
+ import { createHash } from "crypto";
+ import { file } from "tmp";
+ 
+ export function writeFileAtomic(filePath: string, input: string | Buffer) {
+-  return writeFileAtomicImpl(filePath, input, 3);
++  // tmp bypasses the filesystem API's Proton/case translation.
++  return Promise.try(() => resolveCaseInsensitiveSync(filePath))
++    .then((resolvedPath) => writeFileAtomicImpl(resolvedPath, input, 3));
+ }
+ 
+ function writeFileAtomicImpl(
+@@ -98,22 +101,23 @@ export function copyFileAtomic(
+   srcPath: string,
+   destPath: string,
+ ): Promise<void> {
+-  let cleanup: () => void;
++  let cleanup: (next?: (err?: Error) => void) => void;
+   let tmpPath: string;
+-  return new Promise((resolve, reject) => {
++  return new Promise<void>((resolve, reject) => {
++    srcPath = resolveCaseInsensitiveSync(srcPath);
++    destPath = resolveCaseInsensitiveSync(destPath);
+     file(
+-      { template: `${destPath}.XXXXXX.tmp` },
+-      (err: any, genPath: string, fd: number, cleanupCB: () => void) => {
++      { template: `${destPath}.XXXXXX.tmp`, discardDescriptor: true },
++      (err: any, genPath: string, _fd: number, cleanupCB: () => void) => {
+         if (err) {
+           return reject(err);
+         }
+         cleanup = cleanupCB;
+         tmpPath = genPath;
+-        resolve(fd);
++        resolve();
+       },
+     );
+   })
+-    .then((fd: number) => fs.closeAsync(fd))
+     .then(() => fs.copyAsync(srcPath, tmpPath))
+     .then(() =>
+       fs.unlinkAsync(destPath).catch((err) => {
+@@ -130,9 +134,6 @@ export function copyFileAtomic(
+         }
+       }),
+     )
+-    .catch((err) =>
+-      err.code === "ENOENT" ? Promise.resolve() : Promise.reject(err),
+-    )
+     .then(() =>
+       tmpPath !== undefined
+         ? fs.renameAsync(tmpPath, destPath)
+@@ -140,13 +141,10 @@ export function copyFileAtomic(
+     )
+     .catch((err) => {
+       log("info", "failed to copy", { srcPath, destPath, err: err.stack });
+-      if (cleanup !== undefined) {
+-        try {
+-          cleanup();
+-        } catch (cleanupErr) {
+-          log("error", "failed to clean up temporary file", cleanupErr.message);
+-        }
+-      }
+-      return Promise.reject(err);
++      // Await tmp's unlink after failures, without double-closing its descriptor.
++      const removeTmp = cleanup !== undefined
++        ? new Promise<void>((removed) => cleanup(() => removed()))
++        : Promise.resolve();
++      return removeTmp.then(() => Promise.reject(err));
+     });
+ }
+diff --git a/src/util/getNormalizeFunc.test.ts b/src/util/getNormalizeFunc.test.ts
+new file mode 100644
+index 0000000..bce30f4
+--- /dev/null
++++ b/src/util/getNormalizeFunc.test.ts
+@@ -0,0 +1,26 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, describe, expect, it } from "vitest";
++
++import getNormalizeFunc from "./getNormalizeFunc";
++
++describe("getNormalizeFunc", () => {
++  const temporaryPaths: string[] = [];
++
++  afterEach(() => {
++    temporaryPaths.splice(0).forEach((entry) => fs.rmSync(entry, { force: true, recursive: true }));
++  });
++
++  it("can force Windows case semantics on a case-sensitive host", async () => {
++    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-normalize-"));
++    temporaryPaths.push(temporary);
++
++    const normalize = await getNormalizeFunc(path.join(temporary, "missing", "Data"), {
++      caseInsensitive: true,
++    });
++
++    expect(normalize("SFSE/Plugins/Test.dll")).toBe(normalize("sfse/plugins/test.DLL"));
++  });
++});
+diff --git a/src/util/getNormalizeFunc.ts b/src/util/getNormalizeFunc.ts
+index da3a436..b22b86b 100644
+--- a/src/util/getNormalizeFunc.ts
++++ b/src/util/getNormalizeFunc.ts
+@@ -31,6 +31,9 @@ function genNormalizeCase(): (input: string) => string {
+ }
+ 
+ export interface INormalizeParameters {
++  // force case-insensitive comparison for paths consumed by Windows software
++  // (for example a Windows game running through Wine/Proton on a case-sensitive host)
++  caseInsensitive?: boolean;
+   // normalize path separators (only on windows, transforms forward slashes to backslashes)
+   separators?: boolean;
+   // normalize unicode symbols that can have multiple equivalent representations
+@@ -118,7 +121,11 @@ function getNormalizeFunc(
+ 
+   const stackErr = new Error();
+ 
+-  return isCaseSensitive(testPath)
++  const caseSensitiveProm = parameters.caseInsensitive
++    ? Promise.resolve(false)
++    : isCaseSensitive(testPath);
++
++  return caseSensitiveProm
+     .then((caseSensitive) => {
+       let funcOut = caseSensitive
+         ? (input: string) => input
+@@ -140,7 +147,7 @@ function getNormalizeFunc(
+         const parent = path.dirname(testPath);
+         return parent === testPath
+           ? Promise.reject(restackErr(err, stackErr))
+-          : getNormalizeFunc(parent);
++          : getNormalizeFunc(parent, parameters);
+       } else {
+         return Promise.reject(restackErr(err, stackErr));
+       }
+diff --git a/src/util/linuxSelfTest.ts b/src/util/linuxSelfTest.ts
+new file mode 100644
+index 0000000..a230822
+--- /dev/null
++++ b/src/util/linuxSelfTest.ts
+@@ -0,0 +1,130 @@
++import assert from "node:assert/strict";
++import { execFile } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { promisify } from "node:util";
++
++import {
++  collectHardlinkKeys,
++  purgeMatchingHardlinks,
++} from "../extensions/hardlink_activator/hardlinkIdentity";
++import { resolveWindowsUserPathSync, setCompatibilityGameProvider } from "./compatibilityPaths";
++import { resolveGameTool } from "./linux/gameTools";
++import { heroicPrefix, readHeroicGames } from "./linux/heroic";
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
++import { GetPrivateProfileString, WritePrivateProfileString } from "./linuxIni";
++
++export async function runLinuxSelfTest(): Promise<void> {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-runtime-fixtures-"));
++  const variables = ["VORTEX_LINUX_DOCUMENTS", "XDG_CONFIG_HOME", "VORTEX_USERDATA"];
++  const previous = variables.map((key) => process.env[key]);
++  const prefix = path.join(root, "prefix");
++  const documents = path.join(root, "Documents");
++  try {
++    process.env.VORTEX_LINUX_DOCUMENTS = documents;
++    process.env.XDG_CONFIG_HOME = path.join(root, "config");
++    process.env.VORTEX_USERDATA = path.join(root, "config/Vortex");
++    const ini = path.join(
++      prefix,
++      "drive_c/users/steamuser/Documents/My Games/Example/settings.ini",
++    );
++    fs.mkdirSync(path.dirname(ini), { recursive: true });
++    fs.writeFileSync(
++      ini,
++      Buffer.concat([
++        Buffer.from([0xff, 0xfe]),
++        Buffer.from("; fixture\r\n[General]\r\nEnabled=0\r\n", "utf16le"),
++      ]),
++    );
++    setCompatibilityGameProvider(() => ({ path: root, environment: { WINEPREFIX: prefix } }));
++    const windowsPath = path.join(documents, "My Games/Example/Settings.INI");
++    WritePrivateProfileString("general", "enabled", "1", windowsPath);
++    assert.deepEqual(GetPrivateProfileString("GENERAL", "ENABLED", "", windowsPath), ["1"]);
++    assert.match(fs.readFileSync(ini).subarray(2).toString("utf16le"), /^; fixture\r\n/);
++    assert.equal(resolveCaseInsensitiveSync(windowsPath), ini);
++    const newConfig = resolveCaseInsensitiveSync(path.join(documents, "My Games/New/settings.ini"));
++    assert.equal(
++      newConfig,
++      path.join(prefix, "drive_c/users/steamuser/Documents/My Games/New/settings.ini"),
++    );
++    fs.mkdirSync(path.dirname(newConfig), { recursive: true });
++    WritePrivateProfileString("General", "Enabled", "1", newConfig);
++    assert.equal(fs.existsSync(path.join(documents, "My Games/New/settings.ini")), false);
++    assert.equal(
++      resolveWindowsUserPathSync(process.env.VORTEX_USERDATA),
++      process.env.VORTEX_USERDATA,
++    );
++    setCompatibilityGameProvider(undefined);
++
++    const staging = path.join(root, "staging");
++    const data = path.join(root, "game/Data");
++    fs.mkdirSync(staging);
++    fs.mkdirSync(data, { recursive: true });
++    fs.writeFileSync(path.join(staging, "Mod.esp"), "mod");
++    fs.linkSync(path.join(staging, "Mod.esp"), path.join(data, "Mod.esp"));
++    fs.writeFileSync(path.join(data, "Base.esm"), "base");
++    assert.equal(await purgeMatchingHardlinks(data, await collectHardlinkKeys(staging)), 1);
++    assert.equal(fs.readFileSync(path.join(staging, "Mod.esp"), "utf8"), "mod");
++    assert.equal(fs.readFileSync(path.join(data, "Base.esm"), "utf8"), "base");
++    assert.equal(fs.existsSync(path.join(data, "Mod.esp")), false);
++
++    const settings = path.join(process.env.XDG_CONFIG_HOME, "heroic");
++    fs.mkdirSync(path.join(settings, "gog_store"), { recursive: true });
++    fs.writeFileSync(
++      path.join(settings, "gog_store/installed.json"),
++      JSON.stringify({
++        installed: [
++          {
++            appName: "fixture",
++            title: "Fixture",
++            install_path: path.join(root, "game"),
++            platform: "windows",
++          },
++        ],
++      }),
++    );
++    fs.writeFileSync(
++      path.join(settings, "config.json"),
++      JSON.stringify({ defaultSettings: { winePrefix: prefix, wineVersion: { type: "wine" } } }),
++    );
++    const heroic = readHeroicGames().find((game) => game.appid === "fixture");
++    assert.ok(heroic);
++    assert.equal(heroicPrefix(heroic), prefix);
++
++    const command = await resolveGameTool(
++      "/fixtures/Tool.exe",
++      [ini, 'value="quoted"', "path with spaces"],
++      { env: { WINEPREFIX: prefix } },
++    );
++    assert.equal(command.executable, "wine");
++    const output = await promisify(execFile)(
++      process.execPath,
++      [
++        "-e",
++        "process.stdout.write(JSON.stringify({args:process.argv.slice(1),prefix:process.env.WINEPREFIX}))",
++        ...command.args,
++      ],
++      { env: { ...process.env, ...command.options.env, ELECTRON_RUN_AS_NODE: "1" } },
++    );
++    assert.deepEqual(JSON.parse(output.stdout), {
++      args: [
++        "/fixtures/Tool.exe",
++        `Z:${ini.replaceAll("/", "\\")}`,
++        'value="quoted"',
++        "path with spaces",
++      ],
++      prefix,
++    });
++    console.log(
++      "Packaged Linux fixtures: INI, selected prefix, Heroic, tool arguments and hardlink purge passed",
++    );
++  } finally {
++    setCompatibilityGameProvider(undefined);
++    variables.forEach((key, index) => {
++      if (previous[index] === undefined) delete process.env[key];
++      else process.env[key] = previous[index];
++    });
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++}
+diff --git a/src/util/transferPath.ts b/src/util/transferPath.ts
+index 581f4c4..647705a 100644
+--- a/src/util/transferPath.ts
++++ b/src/util/transferPath.ts
+@@ -6,19 +6,18 @@ import {
+   InsufficientDiskSpace,
+   NotFound,
+   ProcessCanceled,
+-  UnsupportedOperatingSystem,
+   UserCanceled,
+ } from "./CustomErrors";
+ import * as fs from "./fs";
+ import getNormalizeFunc, { Normalize } from "./getNormalizeFunc";
+ import { log } from "./log";
+ import { isChildPath } from "./util";
++import { getVolumePath } from "./volume";
+ 
+ import Promise from "bluebird";
+ import * as diskusage from "diskusage";
+ import * as path from "path";
+ import turbowalk, { IEntry } from "turbowalk";
+-import * as winapi from "winapi-bindings";
+ 
+ const MIN_DISK_SPACE_OFFSET = 512 * 1024 * 1024;
+ 
+@@ -36,19 +35,15 @@ export function testPathTransfer(
+   source: string,
+   destination: string,
+ ): Promise<void> {
+-  if (process.platform !== "win32") {
+-    return Promise.reject(new UnsupportedOperatingSystem());
+-  }
+-
+   let destinationRoot: string;
+   try {
+-    destinationRoot = winapi.GetVolumePathName(destination);
++    destinationRoot = getVolumePath(destination);
+   } catch (err) {
+     // On Windows, error number 2 (0x2) translates to ERROR_FILE_NOT_FOUND.
+     //  the only way for this error to be reported at this point is when
+     //  the destination path is pointing towards a non-existing partition.
+-    return err.systemCode === 2
+-      ? Promise.reject(new NotFound(err.path))
++    return err.code === "ENOENT" || err.systemCode === 2
++      ? Promise.reject(new NotFound(destination))
+       : Promise.reject(err);
+   }
+ 

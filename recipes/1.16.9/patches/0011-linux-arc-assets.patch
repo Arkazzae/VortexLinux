@@ -1,0 +1,106 @@
+diff --git a/extensions/mtframework-arc-support/download_arctool.js b/extensions/mtframework-arc-support/download_arctool.js
+index fad5aa7..6c7f0b3 100644
+--- a/extensions/mtframework-arc-support/download_arctool.js
++++ b/extensions/mtframework-arc-support/download_arctool.js
+@@ -1,48 +1,62 @@
+ const fs = require('fs');
+ const http = require('http');
+-const sevenzip = require('node-7z');
++const https = require('https');
++const { execFileSync } = require('child_process');
++const { pipeline } = require('stream/promises');
+ const path = require('path');
+ 
+-function download(url, outpath, callback) {
+-  const stream = fs.createWriteStream(outpath);
+-  const request = http.get(url, (response) => {
+-    response.pipe(stream)
+-    stream.on('finish', response => {
+-      stream.close(callback);
+-    });
+-  })
+-    .on('error', err => {
+-      fs.unlink(outpath, () => {
+-        if (callback) {
+-          callback(err);
+-        }
+-      });
+-    });
+-};
+-
+-try {
+-  fs.mkdirSync('dl');
+-} catch (err) {
+-  if (err.code !== 'EEXIST') {
+-    throw err;
++async function download(url, outpath, redirects = 0) {
++  const response = await new Promise((resolve, reject) => {
++    const request = (url.startsWith('https:') ? https : http).get(url, resolve);
++    request.on('error', reject);
++    request.setTimeout(30000, () => request.destroy(new Error('ARCtool download timed out')));
++  });
++  if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
++    response.resume();
++    if (redirects >= 5) {
++      throw new Error('Too many redirects downloading ARCtool');
++    }
++    return download(new URL(response.headers.location, url).href, outpath, redirects + 1);
++  }
++  if (response.statusCode !== 200) {
++    response.resume();
++    throw new Error(`ARCtool download failed: HTTP ${response.statusCode}`);
+   }
++  await pipeline(response, fs.createWriteStream(outpath));
+ }
+-const dlPath = path.join('dl', 'ARCtool.rar');
+-fs.stat(dlPath, err => {
+-  const extract = () => {
+-    const seven = new sevenzip();
+-    seven.extract(dlPath, 'dist', { raw: [ 'ARCtool.exe' ] });
++
++async function main() {
++  const dlDir = path.join(__dirname, 'dl');
++  const distDir = path.join(__dirname, 'dist');
++  const dlPath = path.join(dlDir, 'ARCtool.rar');
++  fs.mkdirSync(dlDir, { recursive: true });
++  if (!fs.existsSync(dlPath)) {
++    const partialPath = `${dlPath}.partial`;
++    try {
++      await download('https://www.fluffyquack.com/tools/ARCtool.rar', partialPath);
++      fs.renameSync(partialPath, dlPath);
++    } finally {
++      fs.rmSync(partialPath, { force: true });
++    }
+   }
+ 
+-  if (err) {
+-    download('http://www.fluffyquack.com/tools/ARCtool.rar', dlPath, (error) => {
+-      if (error) {
+-        console.error(error.message);
+-        return;
+-      }
+-      extract();
+-    });
+-  } else {
+-    extract();
++  fs.mkdirSync(distDir, { recursive: true });
++  const executable = path.join(distDir, 'ARCtool.exe');
++  fs.rmSync(executable, { force: true });
++  // Yarn prepends node_modules/.bin, where the bundled 7z shim is not Linux-compatible.
++  const sevenzip = process.platform === 'linux'
++    ? '/usr/bin/7z'
++    : process.platform === 'win32' ? require('7z-bin') : '7z';
++  execFileSync(sevenzip, ['x', '-y', dlPath, `-o${distDir}`, 'ARCtool.exe'], {
++    stdio: 'inherit',
++  });
++  const executableStat = fs.statSync(executable);
++  if (!executableStat.isFile() || executableStat.size === 0) {
++    throw new Error('ARCtool extraction did not produce a nonempty ARCtool.exe');
+   }
+-})
++}
++
++main().catch(error => {
++  console.error(error.message);
++  process.exitCode = 1;
++});

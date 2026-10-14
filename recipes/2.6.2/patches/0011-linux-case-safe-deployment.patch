@@ -1,0 +1,461 @@
+diff --git a/src/renderer/src/extensions/mod_management/eventHandlers.ts b/src/renderer/src/extensions/mod_management/eventHandlers.ts
+index f60776295..125ecbc0f 100644
+--- a/src/renderer/src/extensions/mod_management/eventHandlers.ts
++++ b/src/renderer/src/extensions/mod_management/eventHandlers.ts
+@@ -59,6 +59,7 @@ import {
+   getSelectedActivator,
+   getSupportedActivators,
+ } from "./util/deploymentMethods";
++import getDeploymentNormalizeFunc from "./util/getDeploymentNormalizeFunc";
+ import modName from "./util/modName";
+ import queryGameId from "./util/queryGameId";
+ import refreshMods from "./util/refreshMods";
+@@ -666,7 +667,7 @@ async function undeploy(
+         }
+         let normalize: Normalize;
+         try {
+-          normalize = await getNormalizeFunc(deployPath);
++          normalize = await getDeploymentNormalizeFunc(game, discovery.path, deployPath);
+           const lastActivation = await loadActivation(
+             api,
+             gameMode,
+diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/src/extensions/mod_management/index.ts
+index fd036f381..af4c1635e 100644
+--- a/src/renderer/src/extensions/mod_management/index.ts
++++ b/src/renderer/src/extensions/mod_management/index.ts
+@@ -128,6 +128,7 @@ import { dealWithExternalChanges } from "./util/externalChanges";
+ import { attributeExtractor, upgradeExtractor } from "./util/extractors";
+ import { registerAttributeExtractor } from "./util/filterModInfo";
+ import { findModByRef } from "./util/findModByRef";
++import getDeploymentNormalizeFunc from "./util/getDeploymentNormalizeFunc";
+ import ModHistory from "./util/ModHistory";
+ import renderModName from "./util/modName";
+ import { getModSources, registerModSource } from "./util/modSource";
+@@ -263,7 +264,8 @@ async function deployModType(
+     count: lastDeployment.length,
+   });
+ 
+-  const normalize = await getNormalizeFunc(targetPath);
++  const discoveryPath = api.store.getState().settings.gameMode.discovered?.[game.id]?.path;
++  const normalize = await getDeploymentNormalizeFunc(game, discoveryPath, targetPath);
+   const newActivation = await deployMods(
+     api,
+     game.id,
+@@ -272,6 +274,7 @@ async function deployModType(
+     filteredModList,
+     activator,
+     lastDeployment,
++    normalize,
+     typeId,
+     new BlacklistSet(mergeResult[typeId]?.usedInMerge ?? [], game, normalize),
+     genSubDirFunc(game, getModType(typeId)),
+@@ -1252,7 +1255,7 @@ function onDeploySingleMod(api: IExtensionApi) {
+     const subdir = genSubDirFunc(game, getModType(mod.type));
+     await withActivationLock(async () => {
+       try {
+-        const normalize = await getNormalizeFunc(dataPath);
++        const normalize = await getDeploymentNormalizeFunc(game, discovery.path, dataPath);
+         const lastActivation = await loadActivation(
+           api,
+           gameId,
+diff --git a/src/renderer/src/extensions/mod_management/modActivation.ts b/src/renderer/src/extensions/mod_management/modActivation.ts
+index c76391e82..4658ea044 100644
+--- a/src/renderer/src/extensions/mod_management/modActivation.ts
++++ b/src/renderer/src/extensions/mod_management/modActivation.ts
+@@ -4,7 +4,7 @@ import { log } from "../../logging";
+ import type { IExtensionApi } from "../../types/IExtensionContext";
+ import { UserCanceled } from "../../util/CustomErrors";
+ import * as fs from "../../util/fs";
+-import getNormalizeFunc, { type Normalize } from "../../util/getNormalizeFunc";
++import type { Normalize } from "../../util/getNormalizeFunc";
+ import { truthy } from "../../util/util";
+ import { MERGED_PATH } from "./modMerging";
+ import type { IDeployedFile, IDeploymentMethod } from "./types/IDeploymentMethod";
+@@ -51,6 +51,7 @@ async function deployMods(
+   mods: IMod[],
+   method: IDeploymentMethod,
+   lastActivation: IDeployedFile[],
++  normalize: Normalize,
+   typeId: string,
+   skipFiles: BlacklistSet,
+   subDir: (mod: IMod) => string,
+@@ -69,7 +70,6 @@ async function deployMods(
+ 
+   try {
+     await ensureWritable(api, destinationPath);
+-    const normalize: Normalize = await getNormalizeFunc(destinationPath);
+     await method.prepare(destinationPath, true, lastActivation, normalize);
+ 
+     for (let idx = 0; idx < mods.length; idx++) {
+diff --git a/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts b/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts
+index 4dd37e368..889101758 100644
+--- a/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts
++++ b/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts
+@@ -1,3 +1,5 @@
++import * as path from "path";
++
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ import type {
+@@ -8,11 +10,14 @@ import type {
+ } from "../../../types/IExtensionContext";
+ import type { IState } from "../../../types/IState";
+ import { MERGED_PATH } from "../modMerging";
++import type { IFileEntry } from "../types/IFileEntry";
+ 
+ // Mock fs. applyFileActions inside dealWithExternalChanges calls into it
+ // whenever any auto-resolved changes are present. Real fs ops would fail in a
+ // unit test, so make every call a no-op.
+ vi.mock("../../../util/fs", () => ({
++  copyAsync: vi.fn(() => Promise.resolve()),
++  ensureDirAsync: vi.fn(() => Promise.resolve()),
+   removeAsync: vi.fn(() => Promise.resolve()),
+   moveAsync: vi.fn(() => Promise.resolve()),
+   statAsync: vi.fn(() => Promise.resolve({ mtime: new Date(0) })),
+@@ -49,8 +54,9 @@ vi.mock("../actions/session", () => ({
+   }),
+ }));
+ 
++import * as mockedFS from "../../../util/fs";
+ import InstallManager from "../InstallManager";
+-import { dealWithExternalChanges } from "./externalChanges";
++import { applyFileActions, changeToEntry, dealWithExternalChanges } from "./externalChanges";
+ 
+ function makeRefchange(source: string, filePath: string): IFileChange {
+   return {
+@@ -113,6 +119,62 @@ const FAKE_MOD_PATHS = { "": "C:\\game\\Data" };
+ // are produced by the (mocked) activator.
+ const FAKE_LAST_DEPLOYMENT: { [typeId: string]: IDeployedFile[] } = { "": [] };
+ 
++describe("external change safety defaults", () => {
++  it("keeps staging authoritative unless the user explicitly saves an external change", () => {
++    expect(changeToEntry("", makeRefchange("mod", "file.esm")).action).toBe("drop");
++    expect(
++      changeToEntry("", {
++        filePath: "file.esm",
++        source: "mod",
++        changeType: "deleted",
++      }).action,
++    ).toBe("restore");
++    expect(
++      changeToEntry("", {
++        filePath: "file.esm",
++        source: "mod",
++        changeType: "srcdeleted",
++      }).action,
++    ).toBe("import");
++  });
++
++  it("imports through an independent temporary copy without deleting staging first", async () => {
++    const { api } = makeApi({ externalChanges: [] });
++    const entry: IFileEntry = {
++      modTypeId: "",
++      filePath: "file.esm",
++      source: "translated-mod",
++      type: "refchange",
++      action: "import",
++      sourceModified: new Date(0),
++      destModified: new Date(1),
++    };
++    const source = path.join(FAKE_STAGING, entry.source, entry.filePath);
++    const deployed = path.join(FAKE_MOD_PATHS[""], entry.filePath);
++
++    await applyFileActions(api, "test-profile", FAKE_STAGING, FAKE_MOD_PATHS[""], [], [entry]);
++
++    const copy = vi.mocked(mockedFS.copyAsync);
++    const move = vi.mocked(mockedFS.moveAsync);
++    const remove = vi.mocked(mockedFS.removeAsync);
++    const temporary = copy.mock.calls[0][1];
++
++    expect(copy).toHaveBeenCalledWith(
++      deployed,
++      expect.stringContaining(path.join(FAKE_STAGING, ".vortex-import")),
++      { overwrite: false },
++    );
++    expect(move).toHaveBeenCalledWith(temporary, source, { overwrite: true });
++    expect(remove.mock.calls.map(([filePath]) => filePath)).not.toContain(source);
++    expect(copy.mock.invocationCallOrder[0]).toBeLessThan(move.mock.invocationCallOrder[0]);
++    expect(api.events.emit).toHaveBeenCalledWith(
++      "mod-content-changed",
++      "skyrimse",
++      "translated-mod",
++    );
++  });
++});
++
+ describe("dealWithExternalChanges", () => {
+   beforeEach(() => {
+     showExternalChangesCalls.length = 0;
+diff --git a/src/renderer/src/extensions/mod_management/util/externalChanges.ts b/src/renderer/src/extensions/mod_management/util/externalChanges.ts
+index 8ead7b413..b5187d174 100644
+--- a/src/renderer/src/extensions/mod_management/util/externalChanges.ts
++++ b/src/renderer/src/extensions/mod_management/util/externalChanges.ts
+@@ -1,6 +1,7 @@
+ import * as path from "path";
+ 
+ import { getErrorCode, unknownToError } from "@vortex/shared";
++import { generate as shortid } from "shortid";
+ 
+ import { log } from "../../../logging";
+ import type {
+@@ -34,7 +35,7 @@ import type { FileAction, IFileEntry } from "../types/IFileEntry";
+  * @returns {Promise<IDeployedFile[]>} an updated deployment manifest to use as a reference
+  *                                     for the new one
+  */
+-async function applyFileActions(
++export async function applyFileActions(
+   api: IExtensionApi,
+   profileId: string,
+   sourcePath: string,
+@@ -82,24 +83,32 @@ async function applyFileActions(
+   );
+ 
+   await Promise.all(
+-    (actionGroups["import"] || []).map((entry) => {
++    (actionGroups["import"] || []).map(async (entry) => {
+       const source = path.join(sourcePath, entry.source, entry.filePath);
+       const deployed = path.join(outputPath, entry.filePath);
+-      // Very rarely we have a case where the files are links of each other
+-      // (or at least node reports that) so the copy would fail.
+-      // Instead of handling the errors (when we can't be sure if it's due to a bug in node.js
+-      // or the files are actually identical), delete the target first, that way the move
+-      // can't fail
+-      return fs
+-        .removeAsync(source)
+-        .then(() => fs.moveAsync(deployed, source, { overwrite: true }))
+-        .catch((err: unknown) => {
+-          if (getErrorCode(err) === "ENOENT") {
+-            log("warn", "file disappeared", unknownToError(err).message);
+-          } else {
+-            throw err;
+-          }
+-        });
++      const temporary = path.join(
++        sourcePath,
++        ".vortex-import",
++        `${shortid()}-${path.basename(entry.filePath)}`,
++      );
++
++      try {
++        // A deployed hardlink may be the same inode as the staging file. Copy
++        // through a unique temporary file so importing an external edit always
++        // leaves staging with an independent inode and never deletes the only
++        // recoverable source before the replacement is ready.
++        await fs.ensureDirAsync(path.dirname(source));
++        await fs.ensureDirAsync(path.dirname(temporary));
++        await fs.copyAsync(deployed, temporary, { overwrite: false });
++        await fs.moveAsync(temporary, source, { overwrite: true });
++        await fs.removeAsync(deployed);
++      } catch (err) {
++        if (getErrorCode(err) === "ENOENT") {
++          log("warn", "file disappeared", unknownToError(err).message);
++        } else {
++          throw err;
++        }
++      }
+     }),
+   );
+ 
+@@ -141,7 +150,7 @@ async function applyFileActions(
+   if (profileId !== undefined) {
+     const profile = profileById(state, profileId);
+     if (profile !== undefined) {
+-      gameId = profile.id;
++      gameId = profile.gameId;
+     }
+   }
+ 
+@@ -163,13 +172,13 @@ async function applyFileActions(
+ function defaultAction(changeType: string): FileAction {
+   switch (changeType) {
+     case "refchange":
+-      return "newest";
++      return "drop";
+     case "valchange":
+       return "nop";
+     case "deleted":
+-      return "delete";
++      return "restore";
+     case "srcdeleted":
+-      return "drop";
++      return "import";
+     default:
+       throw new Error("invalid file change " + changeType);
+   }
+diff --git a/src/renderer/src/extensions/mod_management/util/getDeploymentNormalizeFunc.ts b/src/renderer/src/extensions/mod_management/util/getDeploymentNormalizeFunc.ts
+new file mode 100644
+index 000000000..d1e1282c6
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/getDeploymentNormalizeFunc.ts
+@@ -0,0 +1,30 @@
++import * as path from "path";
++
++import type { IGame } from "../../../types/IGame";
++import getNormalizeFunc from "../../../util/getNormalizeFunc";
++
++/**
++ * Windows games keep case-insensitive path semantics even when they run via
++ * Wine/Proton on a case-sensitive Linux filesystem. Deployment keys must use
++ * those semantics or two mods can deploy the same Windows path under different
++ * casing and alternate between old and new content.
++ */
++export function hasWindowsPathSemantics(game: IGame, discoveredPath?: string): boolean {
++  try {
++    return path.extname(game?.executable?.(discoveredPath) ?? "").toLowerCase() === ".exe";
++  } catch {
++    // Some extensions inspect the discovered directory in executable(). If an
++    // extension cannot answer here, retain the filesystem-detection fallback.
++    return false;
++  }
++}
++
++export default function getDeploymentNormalizeFunc(
++  game: IGame,
++  discoveredPath: string | undefined,
++  deploymentPath: string,
++) {
++  return getNormalizeFunc(deploymentPath, {
++    caseInsensitive: hasWindowsPathSemantics(game, discoveredPath),
++  });
++}
+diff --git a/src/renderer/src/util/getNormalizeFunc.test.ts b/src/renderer/src/util/getNormalizeFunc.test.ts
+new file mode 100644
+index 000000000..bce30f463
+--- /dev/null
++++ b/src/renderer/src/util/getNormalizeFunc.test.ts
+@@ -0,0 +1,26 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, describe, expect, it } from "vitest";
++
++import getNormalizeFunc from "./getNormalizeFunc";
++
++describe("getNormalizeFunc", () => {
++  const temporaryPaths: string[] = [];
++
++  afterEach(() => {
++    temporaryPaths.splice(0).forEach((entry) => fs.rmSync(entry, { force: true, recursive: true }));
++  });
++
++  it("can force Windows case semantics on a case-sensitive host", async () => {
++    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-normalize-"));
++    temporaryPaths.push(temporary);
++
++    const normalize = await getNormalizeFunc(path.join(temporary, "missing", "Data"), {
++      caseInsensitive: true,
++    });
++
++    expect(normalize("SFSE/Plugins/Test.dll")).toBe(normalize("sfse/plugins/test.DLL"));
++  });
++});
+diff --git a/src/renderer/src/util/getNormalizeFunc.ts b/src/renderer/src/util/getNormalizeFunc.ts
+index 82ebf607f..a4f3dc6ec 100644
+--- a/src/renderer/src/util/getNormalizeFunc.ts
++++ b/src/renderer/src/util/getNormalizeFunc.ts
+@@ -28,6 +28,9 @@ function genNormalizeCase(): (input: string) => string {
+ }
+ 
+ export interface INormalizeParameters {
++  // force case-insensitive comparison for paths consumed by Windows software
++  // (for example a Windows game running through Wine/Proton on a case-sensitive host)
++  caseInsensitive?: boolean;
+   // normalize path separators (only on windows, transforms forward slashes to backslashes)
+   separators?: boolean;
+   // normalize unicode symbols that can have multiple equivalent representations
+@@ -110,7 +113,11 @@ function getNormalizeFunc(
+ 
+   const stackErr = new Error();
+ 
+-  return isCaseSensitive(testPath)
++  const caseSensitiveProm = parameters.caseInsensitive
++    ? PromiseBB.resolve(false)
++    : isCaseSensitive(testPath);
++
++  return caseSensitiveProm
+     .then((caseSensitive) => {
+       let funcOut = caseSensitive ? (input: string) => input : genNormalizeCase();
+ 
+@@ -131,7 +138,7 @@ function getNormalizeFunc(
+         const parent = path.dirname(testPath);
+         return parent === testPath
+           ? PromiseBB.reject(restackErr(err, stackErr))
+-          : getNormalizeFunc(parent);
++          : getNormalizeFunc(parent, parameters);
+       } else {
+         return PromiseBB.reject(restackErr(err, stackErr));
+       }
+diff --git a/src/renderer/src/util/linuxCompatibility.test.ts b/src/renderer/src/util/linuxCompatibility.test.ts
+index c2637d3ec..4821f76ae 100644
+--- a/src/renderer/src/util/linuxCompatibility.test.ts
++++ b/src/renderer/src/util/linuxCompatibility.test.ts
+@@ -40,17 +40,26 @@ describe.runIf(process.platform === "linux")("linuxCompatibility", () => {
+     }
+   });
+ 
+-  it("resolves Windows-authored path casing without changing missing paths", () => {
++  it("resolves Windows-authored casing and preserves it for a missing child", () => {
+     const actual = path.join(tempDir, "Tools", "Helper.exe");
+     fs.mkdirSync(path.dirname(actual));
+     fs.writeFileSync(actual, "");
+ 
+     expect(resolveCaseInsensitiveSync(path.join(tempDir, "tools", "helper.exe"))).toBe(actual);
+     expect(resolveCaseInsensitiveSync(path.join(tempDir, "tools", "missing.exe"))).toBe(
+-      path.join(tempDir, "tools", "missing.exe"),
++      path.join(tempDir, "Tools", "missing.exe"),
+     );
+   });
+ 
++  it("uses the existing directory casing when a deployment target does not exist yet", () => {
++    const plugins = path.join(tempDir, "Data", "SFSE", "Plugins");
++    fs.mkdirSync(plugins, { recursive: true });
++
++    expect(
++      resolveCaseInsensitiveSync(path.join(tempDir, "Data", "SFSE", "plugins", "new.dll")),
++    ).toBe(path.join(plugins, "new.dll"));
++  });
++
+   it("maps local absolute arguments into Wine's Z drive", () => {
+     const localPath = path.join(tempDir, "Data", "input.pak");
+     fs.mkdirSync(path.dirname(localPath));
+diff --git a/src/renderer/src/util/linuxCompatibility.ts b/src/renderer/src/util/linuxCompatibility.ts
+index 6d82ea0a8..167f7b6b6 100644
+--- a/src/renderer/src/util/linuxCompatibility.ts
++++ b/src/renderer/src/util/linuxCompatibility.ts
+@@ -88,20 +88,29 @@ export function resolveCaseInsensitiveSync(input: string): string {
+   let current = root;
+ 
+   try {
+-    for (const part of parts) {
++    for (let idx = 0; idx < parts.length; idx++) {
++      const part = parts[idx];
+       const exact = path.join(current, part);
+       if (fs.existsSync(exact)) {
+         current = exact;
+         continue;
+       }
+ 
+-      const match = fs
++      const matches = fs
+         .readdirSync(current)
+-        .find((entry) => entry.toLowerCase() === part.toLowerCase());
+-      if (match === undefined) {
+-        return resolveWindowsUserPathSync(input);
++        .filter((entry) => entry.toLowerCase() === part.toLowerCase());
++      if (matches.length === 0) {
++        // Keep the casing of the prefix that already exists. This matters when
++        // creating a new file below a Windows-authored directory such as
++        // "SFSE/Plugins" through a mod path spelling it "SFSE/plugins".
++        return resolveWindowsUserPathSync(path.join(current, ...parts.slice(idx)));
+       }
+-      current = path.join(current, match);
++      if (matches.length > 1) {
++        // The host contains multiple case variants and the requested spelling
++        // is not an exact match. Do not guess which existing entry to mutate.
++        return resolveWindowsUserPathSync(path.join(current, ...parts.slice(idx)));
++      }
++      current = path.join(current, matches[0]);
+     }
+     return current;
+   } catch {

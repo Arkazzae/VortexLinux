@@ -2,7 +2,7 @@
 
 [![Build status](https://github.com/Arkazzae/vortex-linux/actions/workflows/upstream-compatibility.yml/badge.svg)](https://github.com/Arkazzae/vortex-linux/actions/workflows/upstream-compatibility.yml)
 
-[Vortex](https://www.nexusmods.com/about/vortex/) is the mod manager from Nexus Mods — the one most people use for Skyrim, Fallout, Starfield, Baldur's Gate 3 and a few hundred other games. It's an Electron app, so it *technically* starts on Linux. But the usual workaround is running Vortex itself inside a Wine prefix, which is slow, fragile and annoying to set up.
+[Vortex](https://www.nexusmods.com/about/vortex/) is the mod manager from Nexus Mods, used for Skyrim, Fallout, Starfield, Baldur's Gate 3 and a few hundred other games. It's an Electron app, so it *technically* starts on Linux. But the usual workaround is running Vortex itself inside a Wine prefix, which is slow, fragile and annoying to set up.
 
 This repo does the other thing: it patches Vortex to actually understand Linux, and builds it as a native app.
 
@@ -18,7 +18,7 @@ This repo does the other thing: it patches Vortex to actually understand Linux, 
 - Deploys and purges hardlinked mods without leaving stale files behind
 - Resolves Windows path casing consistently and keeps staging files safe when external changes are detected
 
-These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so not every supported game is guaranteed to work — but the base is sane now.
+These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so some games may still need fixes.
 
 ## Upstream is catching up 🎉
 
@@ -56,7 +56,7 @@ chmod +x Vortex-*.AppImage
 ./Vortex-*.AppImage
 ```
 
-The AppImage bundles the Linux .NET 9 runtime Vortex probes for at startup, plus the Windows .NET runtimes modding tools need — you don't need .NET installed system-wide. Wine you do need.
+The AppImage bundles the Linux .NET 9 runtime Vortex probes for at startup, plus the Windows .NET runtimes modding tools need, so you don't need .NET installed system-wide. Wine you do need.
 
 No FUSE 2 on your system? Run it as:
 
@@ -70,7 +70,7 @@ AppImages don't add themselves to your app menu or register as the `nxm://` hand
 
 **Launch the game once through Steam or Heroic.** Proton and the game create their real config and save directories on that first run; if you point Vortex at a prefix that doesn't exist yet, nothing will line up.
 
-**Keep staging and the game on the same filesystem.** Hardlinks can't cross filesystems. Vortex suggests a good folder under `Settings → Mods`. If you already have mods in an old staging folder, use Vortex's transfer flow — don't move or delete it by hand.
+**Keep staging and the game on the same filesystem.** Hardlinks can't cross filesystems. Vortex suggests a good folder under `Settings → Mods`. If you already have mods in an old staging folder, use Vortex's transfer flow. Don't move or delete it by hand.
 
 The selected game determines which prefix Vortex uses. Steam’s per-game Proton
 selection takes precedence over its default selection. Heroic’s game settings
@@ -105,6 +105,22 @@ Patches live in `patches/`, in the order listed by `_patches` in `PKGBUILD`.
 `dist/arch-build`, where makepkg keeps its sources and build output. Run it again
 after changing patches or package metadata. `scripts/build-arch-package.sh`
 prepares this directory automatically.
+
+### Older Vortex versions
+
+We support **1.16.9** and **2.6.2** for collections that need an older Vortex,
+alongside the [latest release](https://github.com/Arkazzae/vortex-linux/releases/latest).
+Need another version? [Open an issue](https://github.com/Arkazzae/vortex-linux/issues/new)
+and tell us which version your collection needs.
+
+To build one, fork this repo and run **Actions → Build a selected Vortex version**,
+then download the files from the completed run. Or build locally on Arch:
+
+```sh
+python3 scripts/build-version.py --version 2.6.2
+```
+
+You'll find the files in `dist/versions/2.6.2/artifacts/`.
 
 ## How it's tested
 

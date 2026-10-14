@@ -1,0 +1,274 @@
+diff --git a/src/renderer/src/extensions/hardlink_activator/index.ts b/src/renderer/src/extensions/hardlink_activator/index.ts
+index 1b0e3e4cf..53250a5f1 100644
+--- a/src/renderer/src/extensions/hardlink_activator/index.ts
++++ b/src/renderer/src/extensions/hardlink_activator/index.ts
+@@ -4,7 +4,6 @@ import * as util from "util";
+ import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/shared";
+ import PromiseBB from "bluebird";
+ import type { TFunction } from "i18next";
+-import turbowalk from "turbowalk";
+ 
+ import { setSettingsPage } from "../../actions/session";
+ import { log } from "../../logging";
+@@ -22,6 +21,7 @@ import type {
+   IDeploymentMethod,
+   IUnavailableReason,
+ } from "../mod_management/types/IDeploymentMethod";
++import { collectHardlinkKeys, purgeMatchingHardlinks } from "./hardlinkIdentity";
+ 
+ export class FileFound extends Error {
+   constructor(name: string) {
+@@ -228,70 +228,35 @@ class DeploymentMethod extends LinkingDeployment {
+   ): PromiseBB<void> {
+     let installEntryProm: PromiseBB<Set<string>>;
+ 
+-    // find ids of all files in our mods directory
+-    // using idStr (string) instead of id (number) to avoid precision loss
+-    // for NTFS file IDs exceeding Number.MAX_SAFE_INTEGER
++    // Find identities of all multiply-linked files in the mods directory.
++    // turbowalk provides idStr on Windows; collectHardlinkKeys falls back to
++    // bigint POSIX device/inode identities on native Linux.
+     if (this.mInstallationFiles !== undefined) {
+       installEntryProm = PromiseBB.resolve(this.mInstallationFiles);
+     } else {
+-      this.mInstallationFiles = new Set<string>();
+-      installEntryProm = turbowalk(
+-        installationPath,
+-        (entries) => {
+-          if (this.mInstallationFiles === undefined) {
+-            // don't know when this would be necessary but apparently
+-            // it is, see https://github.com/Nexus-Mods/Vortex/issues/3684
+-            return;
+-          }
+-          entries.forEach((entry) => {
+-            if (entry.linkCount > 1 && entry.idStr !== undefined) {
+-              this.mInstallationFiles.add(entry.idStr);
+-            }
+-          });
+-        },
+-        {
+-          details: true,
+-          skipHidden: false,
+-        },
+-      )
++      installEntryProm = collectHardlinkKeys(installationPath)
+         .catch((err) =>
+-          ["ENOENT", "ENOTFOUND"].includes(err.code) ? PromiseBB.resolve() : PromiseBB.reject(err),
++          ["ENOENT", "ENOTFOUND"].includes(err.code)
++            ? PromiseBB.resolve(new Set<string>())
++            : PromiseBB.reject(err),
+         )
+-        .then(() => PromiseBB.resolve(this.mInstallationFiles));
++        .then((keys) => {
++          this.mInstallationFiles = keys;
++          return keys;
++        });
+     }
+ 
+-    // now remove all files in the game directory that have the same id
+-    // as a file in the mods directory
+-    return installEntryProm.then((inos) => {
+-      const total = inos.size;
+-      let purged: number = 0;
+-
+-      let queue = PromiseBB.resolve();
+-      if (inos.size === 0) {
+-        return PromiseBB.resolve();
+-      }
+-      return turbowalk(
+-        dataPath,
+-        (entries) => {
+-          queue = queue.then(() =>
+-            PromiseBB.map(entries, (entry) => {
+-              if (entry.linkCount > 1 && entry.idStr !== undefined && inos.has(entry.idStr)) {
+-                ++purged;
+-                if (purged % 1000 === 0) {
+-                  onProgress?.(purged, total);
+-                }
+-                return fs
+-                  .unlinkAsync(entry.filePath)
+-                  .catch((err) => log("warn", "failed to remove", entry.filePath));
+-              } else {
+-                return PromiseBB.resolve();
+-              }
+-            }).then(() => undefined),
+-          );
+-        },
+-        { details: true, skipHidden: false },
+-      ).then(() => queue);
+-    });
++    // Remove only destination entries that resolve to one of those exact file
++    // identities. Names and content hashes are never used for ownership.
++    return installEntryProm.then((keys) =>
++      purgeMatchingHardlinks(dataPath, keys, onProgress).then((purged) => {
++        log("debug", "hardlink purge completed", {
++          dataPath,
++          sourceIdentities: keys.size,
++          purged,
++        });
++      }),
++    );
+   }
+ 
+   protected linkFile(linkPath: string, sourcePath: string, dirTags?: boolean): Promise<void> {
+diff --git a/src/renderer/src/extensions/hardlink_activator/hardlinkIdentity.ts b/src/renderer/src/extensions/hardlink_activator/hardlinkIdentity.ts
+new file mode 100644
+index 000000000..7779e4b6b
+--- /dev/null
++++ b/src/renderer/src/extensions/hardlink_activator/hardlinkIdentity.ts
+@@ -0,0 +1,102 @@
++import * as nodeFs from "fs";
++
++import { getErrorCode } from "@vortex/shared";
++import PromiseBB from "bluebird";
++import type { IEntry } from "turbowalk";
++import turbowalk from "turbowalk";
++
++/**
++ * Resolve a hard-link identity without assuming the Windows-only turbowalk
++ * details are available. Device and inode together are unique within a POSIX
++ * filesystem and bigint stats avoid precision loss for large inode values.
++ */
++export async function resolveHardlinkKey(entry: IEntry): Promise<string | undefined> {
++  if (entry.isDirectory || entry.linkCount === 1) {
++    return undefined;
++  }
++  if (entry.linkCount !== undefined && entry.idStr !== undefined) {
++    return entry.linkCount > 1 ? `native:${entry.idStr}` : undefined;
++  }
++
++  try {
++    const stats = await nodeFs.promises.lstat(entry.filePath, { bigint: true });
++    return stats.nlink > 1n ? `posix:${stats.dev}:${stats.ino}` : undefined;
++  } catch (err) {
++    if (getErrorCode(err) === "ENOENT") {
++      return undefined;
++    }
++    throw err;
++  }
++}
++
++export function collectHardlinkKeys(rootPath: string): PromiseBB<Set<string>> {
++  const keys = new Set<string>();
++  let queue = PromiseBB.resolve();
++
++  return turbowalk(
++    rootPath,
++    (entries) => {
++      queue = queue.then(() =>
++        PromiseBB.map(
++          entries,
++          async (entry) => {
++            const key = await resolveHardlinkKey(entry);
++            if (key !== undefined) {
++              keys.add(key);
++            }
++          },
++          { concurrency: 50 },
++        ).then(() => undefined),
++      );
++    },
++    { details: true, skipHidden: false },
++  )
++    .then(() => queue)
++    .then(() => keys);
++}
++
++export function purgeMatchingHardlinks(
++  dataPath: string,
++  keys: Set<string>,
++  onProgress?: (num: number, total: number) => void,
++): PromiseBB<number> {
++  let purged = 0;
++  let queue = PromiseBB.resolve();
++
++  if (keys.size === 0) {
++    return PromiseBB.resolve(0);
++  }
++
++  return turbowalk(
++    dataPath,
++    (entries) => {
++      queue = queue.then(() =>
++        PromiseBB.map(
++          entries,
++          async (entry) => {
++            const key = await resolveHardlinkKey(entry);
++            if (key === undefined || !keys.has(key)) {
++              return;
++            }
++
++            try {
++              await nodeFs.promises.unlink(entry.filePath);
++              ++purged;
++              if (purged % 1000 === 0) {
++                onProgress?.(purged, keys.size);
++              }
++            } catch (err) {
++              if (getErrorCode(err) !== "ENOENT") {
++                throw err;
++              }
++            }
++          },
++          { concurrency: 50 },
++        ).then(() => undefined),
++      );
++    },
++    { details: true, skipHidden: false },
++  )
++    .then(() => queue)
++    .then(() => purged);
++}
+diff --git a/src/renderer/src/extensions/hardlink_activator/index.linux.test.ts b/src/renderer/src/extensions/hardlink_activator/index.linux.test.ts
+new file mode 100644
+index 000000000..5b99ef0a1
+--- /dev/null
++++ b/src/renderer/src/extensions/hardlink_activator/index.linux.test.ts
+@@ -0,0 +1,47 @@
++import * as nodeFs from "fs/promises";
++import * as os from "os";
++import * as path from "path";
++
++import { expect, it } from "vitest";
++
++import { collectHardlinkKeys, purgeMatchingHardlinks } from "./hardlinkIdentity";
++
++it("purges matching POSIX hardlinks and preserves unrelated files", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-hardlink-purge-"));
++  try {
++    const stagingPath = path.join(tempPath, "staging");
++    const dataPath = path.join(tempPath, "game", "Data");
++    const sourcePath = path.join(stagingPath, "example-mod", "Example.esm");
++    const deployedPath = path.join(dataPath, "Example.esm");
++    const unrelatedPath = path.join(dataPath, "Starfield.esm");
++
++    await nodeFs.mkdir(path.dirname(sourcePath), { recursive: true });
++    await nodeFs.mkdir(dataPath, { recursive: true });
++    await nodeFs.writeFile(sourcePath, "mod");
++    await nodeFs.link(sourcePath, deployedPath);
++    await nodeFs.writeFile(unrelatedPath, "game");
++
++    const keys = await collectHardlinkKeys(stagingPath);
++    expect(keys.size).toBe(1);
++    await expect(purgeMatchingHardlinks(dataPath, keys)).resolves.toBe(1);
++
++    await expect(nodeFs.readFile(sourcePath, "utf8")).resolves.toBe("mod");
++    await expect(nodeFs.stat(deployedPath)).rejects.toMatchObject({ code: "ENOENT" });
++    await expect(nodeFs.readFile(unrelatedPath, "utf8")).resolves.toBe("game");
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});
++
++it("does not classify an ordinary single-link file as deployed", async () => {
++  const tempPath = await nodeFs.mkdtemp(path.join(os.tmpdir(), "vortex-hardlink-single-"));
++  try {
++    const stagingPath = path.join(tempPath, "staging");
++    await nodeFs.mkdir(stagingPath, { recursive: true });
++    await nodeFs.writeFile(path.join(stagingPath, "only-copy.txt"), "single");
++
++    await expect(collectHardlinkKeys(stagingPath)).resolves.toEqual(new Set());
++  } finally {
++    await nodeFs.rm(tempPath, { recursive: true, force: true });
++  }
++});

@@ -1,0 +1,225 @@
+# Maintainer: Arkazzae <https://github.com/Arkazzae>
+
+pkgname=vortex-linux
+pkgver=1.16.9
+pkgrel=1
+pkgdesc="Vortex 1.16.9 with Linux compatibility patches"
+arch=('x86_64')
+url="https://github.com/Arkazzae/vortex-linux"
+license=('GPL-3.0-only')
+
+depends=(
+  'alsa-lib'
+  'at-spi2-core'
+  'cairo'
+  'cups'
+  'dotnet-runtime'
+  'gtk3'
+  'fontconfig'
+  'libappindicator'
+  'libdrm'
+  'libnotify'
+  'libsecret'
+  'libx11'
+  'libxcb'
+  'libxcomposite'
+  'libxdamage'
+  'libxext'
+  'libxfixes'
+  'libxkbcommon'
+  'libxrandr'
+  'libxss'
+  'mesa'
+  'nss'
+  'pango'
+  'wine'
+  'wine-mono'
+  'xdg-utils'
+)
+makedepends=(
+  '7zip'
+  'dotnet-sdk'
+  'git'
+  'patchelf'
+  'python'
+  'python-setuptools'
+  'rust'
+)
+
+optdepends=(
+  'kde-cli-tools: native trash support on KDE Plasma'
+  'pipewire: screen sharing under Wayland'
+)
+provides=("vortex=${pkgver}")
+conflicts=('vortex' 'vortex-bin' 'vortex-git')
+options=('!debug' '!strip')
+install=vortex.install
+
+_upstream_commit='23ce28f0d398f579b6dd8d97f14cd416baa07077'
+_libloot_commit='136f3983c3eec7d377f83a7e7e0b0129aa5c8fe1'
+_libloot_sha512='4de893736611130d7b360e89ead5d27fb15b6ced9113a7d55604370c4db9db55cb8dca170d212b15be7f51bd40aca876dbea042e5f2a86e114b57cb905aaad99'
+_dotnet6='6.0.36'
+_dotnet8='8.0.29'
+_dotnet10='10.0.10'
+_node='22.19.0'
+_yarn='1.22.19'
+_patches=(
+  '0001-linux-build.patch'
+  '0002-linux-runtime.patch'
+  '0003-linux-launch.patch'
+  '0004-linux-game-discovery.patch'
+  '0005-linux-deployment.patch'
+  '0006-linux-ui-updater.patch'
+  '0007-linux-gamebryo-plugins.patch'
+  '0008-linux-gamebryo-archives-savegames.patch'
+  '0009-linux-fomod.patch'
+  '0010-linux-mod-conflicts.patch'
+  '0011-linux-arc-assets.patch'
+)
+
+source=(
+  "vortex::git+https://github.com/Nexus-Mods/Vortex.git#commit=${_upstream_commit}"
+  "https://nodejs.org/dist/v${_node}/node-v${_node}-linux-x64.tar.xz"
+  "yarn-${_yarn}.tgz::https://registry.npmjs.org/yarn/-/yarn-${_yarn}.tgz"
+  "libloot-${_libloot_commit}.tar.gz::https://codeload.github.com/loot/libloot/tar.gz/${_libloot_commit}"
+  "${_patches[@]}"
+  'vortex.sh'
+  'vortex.desktop'
+  'README.md'
+  'LICENSE'
+  "dotnet-runtime-${_dotnet6}-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/Runtime/${_dotnet6}/dotnet-runtime-${_dotnet6}-win-x64.zip"
+  "dotnet-runtime-${_dotnet8}-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/Runtime/${_dotnet8}/dotnet-runtime-${_dotnet8}-win-x64.zip"
+  "dotnet-runtime-${_dotnet10}-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/Runtime/${_dotnet10}/dotnet-runtime-${_dotnet10}-win-x64.zip"
+  "windowsdesktop-runtime-${_dotnet6}-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/${_dotnet6}/windowsdesktop-runtime-${_dotnet6}-win-x64.zip"
+  "windowsdesktop-runtime-${_dotnet8}-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/${_dotnet8}/windowsdesktop-runtime-${_dotnet8}-win-x64.zip"
+  "windowsdesktop-runtime-${_dotnet10}-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/${_dotnet10}/windowsdesktop-runtime-${_dotnet10}-win-x64.zip"
+)
+noextract=(
+  "dotnet-runtime-${_dotnet6}-win-x64.zip"
+  "dotnet-runtime-${_dotnet8}-win-x64.zip"
+  "dotnet-runtime-${_dotnet10}-win-x64.zip"
+  "windowsdesktop-runtime-${_dotnet6}-win-x64.zip"
+  "windowsdesktop-runtime-${_dotnet8}-win-x64.zip"
+  "windowsdesktop-runtime-${_dotnet10}-win-x64.zip"
+)
+sha512sums=(
+  'SKIP'
+  '8587e705e47d0a6e0410dbc508cd15359145262a8123056c7db5f3bfd6e715bf8497bb6af0f76fed7b680cde964bdf1f0a676c265114ee6a6529d78fd41c8553'
+  'ff4579ab459bb25aa7c0ff75b62acebe576f6084b36aa842971cf250a5d8c6cd3bc9420b22ce63c7f93a0857bc6ef29291db39c3e7a23aab5adfd5a4dd6c5d71'
+  "$_libloot_sha512"
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  # Keep integrity checks for binaries downloaded outside this repository.
+  '935db5c6cee19f2c016e67168bfae7b491044735de76c673abb3b125dd325fd5e779d7efe12ba80178d46689ae70a25e558a3fa846417d44c5f4ca256e7f4bf2'
+  'e3f31d298a2b674b54c7fc89fb3f06d9645fc5879a54f2ebf2ea20e9ee7ae55f1bfe3284c1f90a591d6be2d6bcd251790ddc27771d65303e7a6a56d331df4632'
+  '2161dfa1cf027cdc074de7195b5f206b17ebd829ae415b9e7c9ee5f06d3952b6583030022dbe0d6e9221b5c577c411d7cd5322241f6d2299d9c886641215699b'
+  'cee88fef07643dceb3d34ea71b64eeae85b8e39e7042bc4d35bc3a1f1df29373681dc48e31c01c9f593ec412699f6762b6fc5817433283c89df35a27ce8885bf'
+  '7cf8d7ec8daeb2734dc44e0a06ca5001cdb459ba7534f4821b6a0e918cf4004e45531d5df794885b0a48ffb61658fc4a43ff23a3260fe9bbc1c32f807d422651'
+  '58e243f490e09b00ef8c20d7c3dc06d0385aa4180b359eeb4ae8924ad1300fd19ec96c10e3989a96c4ce0076cf38e639bfb2b909baace73864dac28d64cdf9fc'
+)
+
+_activate_legacy_toolchain() {
+  export PATH="$srcdir/node-v${_node}-linux-x64/bin:$srcdir/yarn-v${_yarn}/bin:$PATH"
+  export YARN_CACHE_FOLDER="$srcdir/yarn-cache"
+  export ELECTRON_CACHE="$srcdir/electron-cache"
+  export npm_config_devdir="$srcdir/node-gyp-cache"
+  export DOTNET_CLI_HOME="$srcdir/dotnet-home"
+  export NUGET_PACKAGES="$srcdir/nuget-cache"
+  [[ "$(node --version)" == "v$_node" && "$(yarn --version)" == "$_yarn" ]]
+}
+
+prepare() {
+  cd "$srcdir/vortex"
+  _activate_legacy_toolchain
+  # Gitlinks in the pinned Vortex commit select exact API/FOMOD/game revisions.
+  git submodule update --init --recursive
+  local compatibility_patch
+  for compatibility_patch in "${_patches[@]}"; do
+    git apply --check "$srcdir/$compatibility_patch"
+    git apply "$srcdir/$compatibility_patch"
+  done
+  printf 'export const LINUX_PACKAGE_VERSION: string = "%s-%s";\n' \
+    "$pkgver" "$pkgrel" > src/extensions/updater/linuxBuild.ts
+  bash scripts/build-linux.sh prepare
+}
+
+build() {
+  cd "$srcdir/vortex"
+  _activate_legacy_toolchain
+  (
+    cd "$srcdir/libloot-$_libloot_commit"
+    LIBLOOT_REVISION="${_libloot_commit:0:8}" \
+      RUSTFLAGS='-C target-cpu=x86-64' cargo build --release --locked -p libloot-nodejs
+  )
+  export LIBLOOT_NODE_PATH="$srcdir/libloot-$_libloot_commit/target/release/libloot.node"
+  install -m755 "$srcdir/libloot-$_libloot_commit/target/release/liblibloot_nodejs.so" "$LIBLOOT_NODE_PATH"
+  strip --strip-unneeded "$LIBLOOT_NODE_PATH"
+  bash scripts/build-linux.sh build
+}
+
+check() {
+  cd "$srcdir/vortex"
+  _activate_legacy_toolchain
+  node_modules/.bin/vitest run --config vitest.linux.config.ts
+  node extensions/gamebryo-plugin-management/tests/linux-smoke.cjs
+}
+
+package() {
+  cd "$srcdir/vortex"
+
+  install -dm755 "$pkgdir/opt/Vortex"
+  cp -a dist/linux-unpacked/. "$pkgdir/opt/Vortex/"
+
+  # The native FOMOD addon is built with an absolute RUNPATH pointing at the
+  # build tree. Make the packaged addon relocatable so it can find the
+  # co-located NativeAOT library after installation and inside an AppImage.
+  local fomod_release_dir="$pkgdir/opt/Vortex/resources/app.asar.unpacked/node_modules/fomod-installer-native/dist"
+  local fomod_node="$fomod_release_dir/modinstaller.node"
+  local fomod_library="$fomod_release_dir/ModInstaller.Native.so"
+  if [[ ! -f "$fomod_node" || ! -f "$fomod_library" ]]; then
+    printf 'Native FOMOD runtime files are missing from the Electron output\n' >&2
+    return 1
+  fi
+  patchelf --set-rpath '$ORIGIN' "$fomod_node"
+  if [[ "$(patchelf --print-rpath "$fomod_node")" != '$ORIGIN' ]]; then
+    printf 'Unable to make the native FOMOD addon relocatable\n' >&2
+    return 1
+  fi
+
+  install -dm755 "$pkgdir/opt/Vortex/dotnet-win-x64"
+  local runtime_version
+  for runtime_version in "$_dotnet6" "$_dotnet8" "$_dotnet10"; do
+    bsdtar -xf "$srcdir/dotnet-runtime-${runtime_version}-win-x64.zip" \
+      -C "$pkgdir/opt/Vortex/dotnet-win-x64"
+    bsdtar -xf "$srcdir/windowsdesktop-runtime-${runtime_version}-win-x64.zip" \
+      -C "$pkgdir/opt/Vortex/dotnet-win-x64"
+  done
+
+  chmod 4755 "$pkgdir/opt/Vortex/chrome-sandbox"
+
+  install -Dm755 "$srcdir/vortex.sh" "$pkgdir/usr/bin/vortex"
+  install -Dm644 "$srcdir/vortex.desktop" \
+    "$pkgdir/usr/share/applications/com.nexusmods.vortex.desktop"
+  install -Dm644 assets/images/vortex.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/vortex.png"
+  install -Dm644 "$srcdir/libloot-$_libloot_commit/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LIBLOOT-LICENSE.txt"
+  install -Dm644 LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/VORTEX-LICENSE.md"
+  install -Dm644 "$srcdir/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/PATCHES-GPL-3.0.txt"
+  install -Dm644 "$srcdir/README.md" \
+    "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
