@@ -127,3 +127,123 @@ index a55e3c78b..b3fa7ba07 100644
  
    if (missingDependencies.size === 0) return;
  
+diff --git a/src/renderer/src/extensions/extension_manager/renderLoadFailure.test.ts b/src/renderer/src/extensions/extension_manager/renderLoadFailure.test.ts
+new file mode 100644
+index 000000000..489166f8e
+--- /dev/null
++++ b/src/renderer/src/extensions/extension_manager/renderLoadFailure.test.ts
+@@ -0,0 +1,30 @@
++import { createInstance } from "i18next";
++import { describe, expect, it } from "vitest";
++
++import { renderLoadFailure } from "./renderLoadFailure";
++
++describe("extension load failure messages", () => {
++  it("names the missing Gamebryo dependency without an unexpanded placeholder", async () => {
++    const i18n = createInstance();
++    await i18n.init({ lng: "en", resources: {} });
++
++    const message = renderLoadFailure(i18n.t, {
++      id: "dependency",
++      args: { dependencyId: "gamebryo-plugin-management" },
++    });
++
++    expect(message).toBe("Depends on 'gamebryo-plugin-management'");
++  });
++
++  it("includes both the dependency name and required version", async () => {
++    const i18n = createInstance();
++    await i18n.init({ lng: "en", resources: {} });
++
++    const message = renderLoadFailure(i18n.t, {
++      id: "dependency",
++      args: { dependencyId: "gamebryo-plugin-management", version: "^0.5.3" },
++    });
++
++    expect(message).toBe("Depends on 'gamebryo-plugin-management' version '^0.5.3'");
++  });
++});
+diff --git a/src/renderer/src/extensions/extension_manager/renderLoadFailure.ts b/src/renderer/src/extensions/extension_manager/renderLoadFailure.ts
+new file mode 100644
+index 000000000..4c72386ca
+--- /dev/null
++++ b/src/renderer/src/extensions/extension_manager/renderLoadFailure.ts
+@@ -0,0 +1,28 @@
++import type { TFunction } from "i18next";
++
++import type { IExtensionLoadFailure } from "../../types/IState";
++
++export function renderLoadFailure(t: TFunction, fail: IExtensionLoadFailure) {
++  if (fail.id === "unsupported-version") {
++    return t("Not compatible with this version of Vortex");
++  }
++
++  if (fail.id === "unsupported-api") {
++    return t("Unsupported API");
++  }
++
++  if (fail.id === "exception") {
++    return t("Failed to load: {{message}}", { replace: fail.args });
++  }
++
++  if (fail.id === "dependency") {
++    if (fail.args.version) {
++      return t("Depends on '{{dependencyId}}' version '{{version}}'", { replace: fail.args });
++    }
++
++    return t("Depends on '{{dependencyId}}'", { replace: fail.args });
++  }
++
++  const id = fail.id satisfies never;
++  return t("Unknown error '{{id}}'", { replace: { id } });
++}
+diff --git a/src/renderer/src/extensions/extension_manager/tableAttributes.tsx b/src/renderer/src/extensions/extension_manager/tableAttributes.tsx
+index 3393e71e1..07fa76d78 100644
+--- a/src/renderer/src/extensions/extension_manager/tableAttributes.tsx
++++ b/src/renderer/src/extensions/extension_manager/tableAttributes.tsx
+@@ -4,12 +4,12 @@ import * as React from "react";
+ 
+ import TableTextFilter from "../../controls/table/TextFilter";
+ import type { IExtensionWithState } from "../../types/extensions";
+-import type { IExtensionLoadFailure } from "../../types/IState";
+ import type { ITableAttribute } from "../../types/ITableAttribute";
+ import { getSafe } from "../../util/storeHelper";
+ import { SITE_ID } from "../gamemode_management/constants";
+ import type { EndorseMod } from "../nexus_integration/attributes";
+ import EndorseModButton from "../nexus_integration/views/EndorseModButton";
++import { renderLoadFailure } from "./renderLoadFailure";
+ 
+ interface IAttributesContext {
+   onSetExtensionEnabled: (extensionName: string, enabled: boolean) => void;
+@@ -17,31 +17,6 @@ interface IAttributesContext {
+   onEndorseMod: (gameId: string, modId: string, endorsed: EndorsedStatus) => void;
+ }
+ 
+-function renderLoadFailure(t: TFunction, fail: IExtensionLoadFailure) {
+-  if (fail.id === "unsupported-version") {
+-    return t("Not compatible with this version of Vortex");
+-  }
+-
+-  if (fail.id === "unsupported-api") {
+-    return t("Unsupported API");
+-  }
+-
+-  if (fail.id === "exception") {
+-    return t("Failed to load: {{message}}", { replace: fail.args });
+-  }
+-
+-  if (fail.id === "dependency") {
+-    if (fail.args.version) {
+-      return t("Depends on '{{dependencyId}}' version '{{version}}'", { replace: fail.args });
+-    }
+-
+-    return t("Depends on '{{dependencyId}}'");
+-  }
+-
+-  const id = fail.id satisfies never;
+-  return t("Unknown error '{{id}}'", { replace: { id } });
+-}
+-
+ function createEndorsedIcon(ext: IExtensionWithState, onEndorse: EndorseMod, t: TFunction) {
+   const endorsed: string = ext.endorsed || "Undecided";
+   return (
