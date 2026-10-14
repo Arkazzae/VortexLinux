@@ -1,0 +1,902 @@
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+--- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+@@ -348,8 +348,11 @@
+     deployPath: string,
+     blackList: BlacklistSet,
+   ): Promise<void> {
+-    return Promise.resolve(
+-      fs
++    return Promise.resolve().then(() => {
++      // turbowalk bypasses the filesystem compatibility wrapper. Resolve before
++      // its missing-directory handler so an unavailable prefix still rejects.
++      sourcePath = resolveCaseInsensitiveSync(sourcePath);
++      return fs
+         .statAsync(sourcePath)
+         .then(() =>
+           turbowalk(
+@@ -386,32 +389,35 @@
+             return null;
+           }
+           throw err;
+-        }),
+-    );
++        });
++    });
+   }
+ 
+   public deactivate(sourcePath: string, dataPath: string, sourceName: string): PromiseLike<void> {
+-    return turbowalk(
+-      sourcePath,
+-      (entries) => {
+-        if (this.mContext === undefined) {
+-          return;
+-        }
+-        entries.forEach((entry) => {
+-          if (!entry.isDirectory) {
+-            const relPath: string = path.relative(sourcePath, entry.filePath);
+-            const normPath = this.mNormalize(path.join(dataPath, relPath));
+-            if (
+-              this.mContext.newDeployment[normPath] !== undefined &&
+-              this.mContext.newDeployment[normPath].source === sourceName
+-            ) {
+-              delete this.mContext.newDeployment[normPath];
++    return Promise.resolve().then(() => {
++      sourcePath = resolveCaseInsensitiveSync(sourcePath);
++      return turbowalk(
++        sourcePath,
++        (entries) => {
++          if (this.mContext === undefined) {
++            return;
++          }
++          entries.forEach((entry) => {
++            if (!entry.isDirectory) {
++              const relPath: string = path.relative(sourcePath, entry.filePath);
++              const normPath = this.mNormalize(path.join(dataPath, relPath));
++              if (
++                this.mContext.newDeployment[normPath] !== undefined &&
++                this.mContext.newDeployment[normPath].source === sourceName
++              ) {
++                delete this.mContext.newDeployment[normPath];
++              }
+             }
+-          }
+-        });
+-      },
+-      { skipHidden: false },
+-    );
++          });
++        },
++        { skipHidden: false },
++      );
++    });
+   }
+ 
+   public prePurge(): Promise<void> {
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.staging.test.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.staging.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.staging.test.ts
+@@ -0,0 +1,131 @@
++import * as nodeFs from "node:fs";
++import * as path from "node:path";
++
++import { afterEach, expect, vi } from "vitest";
++
++import { test } from "../../test-utils/deploymentTest";
++import type { IGame } from "../../types/IGame";
++import { setCompatibilityGameProvider } from "../../util/compatibilityPaths";
++import * as fs from "../../util/fs";
++import deployMods from "./modActivation";
++import type { IMod } from "./types/IMod";
++import BlacklistSet from "./util/BlacklistSet";
++
++afterEach(() => {
++  setCompatibilityGameProvider(undefined);
++  vi.unstubAllEnvs();
++});
++for (const method of ["hardlink", "symlink"] as const) {
++  test.runIf(process.platform === "linux")(
++    `case-mismatched staging can deploy using ${method}`,
++    async ({ makeDeployment }) => {
++      const h = makeDeployment({ files: { "Engine.ini": "config" }, method, modName: "ConfigMod" });
++      setCompatibilityGameProvider(() => ({ path: h.gameDir, executable: "Game.sh" }));
++      const logicalStaging = path.join(h.stagingDir, "..", "STAGING");
++      const logicalMod = path.join(logicalStaging, "configmod");
++      expect((await fs.statAsync(logicalMod)).isDirectory()).toBe(true);
++      const deployed = await deployMods(
++        h.api,
++        "skyrimse",
++        logicalStaging,
++        h.gameDir,
++        [{ id: "config", installationPath: "configmod", state: "installed" } as IMod],
++        h.method,
++        [],
++        h.normalize,
++        "",
++        new BlacklistSet([], { details: {} } as IGame, h.normalize),
++        () => "",
++      );
++      expect(deployed).toHaveLength(1);
++      expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe("config");
++      expect(
++        await h.method.externalChanges("skyrimse", logicalStaging, h.gameDir, deployed),
++      ).toEqual([]);
++    },
++  );
++}
++
++for (const method of ["hardlink", "symlink"] as const) {
++  test.runIf(process.platform === "linux")(
++    `case-mismatched staging can deactivate using ${method}`,
++    async ({ makeDeployment }) => {
++      const h = makeDeployment({ files: { "Engine.ini": "config" }, method, modName: "ConfigMod" });
++      setCompatibilityGameProvider(() => ({ path: h.gameDir, executable: "Game.sh" }));
++      const lastDeployment = await h.deploy();
++      expect(lastDeployment).toHaveLength(1);
++      const logicalStaging = path.join(h.stagingDir, "..", "STAGING");
++      const logicalMod = path.join(logicalStaging, "ConfigMod");
++      expect((await fs.statAsync(logicalMod)).isDirectory()).toBe(true);
++      await h.method.prepare(h.gameDir, false, lastDeployment, h.normalize);
++      try {
++        await h.method.deactivate(logicalMod, "", "ConfigMod");
++        const deployed = await h.method.finalize("skyrimse", h.gameDir, logicalStaging);
++        expect(deployed).toHaveLength(0);
++        expect(nodeFs.existsSync(h.inGame("Engine.ini"))).toBe(false);
++      } catch (err) {
++        await h.method.cancel?.("skyrimse", h.gameDir, logicalStaging);
++        throw err;
++      }
++    },
++  );
++
++  test.runIf(process.platform === "linux")(
++    `case-mismatched staging preserves existing deployment using ${method}`,
++    async ({ makeDeployment }) => {
++      const h = makeDeployment({ files: { "Engine.ini": "config" }, method, modName: "ConfigMod" });
++      setCompatibilityGameProvider(() => ({ path: h.gameDir, executable: "Game.sh" }));
++      const lastDeployment = await h.deploy();
++      expect(lastDeployment).toHaveLength(1);
++      const logicalStaging = path.join(h.stagingDir, "..", "STAGING");
++      const logicalMod = path.join(logicalStaging, "ConfigMod");
++      expect((await fs.statAsync(logicalMod)).isDirectory()).toBe(true);
++      const deployed = await deployMods(
++        h.api,
++        "skyrimse",
++        logicalStaging,
++        h.gameDir,
++        [{ id: "config", installationPath: "ConfigMod", state: "installed" } as IMod],
++        h.method,
++        lastDeployment,
++        h.normalize,
++        "",
++        new BlacklistSet([], { details: {} } as IGame, h.normalize),
++        () => "",
++      );
++      expect(nodeFs.existsSync(h.inGame("Engine.ini"))).toBe(true);
++      expect(deployed).toHaveLength(1);
++      expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe("config");
++    },
++  );
++}
++
++for (const operation of ["activate", "deactivate"] as const) {
++  test.runIf(process.platform === "linux")(
++    `rejects ${operation} when the selected prefix is missing instead of treating it as an empty mod`,
++    async ({ makeDeployment }) => {
++      const h = makeDeployment({ files: { "Engine.ini": "config" } });
++      const root = path.dirname(h.stagingDir);
++      const local = path.join(root, "Local");
++      const mod = path.join(local, "ConfigMod");
++      nodeFs.mkdirSync(mod, { recursive: true });
++      nodeFs.writeFileSync(path.join(mod, "Engine.ini"), "host configuration");
++      vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++      setCompatibilityGameProvider(() => ({
++        environment: { WINEPREFIX: path.join(root, "missing-prefix") },
++      }));
++      // Resolution failures must be promise rejections, including for deactivate.
++      const result =
++        operation === "activate"
++          ? h.method.activate(
++              mod,
++              "ConfigMod",
++              "",
++              new BlacklistSet([], { details: {} } as IGame, h.normalize),
++            )
++          : h.method.deactivate(mod, "", "ConfigMod");
++      await expect(result).rejects.toMatchObject({ code: "ENOENT" });
++      expect(nodeFs.readFileSync(path.join(mod, "Engine.ini"), "utf8")).toBe("host configuration");
++    },
++  );
++}
+diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/src/extensions/mod_management/index.ts
+--- a/src/renderer/src/extensions/mod_management/index.ts
++++ b/src/renderer/src/extensions/mod_management/index.ts
+@@ -136,6 +136,10 @@
+ import { getModSources, registerModSource } from "./util/modSource";
+ import sortMods from "./util/sort";
+ import { setResolvedCB } from "./util/testModReference";
++import {
++  validateDeploymentTargets,
++  validateProfileDeploymentTargets,
++} from "./util/validateDeploymentTargets";
+ import ActivationButton from "./views/ActivationButton";
+ import DeactivationButton from "./views/DeactivationButton";
+ import type { IDuplicatesMap, IRemoveDuplicateMap } from "./views/DuplicatesDialog";
+@@ -364,30 +368,6 @@
+ 
+   if (activator.noRedundancy !== true) {
+     return reportRedundant(api, profile.id, overwritten);
+-  }
+-}
+-
+-async function validateDeploymentTarget(api: IExtensionApi, undiscovered: string[]) {
+-  if (undiscovered.length === 0) {
+-    return;
+-  }
+-  const result = await api.showDialog(
+-    "error",
+-    "Deployment target unknown",
+-    {
+-      text:
+-        "The deployment directory for some mod type(s) ({{ types }}) " +
+-        "is unknown. Mods of these types will not be deployed. " +
+-        "Maybe this/these type(s) require further configuration or " +
+-        "external tools.",
+-      parameters: {
+-        types: undiscovered.join(", "),
+-      },
+-    },
+-    [{ label: "Cancel" }, { label: "Ignore" }],
+-  );
+-  if (result.action === "Cancel") {
+-    throw new UserCanceled();
+   }
+ }
+ 
+@@ -630,7 +610,7 @@
+   return Object.keys(modPaths).filter((typeId) => truthy(modPaths[typeId]));
+ }
+ 
+-function genUpdateModDeployment(installManager: InstallManager) {
++export function genUpdateModDeployment(installManager: InstallManager) {
+   return (
+     api: IExtensionApi,
+     manual: boolean,
+@@ -683,7 +663,7 @@
+     }
+     const stagingPath = installPathForGame(state, gameId);
+ 
+-    const modPaths = game.getModPaths(gameDiscovery.path);
++    let modPaths = game.getModPaths(gameDiscovery.path);
+     const activator = getCurrentActivator(state, gameId, true);
+ 
+     if (activator === undefined) {
+@@ -774,15 +754,18 @@
+                 await installManager.waitForIdle();
+               }
+ 
+-              // Consume the set of installation paths whose mods finished
+-              // installing or were removed since the last deployment. Their
+-              // external changes (refchange / srcdeleted) are expected and
+-              // will be auto-resolved per-mod.
+-              const recentChanges = installManager.consumeRecentChanges();
++              // Installations may have changed both the mod list and its enabled state.
++              const currentState = api.getState();
++              profile = currentState.persistent.profiles[profile.id];
++              if (profile === undefined) {
++                throw new ProcessCanceled("The profile is no longer available.");
++              }
++              let mods: Record<string, IMod> = currentState.persistent.mods?.[gameId] ?? {};
++              modPaths = game.getModPaths(gameDiscovery.path);
++              validateProfileDeploymentTargets(api, game, profile, mods, modPaths);
+ 
+               let mergeResult: { [modType: string]: IMergeResultByType };
+               const lastDeployment: { [typeId: string]: IDeployedFile[] } = {};
+-              const mods: Record<string, IMod> = state.persistent.mods?.[profile?.gameId] ?? {};
+               notification.message = t("Deploying mods");
+               api.sendNotification(notification);
+               api.store.dispatch(startActivity("mods", "deployment"));
+@@ -816,6 +799,23 @@
+                 log("warn", "profile no longer found?", profileId);
+               }
+ 
++              mods = updatedState.persistent.mods?.[gameId] ?? {};
++              const updatedModPaths = game.getModPaths(gameDiscovery.path);
++              validateProfileDeploymentTargets(api, game, profile, mods, updatedModPaths);
++              if (!_.isEqual(modPaths, updatedModPaths)) {
++                // The loaded manifests belong to the original targets. Retry with
++                // a consistent set instead of applying those manifests elsewhere.
++                throw new ProcessCanceled(
++                  t("Deployment folders changed during preparation. Please deploy again."),
++                );
++              }
++
++              // Consume the set of installation paths whose mods finished
++              // installing or were removed since the last deployment. Their
++              // external changes (refchange / srcdeleted) are expected and
++              // will be auto-resolved per-mod.
++              const recentChanges = installManager.consumeRecentChanges();
++
+               progress(t("Checking for external changes"), 5);
+               await dealWithExternalChanges(
+                 api,
+@@ -849,10 +849,6 @@
+               const deployProgress = (name, percent) =>
+                 progress(t("Deploying: ") + name, 50 + percent / 2);
+ 
+-              const undiscovered = Object.keys(modPaths).filter(
+-                (typeId) => !truthy(modPaths[typeId]),
+-              );
+-              await validateDeploymentTarget(api, undiscovered);
+               await deployAllModTypes(
+                 api,
+                 activator,
+@@ -901,6 +897,7 @@
+             if (err instanceof UserCanceled) {
+               // nop
+             } else if (err instanceof ProcessCanceled) {
++              api.store.dispatch(setDeploymentNecessary(gameId, true));
+               api.sendNotification({
+                 type: "warning",
+                 title: "Deployment interrupted",
+@@ -1223,7 +1220,7 @@
+   };
+ }
+ 
+-function onDeploySingleMod(api: IExtensionApi) {
++export function onDeploySingleMod(api: IExtensionApi) {
+   return async (gameId: string, modId: string, enable?: boolean) => {
+     const state: IState = api.store.getState();
+     const game = getGame(gameId);
+@@ -1241,8 +1238,19 @@
+       return;
+     }
+ 
+-    const dataPath = game.getModPaths(discovery.path)[mod.type || ""];
++    const modPaths = game.getModPaths(discovery.path);
++    const dataPath = modPaths[mod.type || ""];
+     if (!truthy(dataPath)) {
++      try {
++        validateDeploymentTargets(api, game, [mod], modPaths);
++      } catch (err) {
++        api.sendNotification({
++          type: "warning",
++          title: "Deployment interrupted",
++          message: unknownToError(err).message,
++        });
++        api.store.dispatch(setDeploymentNecessary(gameId, true));
++      }
+       return;
+     }
+     const stagingPath: string = installPathForGame(state, gameId);
+@@ -1262,7 +1270,33 @@
+ 
+     const subdir = genSubDirFunc(game, getModType(mod.type));
+     await withActivationLock(async () => {
++      let deploymentPrepared = false;
+       try {
++        // Another deployment or extension setup may have changed the target
++        // while this request was waiting for the activation lock.
++        const currentState = api.getState();
++        const currentGame = getGame(gameId);
++        const currentDiscovery = currentState.settings.gameMode.discovered?.[gameId];
++        const currentMod = currentState.persistent.mods?.[gameId]?.[modId];
++        if (
++          currentGame === undefined ||
++          currentDiscovery?.path === undefined ||
++          currentMod === undefined
++        ) {
++          throw new ProcessCanceled(api.translate("The game or mod is no longer available."));
++        }
++        const currentModPaths = currentGame.getModPaths(currentDiscovery.path);
++        validateDeploymentTargets(api, currentGame, [currentMod], currentModPaths);
++        if (
++          currentModPaths[currentMod.type || ""] !== dataPath ||
++          currentMod.type !== mod.type ||
++          currentMod.installationPath !== mod.installationPath ||
++          installPathForGame(currentState, gameId) !== stagingPath
++        ) {
++          throw new ProcessCanceled(
++            api.translate("Deployment folders changed while waiting. Please deploy again."),
++          );
++        }
+         const normalize = await getDeploymentNormalizeFunc(game, discovery.path, dataPath);
+         const lastActivation = await loadActivation(
+           api,
+@@ -1273,6 +1307,7 @@
+           activator,
+         );
+         resetDeploymentFailures(api, gameId);
++        deploymentPrepared = true;
+         await activator.prepare(dataPath, false, lastActivation, normalize);
+         if (mod !== undefined) {
+           if (enable !== false) {
+@@ -1298,11 +1333,12 @@
+         );
+         reportRecordedFailures(api, gameId);
+       } catch (unknownErr) {
+-        if (activator.cancel !== undefined) {
++        if (deploymentPrepared && activator.cancel !== undefined) {
+           activator.cancel(gameId, dataPath, stagingPath);
+         }
+         const err = unknownToError(unknownErr);
+         if (err instanceof ProcessCanceled) {
++          api.store.dispatch(setDeploymentNecessary(gameId, true));
+           api.sendNotification({
+             type: "warning",
+             title: "Deployment interrupted",
+diff --git a/src/renderer/src/extensions/mod_management/index.deploymentTargets.test.ts b/src/renderer/src/extensions/mod_management/index.deploymentTargets.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/index.deploymentTargets.test.ts
+@@ -0,0 +1,275 @@
++import Bluebird from "bluebird";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++import type { IExtensionApi } from "../../types/IExtensionContext";
++import type { IGame } from "../../types/IGame";
++import type { IState } from "../../types/IState";
++import { getGame } from "../gamemode_management/util/getGame";
++import { getModType } from "../gamemode_management/util/modTypeExtensions";
++import { setDeploymentNecessary } from "./actions/deployment";
++import { genUpdateModDeployment, onDeploySingleMod } from "./index";
++import type InstallManager from "./InstallManager";
++import type { IDeploymentMethod } from "./types/IDeploymentMethod";
++import { loadActivation, withActivationLock } from "./util/activationStore";
++import { getCurrentActivator } from "./util/deploymentMethods";
++import { dealWithExternalChanges } from "./util/externalChanges";
++
++vi.mock("../gamemode_management/util/getGame", () => ({ getGame: vi.fn() }));
++vi.mock("../gamemode_management/util/modTypeExtensions", () => ({ getModType: vi.fn() }));
++vi.mock("./util/deploymentMethods", () => ({ getCurrentActivator: vi.fn() }));
++vi.mock("./util/activationStore", () => ({
++  withActivationLock: vi.fn((callback: () => Promise<void>) => callback()),
++  loadActivation: vi.fn(async () => []),
++}));
++vi.mock("./util/externalChanges", () => ({ dealWithExternalChanges: vi.fn() }));
++vi.mock("../../util/errorHandling", async (importOriginal) => ({
++  ...(await importOriginal<object>()),
++  withTrackedActivity: (_scope, _name, _attributes, callback) => callback(),
++}));
++
++const gameId = "starwarsgalacticracer";
++const configType = `${gameId}-config`;
++let state: IState;
++let api: IExtensionApi;
++let manager: InstallManager;
++let activator: IDeploymentMethod;
++
++beforeEach(() => {
++  vi.clearAllMocks();
++  vi.mocked(withActivationLock).mockImplementation((callback) => Bluebird.resolve(callback()));
++  state = {
++    settings: {
++      gameMode: { discovered: { [gameId]: { path: "/game" } } },
++      mods: { installPath: { [gameId]: "/staging" } },
++    },
++    persistent: {
++      profiles: { profile: { id: "profile", gameId, modState: { config: { enabled: true } } } },
++      mods: {
++        [gameId]: {
++          config: {
++            id: "config",
++            type: configType,
++            state: "installed",
++            installationPath: "config",
++          },
++        },
++      },
++    },
++    session: { base: { toolsRunning: {} } },
++  } as unknown as IState;
++  api = {
++    getState: () => state,
++    store: { getState: () => state, dispatch: vi.fn() },
++    translate: (message: string, options?: { replace: { mods: string } }) =>
++      message.replace("{{mods}}", options?.replace.mods ?? ""),
++    sendNotification: vi.fn(() => "notification"),
++    dismissNotification: vi.fn(),
++    emitAndAwait: vi.fn(async () => undefined),
++    showErrorNotification: vi.fn(),
++  } as unknown as IExtensionApi;
++  manager = {
++    getActiveInstallationCount: () => 0,
++    waitForIdle: vi.fn(async () => undefined),
++    consumeRecentChanges: vi.fn(() => new Set()),
++  } as unknown as InstallManager;
++  activator = { name: "Hardlink Deployment", prepare: vi.fn() } as unknown as IDeploymentMethod;
++  vi.mocked(getCurrentActivator).mockReturnValue(activator);
++  vi.mocked(getGame).mockReturnValue({
++    id: gameId,
++    getModPaths: () => ({ "": "/game" }),
++  } as unknown as IGame);
++  vi.mocked(getModType).mockReturnValue({
++    typeId: configType,
++    options: {},
++    isSupported: () => false,
++    getPath: () => "/prefix/config",
++  } as unknown as ReturnType<typeof getModType>);
++});
++
++describe("deployment entrypoint destination guards", () => {
++  it("aborts full deployment before consuming pending changes, loading manifests or invoking extension events", async () => {
++    await genUpdateModDeployment(manager)(api, true, "profile");
++    expect(manager.consumeRecentChanges).not.toHaveBeenCalled();
++    expect(loadActivation).not.toHaveBeenCalled();
++    expect(api.emitAndAwait).not.toHaveBeenCalled();
++    expect(dealWithExternalChanges).not.toHaveBeenCalled();
++    expect(api.sendNotification).toHaveBeenCalledWith(
++      expect.objectContaining({
++        title: "Deployment interrupted",
++        message: expect.stringContaining(configType),
++      }),
++    );
++    expect(api.showErrorNotification).not.toHaveBeenCalled();
++  });
++
++  it("refreshes mods installed while deployment was waiting before validating", async () => {
++    state.persistent.mods[gameId].config.state = "installing";
++    vi.spyOn(manager, "getActiveInstallationCount").mockReturnValue(1);
++    vi.mocked(manager.waitForIdle).mockImplementation(async () => {
++      state = {
++        ...state,
++        persistent: {
++          ...state.persistent,
++          mods: {
++            [gameId]: {
++              config: {
++                ...state.persistent.mods[gameId].config,
++                state: "installed",
++              },
++            },
++          },
++        },
++      };
++    });
++    await genUpdateModDeployment(manager)(api, true, "profile");
++    expect(manager.waitForIdle).toHaveBeenCalledOnce();
++    expect(loadActivation).not.toHaveBeenCalled();
++    expect(api.sendNotification).toHaveBeenCalledWith(
++      expect.objectContaining({
++        title: "Deployment interrupted",
++        message: expect.stringContaining(configType),
++      }),
++    );
++  });
++
++  it("rechecks a mod enabled by a will-deploy handler before external changes", async () => {
++    state.persistent.profiles.profile.modState.config.enabled = false;
++    vi.mocked(api.emitAndAwait).mockImplementation(async () => {
++      state.persistent.profiles.profile.modState.config.enabled = true;
++      return [];
++    });
++    await genUpdateModDeployment(manager)(api, true, "profile");
++    expect(loadActivation).toHaveBeenCalledOnce();
++    expect(api.emitAndAwait).toHaveBeenCalledOnce();
++    expect(dealWithExternalChanges).not.toHaveBeenCalled();
++    expect(api.sendNotification).toHaveBeenCalledWith(
++      expect.objectContaining({
++        title: "Deployment interrupted",
++        message: expect.stringContaining(configType),
++      }),
++    );
++  });
++
++  it("rechecks support removed by a will-deploy handler against fresh targets", async () => {
++    let supported = true;
++    vi.mocked(getGame).mockReturnValue({
++      id: gameId,
++      getModPaths: () =>
++        supported ? { "": "/game", [configType]: "/prefix/config" } : { "": "/game" },
++    } as unknown as IGame);
++    vi.mocked(getModType).mockReturnValue({
++      typeId: configType,
++      options: {},
++      isSupported: () => supported,
++      getPath: () => "/prefix/config",
++    } as unknown as ReturnType<typeof getModType>);
++    vi.mocked(api.emitAndAwait).mockImplementation(async () => {
++      supported = false;
++      return [];
++    });
++    await genUpdateModDeployment(manager)(api, true, "profile");
++    expect(loadActivation).toHaveBeenCalledTimes(2);
++    expect(manager.consumeRecentChanges).not.toHaveBeenCalled();
++    expect(dealWithExternalChanges).not.toHaveBeenCalled();
++    expect(api.sendNotification).toHaveBeenCalledWith(
++      expect.objectContaining({
++        title: "Deployment interrupted",
++        message: expect.stringContaining(configType),
++      }),
++    );
++  });
++
++  it("does not apply an old manifest when a will-deploy handler changes the target", async () => {
++    let target = "/prefix/config";
++    vi.mocked(getGame).mockReturnValue({
++      id: gameId,
++      getModPaths: () => ({ "": "/game", [configType]: target }),
++    } as unknown as IGame);
++    vi.mocked(api.emitAndAwait).mockImplementation(async () => {
++      target = "/other-prefix/config";
++      return [];
++    });
++    await genUpdateModDeployment(manager)(api, true, "profile");
++    expect(loadActivation).toHaveBeenCalledTimes(2);
++    expect(manager.consumeRecentChanges).not.toHaveBeenCalled();
++    expect(dealWithExternalChanges).not.toHaveBeenCalled();
++    expect(api.sendNotification).toHaveBeenCalledWith(
++      expect.objectContaining({
++        title: "Deployment interrupted",
++        message: expect.stringContaining("Please deploy again"),
++      }),
++    );
++  });
++
++  it.each([true, false])(
++    "reports the missing target for single-mod enable=%s without preparing deployment",
++    async (enable) => {
++      await onDeploySingleMod(api)(gameId, "config", enable);
++      expect(loadActivation).not.toHaveBeenCalled();
++      expect(activator.prepare).not.toHaveBeenCalled();
++      expect(api.sendNotification).toHaveBeenCalledWith(
++        expect.objectContaining({
++          title: "Deployment interrupted",
++          message: expect.stringContaining(configType),
++        }),
++      );
++      expect(api.store.dispatch).toHaveBeenCalledWith(setDeploymentNecessary(gameId, true));
++    },
++  );
++
++  it.each([undefined, "/other-prefix/config"])(
++    "rechecks a queued single-mod request when its target becomes %s",
++    async (newTarget) => {
++      let target: string | undefined = "/prefix/config";
++      vi.mocked(getGame).mockReturnValue({
++        id: gameId,
++        getModPaths: () =>
++          target === undefined ? { "": "/game" } : { "": "/game", [configType]: target },
++      } as unknown as IGame);
++      vi.mocked(getModType).mockReturnValue({
++        typeId: configType,
++        options: {},
++        isSupported: () => target !== undefined,
++        getPath: () => target,
++      } as unknown as ReturnType<typeof getModType>);
++      let unlock: () => void;
++      const locked = new Promise<void>((resolve) => {
++        unlock = resolve;
++      });
++      vi.mocked(withActivationLock).mockImplementationOnce((callback) =>
++        Bluebird.resolve(locked).then(callback),
++      );
++      const pending = onDeploySingleMod(api)(gameId, "config", true);
++      expect(withActivationLock).toHaveBeenCalledOnce();
++      expect(loadActivation).not.toHaveBeenCalled();
++      target = newTarget;
++      unlock();
++      await pending;
++      expect(loadActivation).not.toHaveBeenCalled();
++      expect(activator.prepare).not.toHaveBeenCalled();
++      expect(api.sendNotification).toHaveBeenCalledWith(
++        expect.objectContaining({
++          title: "Deployment interrupted",
++          message: expect.stringContaining(
++            newTarget === undefined ? configType : "Please deploy again",
++          ),
++        }),
++      );
++      expect(api.store.dispatch).toHaveBeenCalledWith(setDeploymentNecessary(gameId, true));
++    },
++  );
++
++  it("allows a single-mod request for an intentionally non-deploying collection", async () => {
++    state.persistent.mods[gameId].config.type = "collection";
++    vi.mocked(getModType).mockReturnValue({
++      typeId: "collection",
++      options: {},
++      isSupported: () => true,
++      getPath: () => undefined,
++    } as unknown as ReturnType<typeof getModType>);
++    await onDeploySingleMod(api)(gameId, "config", true);
++    expect(loadActivation).not.toHaveBeenCalled();
++    expect(activator.prepare).not.toHaveBeenCalled();
++    expect(api.sendNotification).not.toHaveBeenCalled();
++  });
++});
+diff --git a/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts
+@@ -0,0 +1,64 @@
++import type { IExtensionApi } from "../../../types/IExtensionContext";
++import type { IGame } from "../../../types/IGame";
++import { ProcessCanceled } from "../../../util/CustomErrors";
++import { getModType } from "../../gamemode_management/util/modTypeExtensions";
++import type { IProfile } from "../../profile_management/types/IProfile";
++import type { IMod } from "../types/IMod";
++
++/** Validate only mods being deployed; supported types returning undefined intentionally do not deploy. */
++export function validateDeploymentTargets(
++  api: IExtensionApi,
++  game: IGame,
++  mods: IMod[],
++  modPaths: { [typeId: string]: string },
++): void {
++  const missing = new Map<string, string[]>();
++  for (const mod of mods) {
++    if (mod.state !== "installed") {
++      continue;
++    }
++    const typeId = mod.type || "";
++    if (Object.prototype.hasOwnProperty.call(modPaths, typeId) && modPaths[typeId]) {
++      continue;
++    }
++    const type = getModType(typeId);
++    if (type?.isSupported(game.id) && type.getPath(game) === undefined) {
++      // Collections and externally managed installers (for example UMM).
++      continue;
++    }
++    const names = missing.get(typeId) ?? [];
++    names.push(mod.attributes?.customFileName || mod.attributes?.name || mod.id);
++    missing.set(typeId, names);
++  }
++  if (missing.size > 0) {
++    throw new ProcessCanceled(
++      api.translate(
++        "Deployment cannot continue because these mods have no supported target folder: {{mods}}. " +
++          "Check the game extension and its configuration, or disable these mods before deploying again.",
++        {
++          replace: {
++            mods: Array.from(
++              missing,
++              ([typeId, names]) => `${names.join(", ")} (${typeId || api.translate("Default")})`,
++            ).join("; "),
++          },
++        },
++      ),
++    );
++  }
++}
++
++export function validateProfileDeploymentTargets(
++  api: IExtensionApi,
++  game: IGame,
++  profile: IProfile,
++  mods: Record<string, IMod>,
++  modPaths: { [typeId: string]: string },
++): void {
++  validateDeploymentTargets(
++    api,
++    game,
++    Object.values(mods).filter((mod) => profile.modState?.[mod.id]?.enabled),
++    modPaths,
++  );
++}
+diff --git a/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.test.ts b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.test.ts
+@@ -0,0 +1,100 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import type { IExtensionApi } from "../../../types/IExtensionContext";
++import type { IGame } from "../../../types/IGame";
++import { ProcessCanceled } from "../../../util/CustomErrors";
++import { getModType } from "../../gamemode_management/util/modTypeExtensions";
++import type { IProfile } from "../../profile_management/types/IProfile";
++import type { IMod } from "../types/IMod";
++import {
++  validateDeploymentTargets,
++  validateProfileDeploymentTargets,
++} from "./validateDeploymentTargets";
++
++vi.mock("../../gamemode_management/util/modTypeExtensions", () => ({ getModType: vi.fn() }));
++
++const game = { id: "starwarsgalacticracer" } as IGame;
++const api = {
++  translate: (message: string, options?: { replace: { mods: string } }) =>
++    message.replace("{{mods}}", options?.replace.mods ?? ""),
++} as IExtensionApi;
++const config: IMod = {
++  id: "performance-tweaks",
++  type: "starwarsgalacticracer-config",
++  state: "installed",
++  installationPath: "performance-tweaks",
++  attributes: { name: "Performance Tweaks" },
++};
++
++afterEach(() => vi.resetAllMocks());
++
++function registerType(supported: boolean, target: string | undefined) {
++  vi.mocked(getModType).mockReturnValue({
++    typeId: config.type,
++    options: { deploymentEssential: false },
++    isSupported: () => supported,
++    getPath: () => target,
++  } as unknown as ReturnType<typeof getModType>);
++}
++
++describe("deployment destination preflight", () => {
++  it("stops an installed config mod whose extension no longer supports its type", () => {
++    registerType(false, "/prefix/config");
++    expect(() => validateDeploymentTargets(api, game, [config], { "": "/game" })).toThrow(
++      /Performance Tweaks.*starwarsgalacticracer-config/,
++    );
++  });
++
++  it("stops mods whose type registration disappeared", () => {
++    expect(() => validateDeploymentTargets(api, game, [config], { "": "/game" })).toThrow(
++      ProcessCanceled,
++    );
++  });
++
++  it("stops an explicitly empty target even when deployment is not essential", () => {
++    registerType(true, "");
++    expect(() => validateDeploymentTargets(api, game, [config], { [config.type]: "" })).toThrow(
++      ProcessCanceled,
++    );
++  });
++
++  it("allows a resolved target, including the default type", () => {
++    expect(() =>
++      validateDeploymentTargets(api, game, [config, { ...config, id: "default", type: "" }], {
++        [config.type]: "/prefix/config",
++        "": "/game",
++      }),
++    ).not.toThrow();
++  });
++
++  it.each(["collection", "umm"])("allows the intentionally non-deploying %s type", (type) => {
++    registerType(true, undefined);
++    expect(() =>
++      validateDeploymentTargets(api, game, [{ ...config, type }], { "": "/game" }),
++    ).not.toThrow();
++  });
++
++  it("does not mistake an unsupported type returning undefined for a non-deploying type", () => {
++    registerType(false, undefined);
++    expect(() => validateDeploymentTargets(api, game, [config], { "": "/game" })).toThrow(
++      ProcessCanceled,
++    );
++  });
++
++  it("ignores mods not installed yet", () => {
++    expect(() =>
++      validateDeploymentTargets(api, game, [{ ...config, state: "installing" }], {}),
++    ).not.toThrow();
++  });
++
++  it("checks only mods enabled in the requested profile", () => {
++    const profile = { gameId: game.id, modState: { [config.id]: { enabled: false } } } as IProfile;
++    expect(() =>
++      validateProfileDeploymentTargets(api, game, profile, { [config.id]: config }, {}),
++    ).not.toThrow();
++    profile.modState[config.id].enabled = true;
++    expect(() =>
++      validateProfileDeploymentTargets(api, game, profile, { [config.id]: config }, {}),
++    ).toThrow(ProcessCanceled);
++  });
++});
+diff --git a/src/renderer/src/extensions/symlink_activator/index.ts b/src/renderer/src/extensions/symlink_activator/index.ts
+--- a/src/renderer/src/extensions/symlink_activator/index.ts
++++ b/src/renderer/src/extensions/symlink_activator/index.ts
+@@ -9,6 +9,7 @@
+ import * as fs from "../../util/fs";
+ import getVortexPath from "../../util/getVortexPath";
+ import type { TFunction } from "../../util/i18n";
++import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
+ import { log } from "../../util/log";
+ import { activeGameId, gameName } from "../../util/selectors";
+ import walk from "../../util/walk";
+@@ -222,7 +223,7 @@
+     return (
+       fs
+         .readlinkAsync(linkPath)
+-        .then((symlinkPath) => symlinkPath === sourcePath)
++        .then((symlinkPath) => symlinkPath === resolveCaseInsensitiveSync(sourcePath))
+         // readlink throws an "unknown" error if the file is no link at all. Super helpful
+         .catch(() => false)
+     );
