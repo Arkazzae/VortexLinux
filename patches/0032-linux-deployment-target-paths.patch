@@ -1,3 +1,131 @@
+diff --git a/src/renderer/src/extensions/mod_management/modActivation.linux.test.ts b/src/renderer/src/extensions/mod_management/modActivation.linux.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/modActivation.linux.test.ts
+@@ -0,0 +1,123 @@
++import * as nodeFs from "node:fs";
++import * as path from "node:path";
++
++import { afterEach, expect, vi } from "vitest";
++
++import { log } from "../../logging";
++import { test } from "../../test-utils/deploymentTest";
++import type { IDeploymentHarness } from "../../test-utils/deploymentTest";
++import type { IGame } from "../../types/IGame";
++import { setCompatibilityGameProvider } from "../../util/compatibilityPaths";
++import deployMods from "./modActivation";
++import type { IMod } from "./types/IMod";
++import BlacklistSet from "./util/BlacklistSet";
++
++vi.mock("../../logging", () => ({ log: vi.fn() }));
++
++const gameId = "skyrimse";
++const typeId = `${gameId}-config`;
++const relativeConfig = "Example/Saved/Config/Windows";
++
++afterEach(() => {
++  setCompatibilityGameProvider(undefined);
++  vi.unstubAllEnvs();
++  vi.mocked(log).mockClear();
++});
++
++function deploy(h: IDeploymentHarness, destination: string) {
++  return deployMods(
++    h.api,
++    gameId,
++    h.stagingDir,
++    destination,
++    [{ id: "config", installationPath: "ConfigMod", state: "installed" } as IMod],
++    h.method,
++    [],
++    h.normalize,
++    typeId,
++    new BlacklistSet([], { details: {} } as IGame, h.normalize),
++    () => "",
++  );
++}
++
++function deployingLogs(): unknown[] {
++  return vi
++    .mocked(log)
++    .mock.calls.filter(([, message]) => message === "deploying")
++    .map(([, , metadata]) => metadata);
++}
++
++test.runIf(process.platform === "linux")(
++  "deploys a Windows-only target into the selected Proton profile and logs where it went",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "config" }, modName: "ConfigMod" });
++    const root = path.dirname(h.stagingDir);
++    const local = path.join(root, "Local");
++    const prefix = path.join(root, "prefix");
++    const prefixConfig = path.join(prefix, "drive_c/users/steamuser/AppData/Local", relativeConfig);
++    nodeFs.mkdirSync(prefixConfig, { recursive: true });
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++
++    const deployed = await deploy(h, path.join(local, relativeConfig));
++
++    expect(deployed).toHaveLength(1);
++    expect(nodeFs.readFileSync(path.join(prefixConfig, "Engine.ini"), "utf8")).toBe("config");
++    // The writability check must not leave an empty copy of the target on the host.
++    expect(nodeFs.existsSync(local)).toBe(false);
++    expect(deployingLogs()).toEqual([
++      expect.objectContaining({
++        typeId,
++        destinationPath: path.join(local, relativeConfig),
++        resolvedPath: prefixConfig,
++        prefix,
++      }),
++    ]);
++  },
++);
++
++test.runIf(process.platform === "linux")(
++  "reports an unavailable profile instead of deploying to the host",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "config" }, modName: "ConfigMod" });
++    const root = path.dirname(h.stagingDir);
++    const local = path.join(root, "Local");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    setCompatibilityGameProvider(() => ({
++      environment: { WINEPREFIX: path.join(root, "missing-prefix") },
++    }));
++
++    await expect(deploy(h, path.join(local, relativeConfig))).rejects.toMatchObject({
++      code: "ENOENT",
++    });
++
++    expect(nodeFs.existsSync(local)).toBe(false);
++    expect(deployingLogs()).toEqual([
++      expect.objectContaining({
++        typeId,
++        prefix: path.join(root, "missing-prefix"),
++        targetError: expect.stringMatching(/unavailable/),
++      }),
++    ]);
++  },
++);
++
++test.runIf(process.platform === "linux")(
++  "keeps a native game's target on the host",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "Engine.ini": "config" }, modName: "ConfigMod" });
++    setCompatibilityGameProvider(() => ({ path: h.gameDir, executable: "Game.sh" }));
++
++    const deployed = await deploy(h, h.gameDir);
++
++    expect(deployed).toHaveLength(1);
++    expect(nodeFs.readFileSync(h.inGame("Engine.ini"), "utf8")).toBe("config");
++    expect(deployingLogs()).toEqual([
++      expect.objectContaining({
++        destinationPath: h.gameDir,
++        resolvedPath: h.gameDir,
++        prefix: null,
++      }),
++    ]);
++  },
++);
 diff --git a/src/renderer/src/extensions/mod_management/modActivation.ts b/src/renderer/src/extensions/mod_management/modActivation.ts
 --- a/src/renderer/src/extensions/mod_management/modActivation.ts
 +++ b/src/renderer/src/extensions/mod_management/modActivation.ts
