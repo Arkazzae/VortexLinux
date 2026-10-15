@@ -1,0 +1,64 @@
+diff --git a/src/renderer/src/extensions/mod_management/modActivation.ts b/src/renderer/src/extensions/mod_management/modActivation.ts
+--- a/src/renderer/src/extensions/mod_management/modActivation.ts
++++ b/src/renderer/src/extensions/mod_management/modActivation.ts
+@@ -1,10 +1,14 @@
+ import * as path from "path";
+ 
++import { getErrorMessageOrDefault } from "@vortex/shared";
++
+ import { log } from "../../logging";
+ import type { IExtensionApi } from "../../types/IExtensionContext";
++import { selectedGamePrefix } from "../../util/compatibilityPaths";
+ import { UserCanceled } from "../../util/CustomErrors";
+ import * as fs from "../../util/fs";
+ import type { Normalize } from "../../util/getNormalizeFunc";
++import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
+ import { truthy } from "../../util/util";
+ import { MERGED_PATH } from "./modMerging";
+ import type { IDeployedFile, IDeploymentMethod } from "./types/IDeploymentMethod";
+@@ -32,6 +36,24 @@ async function ensureWritable(api: IExtensionApi, modPath: string): Promise<void
+   );
+ }
+ 
++/**
++ * Windows-only targets such as %LOCALAPPDATA% are redirected into the selected
++ * game's Wine/Proton profile on access, so the mod type path alone does not
++ * show where deployed files end up. Report the physical target for support logs.
++ */
++function linuxDeploymentTarget(destinationPath: string): Record<string, unknown> {
++  if (process.platform !== "linux") {
++    return {};
++  }
++  let prefix: string | null | undefined;
++  try {
++    prefix = selectedGamePrefix();
++    return { prefix, resolvedPath: resolveCaseInsensitiveSync(destinationPath) };
++  } catch (err) {
++    return { prefix, targetError: getErrorMessageOrDefault(err) };
++  }
++}
++
+ /**
+  * activate a list of mod
+  *
+@@ -66,6 +88,7 @@ async function deployMods(
+     typeId,
+     installationPath,
+     destinationPath,
++    ...linuxDeploymentTarget(destinationPath),
+   });
+ 
+   try {
+diff --git a/src/renderer/src/util/fs.ts b/src/renderer/src/util/fs.ts
+--- a/src/renderer/src/util/fs.ts
++++ b/src/renderer/src/util/fs.ts
+@@ -1069,6 +1069,9 @@ export function ensureDirWritableAsync(
+   if (confirm === undefined) {
+     confirm = () => PromiseBB.resolve();
+   }
++  // fs-extra bypasses the compatibility layer; without this the writability
++  // check creates an empty copy of a Windows-only target on the Linux side.
++  dirPath = resolveCaseInsensitiveSync(dirPath);
+   const stackErr = new Error();
+   return PromiseBB.resolve(fs.ensureDir(dirPath))
+     .then(() => {
