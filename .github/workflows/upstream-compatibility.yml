@@ -132,6 +132,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       changed: ${{ steps.metadata.outputs.changed }}
+      changelog_changed: ${{ steps.metadata.outputs.changelog_changed }}
       release_needed: ${{ steps.metadata.outputs.release_needed }}
       package_version: ${{ steps.metadata.outputs.package_version }}
       package_revision: ${{ steps.metadata.outputs.package_revision }}
@@ -192,22 +193,29 @@ jobs:
           fi
 
           # Release notes come from CHANGELOG.md. An automatic Vortex update
-          # writes its own entry; anything else needs a hand-written section
-          # for the package revision, so a missing one fails here instead of
-          # after the build.
+          # writes its own section (taking any Unreleased notes with it); a
+          # package revision bumped by hand gets its section from the notes
+          # under Unreleased. Either way the section must exist here, before
+          # the long build, and finalize-source commits the result.
+          changelog_changed=false
           if [[ "$metadata_changed" == true ]]; then
             python3 scripts/changelog.py add-upstream-update \
               --revision "$package_revision" \
               --vortex "$package_version" \
               --commit "$UPSTREAM_COMMIT"
+          elif ! python3 scripts/changelog.py notes "$package_revision" >/dev/null 2>&1; then
+            if python3 scripts/changelog.py release --revision "$package_revision"; then
+              changelog_changed=true
+            else
+              printf '::error file=CHANGELOG.md::Describe %s under "## Unreleased" (or add a "## %s" section) in CHANGELOG.md before releasing it.\n' \
+                "$package_revision" "$package_revision"
+              exit 1
+            fi
           fi
-          if ! python3 scripts/changelog.py notes "$package_revision" > release-notes-body.md; then
-            printf '::error file=CHANGELOG.md::Add a "## %s" section to CHANGELOG.md before releasing it.\n' \
-              "$package_revision"
-            exit 1
-          fi
+          python3 scripts/changelog.py notes "$package_revision" > release-notes-body.md
 
           printf 'changed=%s\n' "$metadata_changed" >> "$GITHUB_OUTPUT"
+          printf 'changelog_changed=%s\n' "$changelog_changed" >> "$GITHUB_OUTPUT"
           printf 'release_needed=%s\n' "$release_needed" >> "$GITHUB_OUTPUT"
           printf 'package_version=%s\n' "$package_version" >> "$GITHUB_OUTPUT"
           printf 'package_revision=%s\n' "$package_revision" >> "$GITHUB_OUTPUT"
@@ -391,7 +399,11 @@ jobs:
           ref: master
 
       - name: Download tested package metadata
-        if: ${{ needs.prepare-release.outputs.changed == 'true' }}
+        if: >-
+          ${{
+            needs.prepare-release.outputs.changed == 'true' ||
+            needs.prepare-release.outputs.changelog_changed == 'true'
+          }}
         uses: actions/download-artifact@v5
         with:
           name: vortex-release-source
@@ -401,11 +413,13 @@ jobs:
         id: source
         env:
           METADATA_CHANGED: ${{ needs.prepare-release.outputs.changed }}
+          CHANGELOG_CHANGED: ${{ needs.prepare-release.outputs.changelog_changed }}
           PACKAGE_VERSION: ${{ needs.prepare-release.outputs.package_version }}
+          PACKAGE_REVISION: ${{ needs.prepare-release.outputs.package_revision }}
           EXPECTED_HEAD: ${{ github.sha }}
         run: |
           source_commit="$EXPECTED_HEAD"
-          if [[ "$METADATA_CHANGED" == true ]]; then
+          if [[ "$METADATA_CHANGED" == true || "$CHANGELOG_CHANGED" == true ]]; then
             remote_head="$(git ls-remote origin refs/heads/master | cut -f1)"
             local_head="$(git rev-parse HEAD)"
             if [[ "$remote_head" != "$EXPECTED_HEAD" || "$local_head" != "$EXPECTED_HEAD" ]]; then
@@ -414,18 +428,24 @@ jobs:
               exit 1
             fi
 
-            install -m644 release-source/PKGBUILD release-source/.SRCINFO \
-              release-source/CHANGELOG.md .
+            if [[ "$METADATA_CHANGED" == true ]]; then
+              install -m644 release-source/PKGBUILD release-source/.SRCINFO .
+              commit_message="Update Vortex to ${PACKAGE_VERSION}"
+            else
+              # A revision bumped by hand: file its Unreleased notes under it.
+              commit_message="Record release notes for ${PACKAGE_REVISION}"
+            fi
+            install -m644 release-source/CHANGELOG.md .
             git diff --check
             git add PKGBUILD .SRCINFO CHANGELOG.md
             if git diff --cached --quiet; then
-              echo 'Expected updated package metadata, but there is nothing to commit' >&2
+              echo 'Expected updated package metadata or changelog, but there is nothing to commit' >&2
               exit 1
             fi
 
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m "Update Vortex to ${PACKAGE_VERSION}"
+            git commit -m "$commit_message"
             git push origin HEAD:master
             source_commit="$(git rev-parse HEAD)"
           fi

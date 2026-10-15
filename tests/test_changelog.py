@@ -32,6 +32,11 @@ Intro paragraph.
 
 - Extension config paths map into the Proton profile.
 '''
+RELEASED_SAMPLE = SAMPLE.replace('## Unreleased\n\n- Pending change.\n\n', '## Unreleased\n\n')
+
+
+def revisions(text):
+    return [revision for revision, _date, _body in CHANGELOG.sections(text)]
 
 
 class ReleaseNotesTest(unittest.TestCase):
@@ -55,27 +60,52 @@ class ReleaseNotesTest(unittest.TestCase):
         text = (REPOSITORY_ROOT / 'CHANGELOG.md').read_text()
         self.assertTrue(CHANGELOG.release_notes(text, f'{version}-{release}'))
         # Newest release first, so the workflow can name the previous revision.
-        self.assertEqual(next(CHANGELOG.sections(text))[0], f'{version}-{release}')
+        self.assertEqual(revisions(text)[0], f'{version}-{release}')
+
+
+class ReleaseTest(unittest.TestCase):
+    def test_moves_unreleased_notes_into_the_new_section(self):
+        updated = CHANGELOG.release(SAMPLE, '2.8.2-4', '2026-10-16')
+        self.assertEqual(revisions(updated), ['2.8.2-4', '2.8.2-3', '2.8.2-2'])
+        self.assertEqual(CHANGELOG.release_notes(updated, '2.8.2-4'), '- Pending change.')
+        self.assertIn('## Unreleased\n\n## 2.8.2-4 - 2026-10-16\n\n- Pending change.\n\n## 2.8.2-3', updated)
+        self.assertTrue(updated.endswith('- Extension config paths map into the Proton profile.\n'))
+
+    def test_keeps_a_hand_written_section_and_refuses_an_empty_release(self):
+        self.assertEqual(CHANGELOG.release(SAMPLE, '2.8.2-3', '2026-10-16'), SAMPLE)
+        with self.assertRaisesRegex(CHANGELOG.ChangelogError, 'Nothing to release'):
+            CHANGELOG.release(RELEASED_SAMPLE, '2.8.2-4', '2026-10-16')
+        with self.assertRaisesRegex(CHANGELOG.ChangelogError, 'empty'):
+            CHANGELOG.release('## 2.8.2-4 - 2026-10-16\n\n## 2.8.2-3\n\n- x\n', '2.8.2-4', '2026-10-16')
+        with self.assertRaisesRegex(CHANGELOG.ChangelogError, 'package revision'):
+            CHANGELOG.release(SAMPLE, 'v2.8.2-4', '2026-10-16')
 
 
 class UpstreamUpdateTest(unittest.TestCase):
-    def test_inserts_below_unreleased_and_names_the_previous_revision(self):
+    def test_takes_pending_notes_with_the_automatic_update(self):
         updated = CHANGELOG.add_upstream_update(SAMPLE, '2.8.3-1', '2.8.3', COMMIT, '2026-10-20')
-        revisions = [revision for revision, _date, _body in CHANGELOG.sections(updated)]
-        self.assertEqual(revisions, ['2.8.3-1', '2.8.2-3', '2.8.2-2'])
+        self.assertEqual(revisions(updated), ['2.8.3-1', '2.8.2-3', '2.8.2-2'])
         notes = CHANGELOG.release_notes(updated, '2.8.3-1')
         self.assertIn('Automatic update to Vortex 2.8.3', notes)
-        self.assertIn('unchanged since 2.8.2-3', notes)
         self.assertIn(f'`{COMMIT}`', notes)
-        self.assertIn('## Unreleased\n\n- Pending change.\n\n## 2.8.3-1 - 2026-10-20\n', updated)
-        # Nothing else moves.
+        self.assertIn('also includes the changes recorded below.\n\n- Pending change.', notes)
+        self.assertNotIn('unchanged', notes)
+        self.assertIn('## Unreleased\n\n## 2.8.3-1 - 2026-10-20\n', updated)
         self.assertTrue(updated.endswith('- Extension config paths map into the Proton profile.\n'))
+
+    def test_says_nothing_else_changed_when_unreleased_is_empty(self):
+        updated = CHANGELOG.add_upstream_update(
+            RELEASED_SAMPLE, '2.8.3-1', '2.8.3', COMMIT, '2026-10-20'
+        )
+        notes = CHANGELOG.release_notes(updated, '2.8.3-1')
+        self.assertIn('unchanged since 2.8.2-3', notes)
+        self.assertNotIn('also includes', notes)
 
     def test_works_without_an_unreleased_section_or_releases(self):
         bare = '# Changelog\n\nIntro.\n'
         updated = CHANGELOG.add_upstream_update(bare, '2.8.3-1', '2.8.3', COMMIT, '2026-10-20')
         self.assertIn('## 2.8.3-1 - 2026-10-20', updated)
-        self.assertIn('are unchanged. Upstream commit', updated)
+        self.assertIn('are unchanged.', updated)
         only_releases = '## 2.8.2-3 - 2026-10-15\n\n- x\n'
         updated = CHANGELOG.add_upstream_update(
             only_releases, '2.8.3-1', '2.8.3', COMMIT, '2026-10-20'
@@ -107,7 +137,7 @@ class CommandLineTest(unittest.TestCase):
             [sys.executable, str(SCRIPT_PATH), *arguments], capture_output=True, text=True
         )
 
-    def test_notes_and_update_round_trip(self):
+    def test_release_update_and_notes_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'CHANGELOG.md'
             path.write_text(SAMPLE)
@@ -116,6 +146,24 @@ class CommandLineTest(unittest.TestCase):
             self.assertEqual(
                 result.stdout, '- Extension config paths map into the Proton profile.\n'
             )
+
+            result = self.run_script(
+                '--path', str(path), 'release', '--revision', '2.8.2-4', '--date', '2026-10-16'
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Released', result.stdout)
+            result = self.run_script('--path', str(path), 'notes', '2.8.2-4')
+            self.assertEqual(result.stdout, '- Pending change.\n')
+            # Running it again is a no-op, which lets the workflow retry safely.
+            result = self.run_script(
+                '--path', str(path), 'release', '--revision', '2.8.2-4', '--date', '2026-10-17'
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Keeping', result.stdout)
+            result = self.run_script('--path', str(path), 'release', '--revision', '2.8.2-5')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('Nothing to release', result.stderr)
+
             result = self.run_script(
                 '--path', str(path), 'add-upstream-update',
                 '--revision', '2.8.3-1', '--vortex', '2.8.3', '--commit', COMMIT,
@@ -124,7 +172,7 @@ class CommandLineTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             result = self.run_script('--path', str(path), 'notes', '2.8.3-1')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('Automatic update to Vortex 2.8.3', result.stdout)
+            self.assertIn('unchanged since 2.8.2-4', result.stdout)
             result = self.run_script('--path', str(path), 'notes', '9.9.9-9')
             self.assertEqual(result.returncode, 1)
             self.assertIn('no "## 9.9.9-9" section', result.stderr)

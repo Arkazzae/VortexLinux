@@ -1,10 +1,12 @@
 # Changelog
 
-What changed in each Vortex for Linux release, newest first. Each section is
-named after the package revision (`<Vortex version>-<package release>`) and the
-release workflow copies it into the GitHub release notes, so a release can only
-be published once its section exists. The unattended update job writes its own
-section when it publishes a new Vortex version without packaging changes.
+What changed in each Vortex for Linux release, newest first. Describe changes
+under *Unreleased* as they land. When `pkgrel` is bumped, the release workflow
+moves those notes into a section named after the package revision
+(`<Vortex version>-<package release>`), commits it and uses it as the GitHub
+release notes; `scripts/changelog.py release --revision <revision>` does the
+same by hand. The unattended update job writes its own section when it
+publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 

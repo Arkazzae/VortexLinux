@@ -135,7 +135,7 @@ Every change goes through the same pipeline before it can become a release:
 3. **Both packages build.** The Arch package is built in a clean Arch container, and the AppImage is built from that package.
 4. **The AppImage starts.** In a clean Ubuntu 24.04 container with Wine but no system .NET, it runs the bundled checks (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), then boots Vortex under Xvfb and waits for the main page to render.
 
-Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md), so a new revision needs its section there first.
+Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md): describe changes under *Unreleased*, and when `pkgrel` is bumped the release job files them under that revision and commits the result.
 
 Every six hours a bot also looks for a new stable Vortex. If there is one, it runs the same pipeline against it. If everything passes, the bot bumps `PKGBUILD`, adds a changelog entry marked as an automatic update and publishes the release. If anything fails, nothing changes, and the bot opens or updates an issue naming the broken stage.
 
