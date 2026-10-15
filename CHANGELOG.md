@@ -15,6 +15,10 @@ publishes a new Vortex version, taking any pending notes with it.
   through Lutris and runs modding tools with the game's Wine build. GOG and Epic
   games from Lutris' services are also found automatically when a game
   extension looks them up by store ID.
+- Games installed in a Bottles bottle are recognised the same way: a game folder
+  inside a bottle, or one holding a program added to a bottle, uses that
+  bottle as its prefix, starts through `bottles-cli` and runs tools with the
+  bottle's runner.
 
 ## 2.8.2-3 - 2026-10-15
 

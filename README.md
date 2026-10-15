@@ -97,6 +97,14 @@ with the Wine version selected for it in Lutris. Tools need a Wine build for now
 games set to Proton in Lutris can be deployed to and launched, but not run tools.
 Set `LUTRIS_BINARY` if `lutris` isn't on `PATH`.
 
+Bottles works the same way: set the game folder inside the bottle, or the folder
+of a program you added to a bottle. Vortex uses the bottle as the prefix, starts
+a program added in Bottles through `bottles-cli`, and runs tools with the
+bottle's runner, so Vortex can tell when a tool has finished. Bottles keeps
+bottles by name, so rename bottles that share a name. Flatpak Bottles only sees
+folders its sandbox allows. Set `BOTTLES_CLI_BINARY` if `bottles-cli` isn't on
+`PATH`.
+
 The separate prefix for Vortex’s own helper processes still defaults to
 `${XDG_DATA_HOME:-$HOME/.local/share}/vortex-linux/wineprefix`.
 
