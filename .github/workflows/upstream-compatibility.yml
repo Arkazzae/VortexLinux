@@ -176,6 +176,7 @@ jobs:
                 "vortex-linux-${package_version}-x86_64.pkg.tar.zst.sha256"
                 "Vortex-${package_version}-x86_64.AppImage"
                 "Vortex-${package_version}-x86_64.AppImage.sha256"
+                "Vortex-${package_version}-x86_64.AppImage.zsync"
               )
               release_needed=false
               for required_asset in "${required_assets[@]}"; do
@@ -253,6 +254,7 @@ jobs:
       checksum_file: ${{ steps.package.outputs.checksum_file }}
       appimage_archive: ${{ steps.appimage.outputs.appimage_archive }}
       appimage_checksum: ${{ steps.appimage.outputs.appimage_checksum }}
+      appimage_zsync: ${{ steps.appimage.outputs.appimage_zsync }}
     steps:
       - name: Check out packaging repository
         uses: actions/checkout@v6
@@ -278,6 +280,9 @@ jobs:
           fi
 
           pacman -Syu --needed --noconfirm "${build_dependencies[@]}"
+          # build-appimage.sh validates the AppStream metadata when appstreamcli
+          # is available; the package itself does not need it.
+          pacman -S --needed --noconfirm appstream
           useradd --create-home --shell /bin/bash builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           df -h "$GITHUB_WORKSPACE"
@@ -311,6 +316,7 @@ jobs:
             dist/${{ steps.package.outputs.checksum_file }}
             dist/${{ steps.appimage.outputs.appimage_archive }}
             dist/${{ steps.appimage.outputs.appimage_checksum }}
+            dist/${{ steps.appimage.outputs.appimage_zsync }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -431,6 +437,7 @@ jobs:
       CHECKSUM_FILE: ${{ needs.build-package.outputs.checksum_file }}
       APPIMAGE_ARCHIVE: ${{ needs.build-package.outputs.appimage_archive }}
       APPIMAGE_CHECKSUM: ${{ needs.build-package.outputs.appimage_checksum }}
+      APPIMAGE_ZSYNC: ${{ needs.build-package.outputs.appimage_zsync }}
       UPSTREAM_COMMIT: ${{ needs.compatibility.outputs.upstream_commit }}
       SOURCE_COMMIT: ${{ needs.finalize-source.outputs.source_commit }}
     steps:
@@ -474,6 +481,10 @@ jobs:
           chmod +x ${APPIMAGE_ARCHIVE}
           ./${APPIMAGE_ARCHIVE}
           \`\`\`
+
+          The AppImage embeds update information, so Gear Lever, AppImageLauncher
+          and \`appimageupdatetool\` can update it in place from this repository's
+          latest release using \`${APPIMAGE_ZSYNC}\`.
           EOF
 
           # Release tags include pkgrel and are immutable. Reusing a package
@@ -504,6 +515,7 @@ jobs:
               "dist/$CHECKSUM_FILE" \
               "dist/$APPIMAGE_ARCHIVE" \
               "dist/$APPIMAGE_CHECKSUM" \
+              "dist/$APPIMAGE_ZSYNC" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release edit "$RELEASE_TAG" \
@@ -528,6 +540,7 @@ jobs:
               "dist/$CHECKSUM_FILE" \
               "dist/$APPIMAGE_ARCHIVE" \
               "dist/$APPIMAGE_CHECKSUM" \
+              "dist/$APPIMAGE_ZSYNC" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_COMMIT" \
               --title "Vortex for Linux ${PACKAGE_REVISION}" \

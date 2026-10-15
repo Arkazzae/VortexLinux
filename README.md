@@ -66,7 +66,9 @@ No FUSE 2 on your system? Run it as:
 ./Vortex-*.AppImage --appimage-extract-and-run
 ```
 
-AppImages don't add themselves to your app menu or register as the `nxm://` handler. AppImageLauncher handles that, or write a desktop entry yourself.
+AppImages don't add themselves to your app menu or register as the `nxm://` handler. Gear Lever or AppImageLauncher handle that, or write a desktop entry yourself.
+
+The AppImage embeds [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) information pointing at this repository's latest release, so Gear Lever, AppImageLauncher and `appimageupdatetool` can check for and apply updates in place. Vortex also shows a notification when a newer Linux release is published; the older builds from `recipes/` stay pinned and never update.
 
 ## Before you add your first game
 

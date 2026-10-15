@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for the AppImage. build-appimage.sh replaces the
+  @PACKAGE_REVISION@ and @RELEASE_DATE@ placeholders with the packaged release.
+-->
+<component type="desktop-application">
+  <id>com.nexusmods.vortex</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <name>Vortex</name>
+  <summary>Manage game modifications from Nexus Mods</summary>
+  <description>
+    <p>
+      Community build of the Vortex mod manager for Linux. It packages the
+      upstream Vortex release together with compatibility patches for games that
+      run through Wine and Proton, including Steam and Heroic installations.
+    </p>
+    <p>
+      This build is maintained by the VortexLinux project and is not affiliated
+      with or supported by Nexus Mods. Report problems with the Linux build on
+      its own issue tracker.
+    </p>
+  </description>
+
+  <developer id="io.github.arkazzae">
+    <name>VortexLinux contributors</name>
+  </developer>
+
+  <url type="homepage">https://github.com/Arkazzae/VortexLinux</url>
+  <url type="bugtracker">https://github.com/Arkazzae/VortexLinux/issues</url>
+  <url type="vcs-browser">https://github.com/Arkazzae/VortexLinux</url>
+
+  <launchable type="desktop-id">com.nexusmods.vortex.desktop</launchable>
+
+  <provides>
+    <binary>vortex</binary>
+    <mediatype>x-scheme-handler/nxm</mediatype>
+  </provides>
+
+  <categories>
+    <category>Game</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>mods</keyword>
+    <keyword>modding</keyword>
+    <keyword>nexus</keyword>
+    <keyword>games</keyword>
+    <keyword>mod manager</keyword>
+  </keywords>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="@PACKAGE_REVISION@" date="@RELEASE_DATE@">
+      <url type="details">https://github.com/Arkazzae/VortexLinux/releases/tag/v@PACKAGE_REVISION@</url>
+    </release>
+  </releases>
+</component>

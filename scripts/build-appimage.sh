@@ -11,8 +11,12 @@ readonly APPIMAGETOOL_SHA256='b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b
 readonly DOTNET_RUNTIME_VERSION='9.0.18'
 readonly DOTNET_RUNTIME_URL="https://builds.dotnet.microsoft.com/dotnet/Runtime/${DOTNET_RUNTIME_VERSION}/dotnet-runtime-${DOTNET_RUNTIME_VERSION}-linux-x64.tar.gz"
 readonly DOTNET_RUNTIME_SHA512='97eb89a5a3781b9761e2a850996912ae81b96996089c78abcebbc441113457088bfcbd7cf1fa97d3036f7ac8fe22c7d30e043e93ecafc910f07b73317c73bad5'
+# GitHub repository whose latest release AppImageUpdate-style tools (Gear Lever,
+# AppImageLauncher, appimageupdatetool) check for a newer AppImage.
+readonly RELEASE_REPOSITORY="${VORTEX_RELEASE_REPOSITORY:-${GITHUB_REPOSITORY:-Arkazzae/VortexLinux}}"
+readonly METAINFO_NAME='com.nexusmods.vortex.metainfo.xml'
 
-for command_name in bsdtar curl file install ldd patchelf sha256sum sha512sum; do
+for command_name in bsdtar curl file install ldd patchelf readelf sha256sum sha512sum; do
   if ! command -v "$command_name" >/dev/null; then
     printf 'Required build command is missing: %s\n' "$command_name" >&2
     exit 2
@@ -37,6 +41,14 @@ if [[ "$package_name" != vortex-linux || -z "$package_revision" || \
     "$package_name" "$package_revision" "$package_arch" >&2
   exit 2
 fi
+
+if [[ ! "$RELEASE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  printf 'Unsupported release repository: %s\n' "$RELEASE_REPOSITORY" >&2
+  exit 2
+fi
+# https://github.com/AppImage/AppImageSpec/blob/master/draft.md#github-releases
+update_information="gh-releases-zsync|${RELEASE_REPOSITORY%%/*}|${RELEASE_REPOSITORY#*/}|latest|Vortex-*-x86_64.AppImage.zsync"
+release_date="$(date -u +%Y-%m-%d)"
 
 work_directory="$(mktemp -d "${TMPDIR:-/tmp}/vortex-appimage.XXXXXX")"
 cleanup() {
@@ -106,15 +118,33 @@ install -m644 \
   "$app_directory/vortex.png"
 ln -s vortex.png "$app_directory/.DirIcon"
 
+# The package revision tells AppImage managers apart from rebuilds of the same
+# Vortex version.
 sed \
   -e 's/^Exec=.*/Exec=AppRun %u/' \
-  -e 's/^X-AppImage-Version=.*/X-AppImage-Version='"$release_version"'/' \
+  -e 's/^X-AppImage-Version=.*/X-AppImage-Version='"$package_revision"'/' \
   "$app_directory/usr/share/applications/com.nexusmods.vortex.desktop" \
   > "$app_directory/com.nexusmods.vortex.desktop"
 
 if ! grep -q '^X-AppImage-Version=' "$app_directory/com.nexusmods.vortex.desktop"; then
-  printf 'X-AppImage-Version=%s\n' "$release_version" \
+  printf 'X-AppImage-Version=%s\n' "$package_revision" \
     >> "$app_directory/com.nexusmods.vortex.desktop"
+fi
+
+metainfo_path="$app_directory/usr/share/metainfo/$METAINFO_NAME"
+install -dm755 "$(dirname "$metainfo_path")"
+sed \
+  -e "s/@PACKAGE_REVISION@/${package_revision}/g" \
+  -e "s/@RELEASE_DATE@/${release_date}/g" \
+  "$REPOSITORY_ROOT/appimage/$METAINFO_NAME" > "$metainfo_path"
+if grep -q '@[A-Z_]*@' "$metainfo_path"; then
+  printf 'The AppStream metadata still contains placeholders\n' >&2
+  exit 1
+fi
+if command -v appstreamcli >/dev/null; then
+  appstreamcli validate --no-net "$metainfo_path"
+else
+  printf 'appstreamcli is not installed; skipping AppStream validation\n' >&2
 fi
 
 curl --fail --location --silent --show-error \
@@ -124,12 +154,31 @@ chmod 755 "$tool_path"
 
 install -dm755 "$OUTPUT_DIRECTORY"
 appimage_archive="Vortex-${release_version}-x86_64.AppImage"
-ARCH=x86_64 "$tool_path" --appimage-extract-and-run \
-  "$app_directory" "$OUTPUT_DIRECTORY/$appimage_archive"
+appimage_zsync="${appimage_archive}.zsync"
+# appimagetool runs its bundled zsyncmake in the working directory, so build
+# from the output directory to keep the .zsync next to the AppImage.
+(
+  cd "$OUTPUT_DIRECTORY"
+  rm -f -- "$appimage_zsync"
+  ARCH=x86_64 "$tool_path" --appimage-extract-and-run \
+    --updateinformation "$update_information" \
+    "$app_directory" "$appimage_archive"
+)
 chmod 755 "$OUTPUT_DIRECTORY/$appimage_archive"
 
 if [[ "$(file -b "$OUTPUT_DIRECTORY/$appimage_archive")" != *'ELF 64-bit'* ]]; then
   printf 'The generated AppImage is not an x86_64 ELF executable\n' >&2
+  exit 1
+fi
+
+if ! readelf --string-dump=.upd_info --wide "$OUTPUT_DIRECTORY/$appimage_archive" \
+    | grep -Fq -- "$update_information"; then
+  printf 'The generated AppImage does not embed the update information\n' >&2
+  exit 1
+fi
+if [[ ! -s "$OUTPUT_DIRECTORY/$appimage_zsync" ]] || \
+    ! grep -aFxq "URL: ${appimage_archive}" "$OUTPUT_DIRECTORY/$appimage_zsync"; then
+  printf 'appimagetool did not generate %s for the AppImage\n' "$appimage_zsync" >&2
   exit 1
 fi
 
@@ -142,6 +191,7 @@ fi
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'appimage_archive=%s\n' "$appimage_archive" >> "$GITHUB_OUTPUT"
   printf 'appimage_checksum=%s.sha256\n' "$appimage_archive" >> "$GITHUB_OUTPUT"
+  printf 'appimage_zsync=%s\n' "$appimage_zsync" >> "$GITHUB_OUTPUT"
 fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -151,6 +201,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 - Archive: \`${appimage_archive}\`
 - Size: \`$(du -h "$OUTPUT_DIRECTORY/$appimage_archive" | cut -f1)\`
 - Bundled Linux .NET runtime: \`${DOTNET_RUNTIME_VERSION}\`
+- Update information: \`${update_information}\`
+- zsync: \`${appimage_zsync}\`
 EOF
 fi
 
