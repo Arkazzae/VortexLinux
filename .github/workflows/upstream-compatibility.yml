@@ -15,6 +15,7 @@ on:
       - "vortex.sh"
       - "vortex.desktop"
       - "README.md"
+      - "CHANGELOG.md"
       - "LICENSE"
   pull_request:
     paths:
@@ -28,6 +29,7 @@ on:
       - "vortex.sh"
       - "vortex.desktop"
       - "README.md"
+      - "CHANGELOG.md"
       - "LICENSE"
   schedule:
     - cron: "23 */6 * * *"
@@ -189,6 +191,22 @@ jobs:
             fi
           fi
 
+          # Release notes come from CHANGELOG.md. An automatic Vortex update
+          # writes its own entry; anything else needs a hand-written section
+          # for the package revision, so a missing one fails here instead of
+          # after the build.
+          if [[ "$metadata_changed" == true ]]; then
+            python3 scripts/changelog.py add-upstream-update \
+              --revision "$package_revision" \
+              --vortex "$package_version" \
+              --commit "$UPSTREAM_COMMIT"
+          fi
+          if ! python3 scripts/changelog.py notes "$package_revision" > release-notes-body.md; then
+            printf '::error file=CHANGELOG.md::Add a "## %s" section to CHANGELOG.md before releasing it.\n' \
+              "$package_revision"
+            exit 1
+          fi
+
           printf 'changed=%s\n' "$metadata_changed" >> "$GITHUB_OUTPUT"
           printf 'release_needed=%s\n' "$release_needed" >> "$GITHUB_OUTPUT"
           printf 'package_version=%s\n' "$package_version" >> "$GITHUB_OUTPUT"
@@ -201,6 +219,8 @@ jobs:
           path: |
             PKGBUILD
             .SRCINFO
+            CHANGELOG.md
+            release-notes-body.md
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
@@ -394,9 +414,10 @@ jobs:
               exit 1
             fi
 
-            install -m644 release-source/PKGBUILD release-source/.SRCINFO .
+            install -m644 release-source/PKGBUILD release-source/.SRCINFO \
+              release-source/CHANGELOG.md .
             git diff --check
-            git add PKGBUILD .SRCINFO
+            git add PKGBUILD .SRCINFO CHANGELOG.md
             if git diff --cached --quiet; then
               echo 'Expected updated package metadata, but there is nothing to commit' >&2
               exit 1
@@ -451,13 +472,23 @@ jobs:
         working-directory: dist
         run: sha256sum --check "$CHECKSUM_FILE" "$APPIMAGE_CHECKSUM"
 
+      - name: Download release notes
+        uses: actions/download-artifact@v5
+        with:
+          name: vortex-release-source
+          path: release-source
+
       - name: Publish the latest release
         id: release
         env:
           RELEASE_TAG: v${{ needs.build-package.outputs.package_revision }}
         run: |
           cat > release-notes.md <<EOF
-          Vortex for Linux, built after the compatibility suite passed.
+          $(cat release-source/release-notes-body.md)
+
+          ## Build
+
+          Built after the compatibility suite passed.
 
           - Version: \`${PACKAGE_VERSION}\`
           - Package revision: \`${PACKAGE_REVISION}\`

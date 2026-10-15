@@ -4,20 +4,28 @@ on:
   push:
     paths:
       - "appimage/**"
+      - "CHANGELOG.md"
+      - "PKGBUILD"
       - "scripts/build-appimage.sh"
       - "scripts/build-version.py"
+      - "scripts/changelog.py"
       - "tests/test_appimage_metainfo.py"
       - "tests/test_build_version.py"
+      - "tests/test_changelog.py"
       - "tests/test_legacy_appimage_ui.py"
       - "recipes/**"
       - ".github/workflows/build-version*.yml"
   pull_request:
     paths:
       - "appimage/**"
+      - "CHANGELOG.md"
+      - "PKGBUILD"
       - "scripts/build-appimage.sh"
       - "scripts/build-version.py"
+      - "scripts/changelog.py"
       - "tests/test_appimage_metainfo.py"
       - "tests/test_build_version.py"
+      - "tests/test_changelog.py"
       - "tests/test_legacy_appimage_ui.py"
       - "recipes/**"
       - ".github/workflows/build-version*.yml"
@@ -41,6 +49,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends appstream
       - name: Test AppImage metadata
         run: python3 -m unittest discover -s tests -p 'test_appimage_metainfo.py' -v
+      - name: Test changelog helper
+        run: python3 -m unittest discover -s tests -p 'test_changelog.py' -v
       - name: Check maintained legacy recipe exports
         run: |
           for version in 1.16.9 2.6.2; do

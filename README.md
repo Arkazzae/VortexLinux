@@ -39,7 +39,7 @@ Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension
 
 ## Install
 
-Grab the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest).
+Grab the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest). What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Arch
 
