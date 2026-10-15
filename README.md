@@ -128,44 +128,28 @@ You'll find the files in `dist/versions/2.6.2/artifacts/`.
 
 ## How it's tested
 
-CI applies every patch, runs the affected tests, builds and tests native LOOT, and typechecks the renderer and plugin management. Changes on `master` build and publish both release formats only when that package revision is missing or its release files are incomplete.
+Every change goes through the same pipeline before it can become a release:
 
-Every six hours, an unattended update job checks the newest stable upstream Vortex release. When it finds one, it applies the patches, runs their tests and renderer typechecking, builds both release formats, and boots the AppImage in a clean Ubuntu container. Only after every validation stage succeeds does the bot update `PKGBUILD` / `.SRCINFO` on `master` and publish the release. A validation or build failure leaves `master` and the current release untouched. Any failure opens or updates one issue with the broken stage; an interrupted publication is retried by the next scheduled run.
+1. **The patches apply.** CI checks out the pinned Vortex commit and applies every patch in order.
+2. **The tests pass.** It runs the tests that ship with the patches, typechecks the renderer, and builds and tests the native LOOT binding.
+3. **Both packages build.** The Arch package is built in a clean Arch container, and the AppImage is built from that package.
+4. **The AppImage starts.** In a clean Ubuntu 24.04 container with Wine but no system .NET, it runs the bundled checks (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), then boots Vortex under Xvfb and waits for the main page to render.
 
-Before release, the AppImage is checked in a clean Ubuntu 24.04 container with
-Wine and desktop libraries, without system .NET. The check runs the bundled
-runtime probe, checks the bundled Windows .NET 6/8/10 inventory through Wine,
-exercises an XML FOMOD installer, sorts fixture plugins with native
-LOOT, and checks INI writes, prefix selection, Heroic discovery, tool arguments and
-hardlink purge. It then starts Vortex under Xvfb and waits for its main page to
-render.
+Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md), so a new revision needs its section there first.
 
-These fixtures do not test a real game launch, Steam authentication, Flatpak
-permissions, every FOMOD dialog or a complete collection install. The game list
-above records earlier reports; it is not a test matrix for each new build.
+Every six hours a bot also looks for a new stable Vortex. If there is one, it runs the same pipeline against it. If everything passes, the bot bumps `PKGBUILD`, adds a changelog entry marked as an automatic update and publishes the release. If anything fails, nothing changes, and the bot opens or updates an issue naming the broken stage.
 
-Run the same artifact check locally:
+What this does not cover: launching a real game, Steam login, Flatpak permissions, every FOMOD dialog, or installing a whole collection. The game list above is what people reported working, not a test matrix.
+
+### Run it yourself
 
 ```sh
-scripts/test-appimage.sh dist/Vortex-*.AppImage
+scripts/test-appimage.sh dist/Vortex-*.AppImage             # the AppImage check
+scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against the newest Vortex
+scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite (needs Rust for libloot)
 ```
 
-And test a new upstream release:
-
-```sh
-scripts/check-upstream-compatibility.sh --ref latest --keep
-```
-
-`--ref pinned` checks patch application against the pinned version. To run the
-regression suite, keep the prepared source, install its dependencies and use:
-
-```sh
-scripts/run-upstream-tests.sh /path/to/patched-vortex
-```
-
-The suite also needs Rust to build the pinned libloot binding. See
-[the comparison notes](docs/linux-project-comparison.md) for the projects reviewed
-and the remaining gaps.
+`--ref pinned` checks the patches against the pinned version instead, and `--keep` keeps the prepared source for the test suite.
 
 ## Something broken?
 
