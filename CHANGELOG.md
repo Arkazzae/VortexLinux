@@ -10,6 +10,12 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Games installed through Lutris' Wine runner are recognised: point Vortex at
+  the game folder and it deploys into the game's Lutris prefix, starts the game
+  through Lutris and runs modding tools with the game's Wine build. GOG and Epic
+  games from Lutris' services are also found automatically when a game
+  extension looks them up by store ID.
+
 ## 2.8.2-3 - 2026-10-15
 
 - The AppImage embeds AppImageUpdate information and every release now ships a
