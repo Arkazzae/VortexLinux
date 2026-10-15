@@ -87,7 +87,7 @@ diff --git a/src/renderer/src/util/Lutris.test.ts b/src/renderer/src/util/Lutris
 new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/util/Lutris.test.ts
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,400 @@
 +import * as fs from "node:fs";
 +import * as os from "node:os";
 +import * as path from "node:path";
@@ -320,6 +320,27 @@ new file mode 100644
 +      game: { exe: "drive_c/Program Files (x86)/Heroes of the Storm/HeroesSwitcher.exe", prefix },
 +    });
 +    expect(findLutrisLaunchGame({ path: hots, store: "lutris" })?.id).toBe(2);
++  });
++
++  it("matches a game folder linked into the prefix from another disk", async () => {
++    const prefix = prefixAt(path.join(home, "Games/battlenet"));
++    const disk = path.join(home, "disk/Games/Heroes of the Storm");
++    fs.mkdirSync(disk, { recursive: true });
++    fs.writeFileSync(path.join(disk, "HeroesSwitcher.exe"), "");
++    const linked = path.join(prefix, "drive_c/Program Files (x86)/Heroes of the Storm");
++    fs.mkdirSync(path.dirname(linked), { recursive: true });
++    fs.symlinkSync(disk, linked);
++    database([
++      { id: 2, name: "Heroes of the Storm", slug: "hots", directory: prefix, configpath: "hots-1" },
++    ]);
++    yaml(path.join(games, "hots-1.yml"), {
++      game: { exe: "drive_c/Program Files (x86)/Heroes of the Storm/HeroesSwitcher.exe", prefix },
++    });
++    expect(await new LutrisStore().identifyGame(linked)).toBe(true);
++    expect(lutrisPrefix({ path: linked, store: "lutris" })).toBe(prefix);
++    expect(findLutrisLaunchGame({ path: linked, store: "lutris" })?.id).toBe(2);
++    // The resolved folder on the other disk is the same game.
++    expect(lutrisPrefix({ path: disk, store: "lutris" })).toBe(prefix);
 +  });
 +
 +  it("refuses to choose between different prefixes and tolerates a prefix not created yet", () => {
@@ -636,7 +657,7 @@ diff --git a/src/renderer/src/util/linux/lutris.ts b/src/renderer/src/util/linux
 new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/util/linux/lutris.ts
-@@ -0,0 +1,326 @@
+@@ -0,0 +1,349 @@
 +import * as fs from "node:fs";
 +import * as os from "node:os";
 +import * as path from "node:path";
@@ -670,6 +691,10 @@ new file mode 100644
 +  directory?: string;
 +  prefix?: string;
 +  exe?: string;
++  /** Prefix and directory, as configured and resolved, for matching game folders. */
++  locations: string[];
++  /** The executable, as configured and resolved. */
++  exePaths: string[];
 +  wineVersion?: string;
 +  env: Record<string, string>;
 +  root: LutrisRoot;
@@ -728,6 +753,21 @@ new file mode 100644
 +    relative === "" ||
 +    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 +  );
++}
++
++/**
++ * A path as configured and with symlinks resolved. Game folders are often
++ * linked into a prefix from another disk, so either form may be the one that
++ * lies inside the prefix.
++ */
++function aliases(input: string): string[] {
++  const resolved = path.resolve(input);
++  const canonical = canonicalPath(input);
++  return resolved === canonical ? [resolved] : [resolved, canonical];
++}
++
++function insideAny(roots: string[], candidates: string[]): boolean {
++  return roots.some((root) => candidates.some((candidate) => isInside(root, candidate)));
 +}
 +
 +interface LutrisRow {
@@ -815,6 +855,10 @@ new file mode 100644
 +        directory: directory && canonicalPath(directory),
 +        prefix: prefix && canonicalPath(prefix),
 +        exe: exe && canonicalPath(exe),
++        locations: [prefix, directory]
++          .filter((entry): entry is string => entry !== undefined)
++          .flatMap(aliases),
++        exePaths: exe ? aliases(exe) : [],
 +        wineVersion:
 +          typeof config.wine?.version === "string"
 +            ? config.wine.version
@@ -829,12 +873,12 @@ new file mode 100644
 +  return games;
 +}
 +
-+/** Lutris games whose prefix or install directory contains the given game folder. */
++/** Lutris games whose prefix or install directory contains the game folder, or that start an executable inside it. */
 +export function matchLutrisGames(gamePath: string | undefined): LutrisGame[] {
 +  if (!gamePath) return [];
-+  const target = canonicalPath(gamePath);
-+  return readLutrisGames().filter((entry) =>
-+    [entry.prefix, entry.directory].some((root) => root !== undefined && isInside(root, target)),
++  const targets = aliases(gamePath);
++  return readLutrisGames().filter(
++    (entry) => insideAny(entry.locations, targets) || insideAny(targets, entry.exePaths),
 +  );
 +}
 +
@@ -878,9 +922,9 @@ new file mode 100644
 + */
 +export function findLutrisLaunchGame(game: CompatibilityGame): LutrisGame | undefined {
 +  if (!game.path) return undefined;
-+  const target = canonicalPath(game.path);
-+  const candidates = matchLutrisGames(game.path).filter(
-+    (entry) => entry.exe !== undefined && isInside(target, entry.exe),
++  const targets = aliases(game.path);
++  const candidates = matchLutrisGames(game.path).filter((entry) =>
++    insideAny(targets, entry.exePaths),
 +  );
 +  return candidates.length === 1 ? candidates[0] : undefined;
 +}

@@ -90,10 +90,11 @@ Launch it once before scanning for games. Linux-native Heroic games keep their
 native configuration paths.
 
 Lutris games that use its Wine runner work too. If Vortex doesn't find the game
-by itself, set its folder manually; Vortex recognises that it belongs to Lutris,
-uses the game's Lutris prefix, starts it through Lutris and runs tools with the
-Wine version selected for it in Lutris. Tools need a Wine build for now; games
-set to Proton in Lutris can be deployed to and launched, but not run tools.
+by itself, set its folder manually, as it appears inside the Lutris prefix (also
+when that folder is a symlink to another disk). Vortex recognises that it belongs
+to Lutris, uses the game's Lutris prefix, starts it through Lutris and runs tools
+with the Wine version selected for it in Lutris. Tools need a Wine build for now;
+games set to Proton in Lutris can be deployed to and launched, but not run tools.
 Set `LUTRIS_BINARY` if `lutris` isn't on `PATH`.
 
 The separate prefix for Vortex’s own helper processes still defaults to
