@@ -5,7 +5,7 @@ pkgver=1.16.9
 pkgrel=1
 pkgdesc="Vortex 1.16.9 with Linux compatibility patches"
 arch=('x86_64')
-url="https://github.com/Arkazzae/vortex-linux"
+url="https://github.com/Arkazzae/VortexLinux"
 license=('GPL-3.0-only')
 
 depends=(

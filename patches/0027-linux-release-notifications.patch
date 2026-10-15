@@ -251,10 +251,10 @@ index 0000000..905e57c
 +  it("uses only this project's API and constructs the release-page URL from a valid tag", async () => {
 +    expect(await fetchLinuxRelease()).toEqual({
 +      version: "2.7.1-2",
-+      url: "https://github.com/Arkazzae/vortex-linux/releases/tag/v2.7.1-2",
++      url: "https://github.com/Arkazzae/VortexLinux/releases/tag/v2.7.1-2",
 +    });
 +    expect(fetchMock).toHaveBeenCalledWith(
-+      "https://api.github.com/repos/Arkazzae/vortex-linux/releases/latest",
++      "https://api.github.com/repos/Arkazzae/VortexLinux/releases/latest",
 +      expect.objectContaining({ credentials: "omit", signal: expect.any(AbortSignal) }),
 +    );
 +  });
@@ -337,7 +337,7 @@ index 0000000..905e57c
 +    expect(notification.actions![0].title).toBe("View release");
 +    notification.actions![0].action(vi.fn());
 +    expect(openUrl).toHaveBeenCalledWith(
-+      "https://github.com/Arkazzae/vortex-linux/releases/tag/v2.7.1-2",
++      "https://github.com/Arkazzae/VortexLinux/releases/tag/v2.7.1-2",
 +    );
 +    await vi.advanceTimersByTimeAsync(4 * 60 * 60 * 1000);
 +    await check();
@@ -424,8 +424,8 @@ index 0000000..05dc6cf
 +import { log } from "../../logging";
 +import type { IExtensionApi, IExtensionContext } from "../../types/IExtensionContext";
 +
-+export const LINUX_RELEASES_URL = "https://github.com/Arkazzae/vortex-linux/releases";
-+const RELEASE_API = "https://api.github.com/repos/Arkazzae/vortex-linux/releases/latest";
++export const LINUX_RELEASES_URL = "https://github.com/Arkazzae/VortexLinux/releases";
++const RELEASE_API = "https://api.github.com/repos/Arkazzae/VortexLinux/releases/latest";
 +const UPDATE_NOTIFICATION = "vortex-linux-update-available";
 +const CHECK_NOTIFICATION = "vortex-linux-update-check";
 +const CHECK_INTERVAL = 4 * 60 * 60 * 1000;

@@ -1,6 +1,6 @@
 # Vortex for Linux
 
-[![Build status](https://github.com/Arkazzae/vortex-linux/actions/workflows/upstream-compatibility.yml/badge.svg)](https://github.com/Arkazzae/vortex-linux/actions/workflows/upstream-compatibility.yml)
+[![Build status](https://github.com/Arkazzae/VortexLinux/actions/workflows/upstream-compatibility.yml/badge.svg)](https://github.com/Arkazzae/VortexLinux/actions/workflows/upstream-compatibility.yml)
 
 ![The folder Skyrim reads through Proton, C:\users\steamuser\Documents\My Games\Skyrim Special Edition, turns into the folder Vortex for Linux writes to: ~/.local/share/Steam/steamapps/compatdata/489830/pfx/drive_c/users/steamuser/Documents/My Games/Skyrim Special Edition](docs/hero.webp)
 
@@ -39,7 +39,7 @@ Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension
 
 ## Install
 
-Grab the [latest release](https://github.com/Arkazzae/vortex-linux/releases/latest).
+Grab the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest).
 
 ### Arch
 
@@ -93,7 +93,7 @@ The separate prefix for Vortex’s own helper processes still defaults to
 ## Building from source (Arch)
 
 ```sh
-git clone https://github.com/Arkazzae/vortex-linux.git
+git clone https://github.com/Arkazzae/VortexLinux.git
 cd vortex-linux
 scripts/prepare-arch-build.sh
 cd dist/arch-build
@@ -111,8 +111,8 @@ prepares this directory automatically.
 ### Older Vortex versions
 
 We support **1.16.9** and **2.6.2** for collections that need an older Vortex,
-alongside the [latest release](https://github.com/Arkazzae/vortex-linux/releases/latest).
-Need another version? [Open an issue](https://github.com/Arkazzae/vortex-linux/issues/new)
+alongside the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest).
+Need another version? [Open an issue](https://github.com/Arkazzae/VortexLinux/issues/new)
 and tell us which version your collection needs.
 
 To build one, fork this repo and run **Actions → Build a selected Vortex version**,

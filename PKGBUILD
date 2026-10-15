@@ -5,7 +5,7 @@ pkgver=2.8.2
 pkgrel=2
 pkgdesc="Community build of Vortex with generic Linux compatibility patches"
 arch=('x86_64')
-url="https://github.com/Arkazzae/vortex-linux"
+url="https://github.com/Arkazzae/VortexLinux"
 license=('GPL-3.0-only')
 
 depends=(
