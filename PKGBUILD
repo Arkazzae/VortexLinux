@@ -137,6 +137,7 @@ _patches=(
   '0031-linux-deployment-preflight.patch'
   '0032-linux-deployment-target-paths.patch'
   '0033-linux-symlinked-extension-paths.patch'
+  '0034-linux-case-only-platform-paths.patch'
 )
 
 source=(
@@ -172,6 +173,7 @@ sha512sums=(
   "$_libloot_sha512"
   # All following local files are versioned together with this PKGBUILD, so
   # hashing them only duplicates Git integrity.
+  'SKIP'
   'SKIP'
   'SKIP'
   'SKIP'
