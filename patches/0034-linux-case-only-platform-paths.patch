@@ -1,0 +1,276 @@
+diff --git a/src/renderer/src/util/linuxCompatibility.test.ts b/src/renderer/src/util/linuxCompatibility.test.ts
+index 4821f76..12f94eb 100644
+--- a/src/renderer/src/util/linuxCompatibility.test.ts
++++ b/src/renderer/src/util/linuxCompatibility.test.ts
+@@ -3,7 +3,7 @@ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+ 
+-import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ import {
+   filterSuccessfulWineStderr,
+@@ -27,6 +27,7 @@ describe.runIf(process.platform === "linux")("linuxCompatibility", () => {
+   });
+ 
+   afterEach(() => {
++    vi.unstubAllEnvs();
+     fs.rmSync(tempDir, { force: true, recursive: true });
+     if (previousRuntimeRoot === undefined) {
+       delete process.env.VORTEX_DOTNET_WIN_ROOT;
+@@ -60,6 +61,40 @@ describe.runIf(process.platform === "linux")("linuxCompatibility", () => {
+     ).toBe(path.join(plugins, "new.dll"));
+   });
+ 
++  // Documents/Shared exists in each prefix, so a path below the host's
++  // Documents/Shared is a candidate for the Wine user-folder mapping.
++  function sharedDocumentsInPrefixes(count: number): string {
++    const documents = path.join(tempDir, "Documents");
++    fs.mkdirSync(path.join(documents, "Shared"), { recursive: true });
++    const prefixes = Array.from({ length: count }, (_, idx) => {
++      const prefix = path.join(tempDir, `pfx${idx}`);
++      fs.mkdirSync(path.join(prefix, "drive_c", "users", "steamuser", "Documents", "Shared"), {
++        recursive: true,
++      });
++      return prefix;
++    });
++    vi.stubEnv("HOME", tempDir);
++    vi.stubEnv("VORTEX_LINUX_DOCUMENTS", documents);
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", prefixes.join(path.delimiter));
++    return documents;
++  }
++
++  it("keeps a matched host path that does not resolve, such as a dangling link", () => {
++    const documents = sharedDocumentsInPrefixes(1);
++    const link = path.join(documents, "Shared", "link");
++    fs.symlinkSync(path.join(tempDir, "missing"), link);
++
++    expect(resolveCaseInsensitiveSync(path.join(documents, "shared", "link"))).toBe(link);
++  });
++
++  it("falls back to the requested path when mapping the corrected path fails", () => {
++    sharedDocumentsInPrefixes(2);
++    // Only the corrected spelling falls under the mapped Documents folder.
++    const requested = path.join(tempDir, "documents", "Shared", "new.txt");
++
++    expect(resolveCaseInsensitiveSync(requested)).toBe(requested);
++  });
++
+   it("maps local absolute arguments into Wine's Z drive", () => {
+     const localPath = path.join(tempDir, "Data", "input.pak");
+     fs.mkdirSync(path.dirname(localPath));
+diff --git a/src/renderer/src/util/linuxCompatibility.ts b/src/renderer/src/util/linuxCompatibility.ts
+index 1be0938..763f720 100644
+--- a/src/renderer/src/util/linuxCompatibility.ts
++++ b/src/renderer/src/util/linuxCompatibility.ts
+@@ -80,42 +80,64 @@ function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEn
+   return result;
+ }
+ 
+-export function resolveCaseInsensitiveSync(input: string): string {
+-  if (process.platform !== "linux" || !path.isAbsolute(input)) return input;
+-  input = resolveSelectedWindowsUserPathSync(input);
+-  if (fs.existsSync(input)) return input;
+-
++// Walks input one part at a time, matching each against the directory listing
++// case-insensitively. complete is false when it stopped early: a part doesn't
++// exist (the rest keeps the casing of the prefix that does) or has several case
++// variants on disk.
++function walkExistingCase(input: string): { path: string; complete: boolean } {
+   const normalized = path.normalize(input);
+   const root = path.parse(normalized).root;
+   const parts = path.relative(root, normalized).split(path.sep).filter(Boolean);
+   let current = root;
+ 
+-  try {
+-    for (let idx = 0; idx < parts.length; idx++) {
+-      const part = parts[idx];
+-      const exact = path.join(current, part);
+-      if (fs.existsSync(exact)) {
+-        current = exact;
+-        continue;
+-      }
+-
+-      const matches = fs
+-        .readdirSync(current)
+-        .filter((entry) => entry.toLowerCase() === part.toLowerCase());
+-      if (matches.length === 0) {
+-        // Keep the casing of the prefix that already exists. This matters when
+-        // creating a new file below a Windows-authored directory such as
+-        // "SFSE/Plugins" through a mod path spelling it "SFSE/plugins".
+-        return resolveWindowsUserPathSync(path.join(current, ...parts.slice(idx)));
+-      }
+-      if (matches.length > 1) {
+-        // The host contains multiple case variants and the requested spelling
+-        // is not an exact match. Do not guess which existing entry to mutate.
+-        return resolveWindowsUserPathSync(path.join(current, ...parts.slice(idx)));
+-      }
+-      current = path.join(current, matches[0]);
++  for (let idx = 0; idx < parts.length; idx++) {
++    const part = parts[idx];
++    const exact = path.join(current, part);
++    if (fs.existsSync(exact)) {
++      current = exact;
++      continue;
+     }
+-    return current;
++
++    const matches = fs
++      .readdirSync(current)
++      .filter((entry) => entry.toLowerCase() === part.toLowerCase());
++    if (matches.length === 0) {
++      // Keep the casing of the prefix that already exists. This matters when
++      // creating a new file below a Windows-authored directory such as
++      // "SFSE/Plugins" through a mod path spelling it "SFSE/plugins".
++      return { path: path.join(current, ...parts.slice(idx)), complete: false };
++    }
++    if (matches.length > 1) {
++      // The host contains multiple case variants and the requested spelling
++      // is not an exact match. Do not guess which existing entry to mutate.
++      return { path: path.join(current, ...parts.slice(idx)), complete: false };
++    }
++    current = path.join(current, matches[0]);
++  }
++  return { path: current, complete: true };
++}
++
++/**
++ * Corrects the casing of an absolute path against what exists on disk, without
++ * the Windows user-folder mapping resolveCaseInsensitiveSync applies.
++ */
++export function matchExistingCaseSync(input: string): string {
++  if (fs.existsSync(input)) return input;
++  try {
++    return walkExistingCase(input).path;
++  } catch {
++    return input;
++  }
++}
++
++export function resolveCaseInsensitiveSync(input: string): string {
++  if (process.platform !== "linux" || !path.isAbsolute(input)) return input;
++  input = resolveSelectedWindowsUserPathSync(input);
++  if (fs.existsSync(input)) return input;
++
++  try {
++    const walked = walkExistingCase(input);
++    return walked.complete ? walked.path : resolveWindowsUserPathSync(walked.path);
+   } catch {
+     return resolveWindowsUserPathSync(input);
+   }
+diff --git a/src/renderer/src/util/nativeExecutable.test.ts b/src/renderer/src/util/nativeExecutable.test.ts
+index b3c2a04..2be042b 100644
+--- a/src/renderer/src/util/nativeExecutable.test.ts
++++ b/src/renderer/src/util/nativeExecutable.test.ts
+@@ -2,8 +2,9 @@ import * as fs from "fs";
+ import * as os from "os";
+ import * as path from "path";
+ 
+-import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
++import { setCompatibilityGameProvider } from "./compatibilityPaths";
+ import { resolveNativeExecutable, resolvePlatformPath } from "./nativeExecutable";
+ 
+ describe("native executable resolution", () => {
+@@ -14,6 +15,8 @@ describe("native executable resolution", () => {
+   });
+ 
+   afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    vi.unstubAllEnvs();
+     fs.rmSync(root, { recursive: true, force: true });
+   });
+ 
+@@ -60,6 +63,58 @@ describe("native executable resolution", () => {
+     expect(resolveNativeExecutable(root, "bin/sample.exe", "win32")).toBe("bin/sample.exe");
+   });
+ 
++  it("finds a required executable whose directory differs only in case", () => {
++    executable("Game/sample.exe");
++
++    expect(resolvePlatformPath(root, "game/sample.exe", "linux")).toBe(
++      path.join(root, "Game", "sample.exe"),
++    );
++  });
++
++  it("finds a required data file whose path differs only in case", () => {
++    fs.mkdirSync(path.join(root, "Data"), { recursive: true });
++    fs.writeFileSync(path.join(root, "Data", "Sample.esm"), "data");
++
++    expect(resolvePlatformPath(root, "data/sample.esm", "linux")).toBe(
++      path.join(root, "Data", "Sample.esm"),
++    );
++  });
++
++  it("maps to a native executable inside a directory that differs only in case", () => {
++    executable("Bin/sample");
++
++    expect(resolvePlatformPath(root, "bin/sample.exe", "linux")).toBe(
++      path.join(root, "Bin", "sample"),
++    );
++  });
++
++  // A game installed under a folder Vortex maps into Proton prefixes must keep
++  // its host path: only the casing of the declared path is corrected.
++  it.runIf(process.platform === "linux")(
++    "does not move a game under a mapped user folder into the game prefix",
++    () => {
++      const documents = path.join(root, "Documents");
++      const prefix = path.join(root, "prefix");
++      const install = path.join(documents, "Games", "Sample");
++      executable(path.join("Documents", "Games", "Sample", "Game", "sample.exe"));
++      fs.mkdirSync(path.join(prefix, "drive_c", "users", "steamuser", "Documents", "Games"), {
++        recursive: true,
++      });
++      vi.stubEnv("VORTEX_LINUX_DOCUMENTS", documents);
++      setCompatibilityGameProvider(() => ({
++        path: install,
++        environment: { WINEPREFIX: prefix },
++      }));
++
++      expect(resolvePlatformPath(install, "Game/sample.exe", "linux")).toBe(
++        path.join(install, "Game", "sample.exe"),
++      );
++      expect(resolvePlatformPath(install, "game/sample.exe", "linux")).toBe(
++        path.join(install, "Game", "sample.exe"),
++      );
++    },
++  );
++
+   it("returns an absolute platform path for validation", () => {
+     executable("bin/sample");
+ 
+diff --git a/src/renderer/src/util/nativeExecutable.ts b/src/renderer/src/util/nativeExecutable.ts
+index ac03b41..18cde63 100644
+--- a/src/renderer/src/util/nativeExecutable.ts
++++ b/src/renderer/src/util/nativeExecutable.ts
+@@ -1,6 +1,8 @@
+ import * as fs from "fs";
+ import * as path from "path";
+ 
++import { matchExistingCaseSync } from "./linuxCompatibility";
++
+ function isExecutableFile(filePath: string): boolean {
+   try {
+     const stat = fs.statSync(filePath);
+@@ -107,7 +109,15 @@ export function resolvePlatformPath(
+   declaredPath: string,
+   platform: NodeJS.Platform = process.platform,
+ ): string {
+-  return path.isAbsolute(declaredPath)
+-    ? resolveNativeExecutable(basePath, declaredPath, platform)
+-    : path.join(basePath, resolveNativeExecutable(basePath, declaredPath, platform));
++  if (platform !== "linux") {
++    return path.isAbsolute(declaredPath)
++      ? resolveNativeExecutable(basePath, declaredPath, platform)
++      : path.join(basePath, resolveNativeExecutable(basePath, declaredPath, platform));
++  }
++  // Extensions spell paths the way Windows shows them, and Windows ignores
++  // case: Elden Ring declares "game/eldenring.exe" for an install folder
++  // named "Game". Correct the casing only. resolveCaseInsensitiveSync would
++  // also move a game installed under ~/Documents into the selected prefix.
++  const declared = matchExistingCaseSync(path.resolve(basePath, declaredPath));
++  return resolveNativeExecutable(basePath, declared, platform);
+ }

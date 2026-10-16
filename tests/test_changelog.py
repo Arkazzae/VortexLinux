@@ -58,6 +58,9 @@ class ReleaseNotesTest(unittest.TestCase):
         version = next(l.split('=', 1)[1] for l in pkgbuild.splitlines() if l.startswith('pkgver='))
         release = next(l.split('=', 1)[1] for l in pkgbuild.splitlines() if l.startswith('pkgrel='))
         text = (REPOSITORY_ROOT / 'CHANGELOG.md').read_text()
+        # A pkgrel bumped by hand keeps its notes under Unreleased until
+        # prepare-release files them under the new revision, as release() does.
+        text = CHANGELOG.release(text, f'{version}-{release}', '2026-01-01')
         self.assertTrue(CHANGELOG.release_notes(text, f'{version}-{release}'))
         # Newest release first, so the workflow can name the previous revision.
         self.assertEqual(revisions(text)[0], f'{version}-{release}')
