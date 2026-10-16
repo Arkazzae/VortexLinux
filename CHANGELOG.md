@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.8.2-4 - 2026-10-16
+
 - Extensions you install work when the Vortex settings folder is reached
   through a symlink, such as `/home` on Fedora Atomic or a `~/.config/Vortex`
   moved to another disk. They can load the modules bundled with Vortex (Elden
