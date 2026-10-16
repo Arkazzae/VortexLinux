@@ -10,6 +10,15 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Extensions you install work when the Vortex settings folder is reached
+  through a symlink, such as `/home` on Fedora Atomic or a `~/.config/Vortex`
+  moved to another disk. They can load the modules bundled with Vortex (Elden
+  Ring failed with "Cannot find module 'turbowalk'"), and an error in one shows
+  the extension error notice instead of closing Vortex. (#14)
+- Game files that an extension names in a different letter case from the
+  install are found, such as Elden Ring's executable in its `Game` folder, so
+  the game is recognised, starts and reports its version. (#15)
+
 ## 2.8.2-3 - 2026-10-15
 
 - The AppImage embeds AppImageUpdate information and every release now ships a

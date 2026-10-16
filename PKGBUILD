@@ -2,7 +2,7 @@
 
 pkgname=vortex-linux
 pkgver=2.8.2
-pkgrel=3
+pkgrel=4
 pkgdesc="Community build of Vortex with generic Linux compatibility patches"
 arch=('x86_64')
 url="https://github.com/Arkazzae/VortexLinux"

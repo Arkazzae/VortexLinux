@@ -61,10 +61,10 @@ index 4821f76..12f94eb 100644
      const localPath = path.join(tempDir, "Data", "input.pak");
      fs.mkdirSync(path.dirname(localPath));
 diff --git a/src/renderer/src/util/linuxCompatibility.ts b/src/renderer/src/util/linuxCompatibility.ts
-index 1be0938..205c028 100644
+index 1be0938..763f720 100644
 --- a/src/renderer/src/util/linuxCompatibility.ts
 +++ b/src/renderer/src/util/linuxCompatibility.ts
-@@ -80,42 +80,63 @@ function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEn
+@@ -80,42 +80,64 @@ function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEn
    return result;
  }
  
@@ -140,6 +140,7 @@ index 1be0938..205c028 100644
 + * the Windows user-folder mapping resolveCaseInsensitiveSync applies.
 + */
 +export function matchExistingCaseSync(input: string): string {
++  if (fs.existsSync(input)) return input;
 +  try {
 +    return walkExistingCase(input).path;
 +  } catch {

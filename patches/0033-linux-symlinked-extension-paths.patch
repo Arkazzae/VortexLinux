@@ -27,10 +27,10 @@ index d34c188..f802f85 100644
        log("error", "extension caused an unhandled exception", {
 diff --git a/src/renderer/src/util/extensionPaths.test.ts b/src/renderer/src/util/extensionPaths.test.ts
 new file mode 100644
-index 0000000..e2ee1c8
+index 0000000..c8691be
 --- /dev/null
 +++ b/src/renderer/src/util/extensionPaths.test.ts
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,72 @@
 +import * as fs from "node:fs";
 +import * as os from "node:os";
 +import * as path from "node:path";
@@ -67,6 +67,16 @@ index 0000000..e2ee1c8
 +    expect(isInsideExtensionRoot(path.join(root, "app", "index.js"), linked)).toBe(false);
 +  });
 +
++  // plugins/ doesn't exist until the first extension is installed.
++  it("places a module inside a root created after its first lookup", () => {
++    const later = path.join(root, "home", "later-plugins");
++    const extModule = path.join(root, "var", "home", "later-plugins", "game-example", "index.js");
++
++    expect(isInsideExtensionRoot(extModule, later)).toBe(true);
++    fs.mkdirSync(path.dirname(extModule), { recursive: true });
++    expect(isInsideExtensionRoot(extModule, later)).toBe(true);
++  });
++
 +  it("names the extension a stack frame under the real path points into", () => {
 +    const stack = `Error: boom\n    at ${path.join(real, "game-example", "index.js")}:3:9`;
 +
@@ -79,6 +89,14 @@ index 0000000..e2ee1c8
 +    expect(extensionInStack(stack, linked)).toBe("game-example");
 +  });
 +
++  it("names the extension below a root whose path has regex characters", () => {
++    const special = path.join(root, "Data (2TB)", "plugins");
++    fs.mkdirSync(path.join(special, "game-example"), { recursive: true });
++    const stack = `Error: boom\n    at ${path.join(special, "game-example", "index.js")}:3:9`;
++
++    expect(extensionInStack(stack, special)).toBe("game-example");
++  });
++
 +  it("does not claim a stack that never enters the root", () => {
 +    const stack = `Error: boom\n    at ${path.join(root, "app", "renderer.js")}:1:1`;
 +
@@ -87,12 +105,14 @@ index 0000000..e2ee1c8
 +});
 diff --git a/src/renderer/src/util/extensionPaths.ts b/src/renderer/src/util/extensionPaths.ts
 new file mode 100644
-index 0000000..46ef365
+index 0000000..d761cdd
 --- /dev/null
 +++ b/src/renderer/src/util/extensionPaths.ts
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,55 @@
 +import * as fs from "node:fs";
 +import * as path from "node:path";
++
++import * as _ from "lodash";
 +
 +// Node reports module filenames and stack frames with symlinks resolved, but
 +// extension paths are built from userData and keep them. On Fedora Atomic
@@ -101,14 +121,22 @@ index 0000000..46ef365
 +// require in the application.
 +const realRoots = new Map<string, string>();
 +
++// A root that doesn't exist yet, such as plugins/ before the first extension
++// is installed, takes the real path of its nearest existing parent, so the
++// cached value still holds once the folder is created.
++function realPathOf(input: string): string {
++  try {
++    return fs.realpathSync(input);
++  } catch {
++    const parent = path.dirname(input);
++    return parent === input ? input : path.join(realPathOf(parent), path.basename(input));
++  }
++}
++
 +function realRoot(root: string): string {
 +  let real = realRoots.get(root);
 +  if (real === undefined) {
-+    try {
-+      real = fs.realpathSync(root);
-+    } catch {
-+      real = root;
-+    }
++    real = realPathOf(root);
 +    realRoots.set(root, real);
 +  }
 +  return real;
@@ -132,7 +160,7 @@ index 0000000..46ef365
 +  if (spelling === undefined) {
 +    return undefined;
 +  }
-+  const extPath = (spelling + path.sep).replace(/[\\]/g, "\\\\");
++  const extPath = _.escapeRegExp(spelling + path.sep);
 +  const re = new RegExp(`at ${extPath}(Vortex Extension Update - )?([^/\\\\]*)`);
 +  return stack.match(re)?.[2] ?? "unknown";
 +}
