@@ -4,29 +4,38 @@
 
 ![The folder Skyrim reads through Proton, C:\users\steamuser\Documents\My Games\Skyrim Special Edition, turns into the folder Vortex for Linux writes to: ~/.local/share/Steam/steamapps/compatdata/489830/pfx/drive_c/users/steamuser/Documents/My Games/Skyrim Special Edition](docs/hero.webp)
 
-[Vortex](https://www.nexusmods.com/about/vortex/) is the mod manager from Nexus Mods, used for Skyrim, Fallout, Starfield, Baldur's Gate 3 and a few hundred other games. It's an Electron app, so it *technically* starts on Linux. But the usual workaround is running Vortex itself inside a Wine prefix, which is slow, fragile and annoying to set up.
+[Vortex](https://www.nexusmods.com/about/vortex/) is the mod manager from Nexus Mods, used for Skyrim, Fallout, Starfield, Baldur's Gate 3 and a few hundred other games. It's an Electron app, so it starts on Linux, and it already finds Steam and a game's Proton prefix on its own. Nexus Mods [plan to support SteamOS officially](https://gamingonlinux.com/2026/01/nexus-mods-say-they-are-committed-to-supporting-vortex-on-steamos-linux); other distributions and launchers are left to the community.
 
-This repo does the other thing: it patches Vortex to actually understand Linux, and builds it as a native app.
+This is that community build. It takes the pinned upstream release, applies a set of Linux patches, and builds it as a native Arch package and an AppImage. Vortex itself never runs in Wine. Wine is only used for the Windows-only modding tools that have no Linux version.
 
-## What it does
+## What this build adds
 
-- Finds native and Flatpak Steam libraries and selects the active game’s Proton prefix
-- Maps `Documents` / `AppData` into the right prefix, so mods and saves land where the game actually looks
-- Discovers Epic, GOG and Amazon games in native and Flatpak Heroic installations
-- Launches games through Steam or Heroic
-- Runs Windows modding tools in the game’s Wine/Proton prefix, including calls made by extensions
+- Picks the selected game's Proton prefix across every Steam install, native and Flatpak alike, not just the first one found, and maps `Documents` / `AppData` into it, so mods and saves land where the game actually looks
+- Discovers Epic, GOG and Amazon games in native and Flatpak Heroic installations, and Windows games installed through Lutris or Bottles
+- Launches games through Steam, Heroic, Lutris or Bottles
+- Runs Windows modding tools in the game's Wine or Proton prefix, including calls made by extensions, with their file arguments translated to Windows paths
 - Reads and writes Windows INI files while preserving encoding, comments and hardlinks
-- Builds Bethesda plugin management with native Linux LOOT
+- Sorts Bethesda plugins with native Linux LOOT
 - Deploys and purges hardlinked mods without leaving stale files behind
 - Resolves Windows path casing consistently and keeps staging files safe when external changes are detected
+- Ships the Windows .NET runtimes modding tools need; the AppImage also bundles the Linux .NET runtime Vortex probes for at startup
 
 These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so some games may still need fixes.
 
-## Upstream is catching up 🎉
+### What runs where
 
-Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension API's `util.epicGamesLauncher` is a shim over `GameStoreHelper` instead of `undefined` everywhere except Windows, so our Epic API fallback patch is gone 🎊.
+| Part | Runs as |
+|---|---|
+| Vortex itself: UI, downloads, installers, deployment | native Linux process |
+| Game discovery and launch through Steam, Heroic, Lutris, Bottles | native, through each launcher |
+| Mod deployment, INI edits, LOOT sorting, FOMOD installers | native |
+| Windows-only modding tools such as xEdit or BodySlide | the game's own Wine or Proton prefix |
+| Windows .NET runtimes those tools need | bundled, loaded through Wine |
+| Vortex's few Windows-only helpers, and tools run with no game selected | a separate Wine prefix under `~/.local/share/vortex-linux` |
 
- Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
+### Upstream is catching up 🎉
+
+Vortex itself is becoming more Linux-friendly with every release: 2.7.1 added the `util.epicGamesLauncher` shim that replaced our Epic patch, and the 2.9 betas add Linux executable versions, Gamebryo plugin management and per-game discovery fixes. Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink. Expect the move to 2.9 to take longer than a routine update, since it reworks the area these patches live in.
 
 ## Games tested (confirmed working)
 
@@ -47,6 +56,8 @@ Grab the [latest release](https://github.com/Arkazzae/VortexLinux/releases/lates
 sha256sum --check vortex-linux-*.pkg.tar.zst.sha256
 sudo pacman -U ./vortex-linux-*.pkg.tar.zst
 ```
+
+The AUR package `vortex` is upstream Vortex built from its release tag, without these patches and without Wine. This package conflicts with it, so pacman will ask you to remove it first.
 
 ### Everything else (AppImage)
 
@@ -69,6 +80,17 @@ No FUSE 2 on your system? Run it as:
 AppImages don't add themselves to your app menu or register as the `nxm://` handler. Gear Lever or AppImageLauncher handle that, or write a desktop entry yourself.
 
 The AppImage embeds [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) information pointing at this repository's latest release, so Gear Lever, AppImageLauncher and `appimageupdatetool` can check for and apply updates in place. Vortex also shows a notification when a newer Linux release is published; the older builds from `recipes/` stay pinned and never update.
+
+### Wayland
+
+Both the package and the AppImage start Vortex on X11 by default, which means XWayland on a Wayland session, with Vulkan off. To run it on Wayland natively:
+
+```sh
+VORTEX_OZONE_PLATFORM=wayland vortex                 # package
+VORTEX_OZONE_PLATFORM=wayland ./Vortex-*.AppImage    # AppImage
+```
+
+`VORTEX_OZONE_PLATFORM=auto` leaves the choice to Electron.
 
 ## Before you add your first game
 
@@ -108,11 +130,36 @@ folders its sandbox allows. Set `BOTTLES_CLI_BINARY` if `bottles-cli` isn't on
 The separate prefix for Vortex’s own helper processes still defaults to
 `${XDG_DATA_HOME:-$HOME/.local/share}/vortex-linux/wineprefix`.
 
+## How it's tested
+
+Every change goes through the same pipeline before it can become a release:
+
+1. **The patches apply.** CI checks out the pinned Vortex commit and applies every patch in order.
+2. **The tests pass.** It runs the tests that ship with the patches, typechecks the renderer, and builds and tests the native LOOT binding.
+3. **Both packages build.** The Arch package is built in a clean Arch container, and the AppImage is built from that package.
+4. **The AppImage starts.** In a clean Ubuntu 24.04 container with Wine but no system .NET, it runs the bundled checks (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), then boots Vortex under Xvfb and waits for the main page to render.
+
+Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md): describe changes under *Unreleased*, and when `pkgrel` is bumped the release job files them under that revision and commits the result.
+
+Every six hours a bot also looks for a new stable Vortex. If there is one, it runs the same pipeline against it. If everything passes, the bot bumps `PKGBUILD`, adds a changelog entry marked as an automatic update and publishes the release. If anything fails, nothing changes, and the bot opens or updates an issue naming the broken stage.
+
+What this does not cover: launching a real game, Steam login, Flatpak permissions, every FOMOD dialog, or installing a whole collection. The game list above is what people reported working, not a test matrix.
+
+### Run it yourself
+
+```sh
+scripts/test-appimage.sh dist/Vortex-*.AppImage             # the AppImage check
+scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against the newest Vortex
+scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite (needs Rust for libloot)
+```
+
+`--ref pinned` checks the patches against the pinned version instead, and `--keep` keeps the prepared source for the test suite.
+
 ## Building from source (Arch)
 
 ```sh
 git clone https://github.com/Arkazzae/VortexLinux.git
-cd vortex-linux
+cd VortexLinux
 scripts/prepare-arch-build.sh
 cd dist/arch-build
 makepkg -si
@@ -142,35 +189,10 @@ python3 scripts/build-version.py --version 2.6.2
 
 You'll find the files in `dist/versions/2.6.2/artifacts/`.
 
-## How it's tested
-
-Every change goes through the same pipeline before it can become a release:
-
-1. **The patches apply.** CI checks out the pinned Vortex commit and applies every patch in order.
-2. **The tests pass.** It runs the tests that ship with the patches, typechecks the renderer, and builds and tests the native LOOT binding.
-3. **Both packages build.** The Arch package is built in a clean Arch container, and the AppImage is built from that package.
-4. **The AppImage starts.** In a clean Ubuntu 24.04 container with Wine but no system .NET, it runs the bundled checks (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), then boots Vortex under Xvfb and waits for the main page to render.
-
-Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md): describe changes under *Unreleased*, and when `pkgrel` is bumped the release job files them under that revision and commits the result.
-
-Every six hours a bot also looks for a new stable Vortex. If there is one, it runs the same pipeline against it. If everything passes, the bot bumps `PKGBUILD`, adds a changelog entry marked as an automatic update and publishes the release. If anything fails, nothing changes, and the bot opens or updates an issue naming the broken stage.
-
-What this does not cover: launching a real game, Steam login, Flatpak permissions, every FOMOD dialog, or installing a whole collection. The game list above is what people reported working, not a test matrix.
-
-### Run it yourself
-
-```sh
-scripts/test-appimage.sh dist/Vortex-*.AppImage             # the AppImage check
-scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against the newest Vortex
-scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite (needs Rust for libloot)
-```
-
-`--ref pinned` checks the patches against the pinned version instead, and `--keep` keeps the prepared source for the test suite.
-
 ## Something broken?
 
 Open an issue with the game, the store, where it's installed, how to reproduce it, and the relevant chunk of `~/.config/Vortex/vortex.log`. Scrub your Nexus tokens and private download links out of the log first.
 
 ## License
 
-The build files and Linux patches here are GPL-3.0-only. Vortex itself stays under the upstream Nexus Mods license. See [LICENSE](LICENSE).
+The build files and Linux patches here are GPL-3.0-only. Vortex itself is GPL-3.0 as well and stays under its upstream license; see [LICENSE](LICENSE). Vortex and the Nexus Mods name and logo belong to Nexus Mods. This is an unofficial community build that Nexus Mods doesn't support, so report problems with it here rather than to them.
