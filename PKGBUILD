@@ -136,6 +136,7 @@ _patches=(
   '0033-linux-symlinked-extension-paths.patch'
   '0034-linux-case-only-platform-paths.patch'
   '0035-linux-backslash-archive-paths.patch'
+  '0036-linux-appimage-nxm-links.patch'
 )
 
 source=(
@@ -169,6 +170,7 @@ sha512sums=(
   '0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8'
   # All following local files are versioned together with this PKGBUILD, so
   # hashing them only duplicates Git integrity.
+  'SKIP'
   'SKIP'
   'SKIP'
   'SKIP'

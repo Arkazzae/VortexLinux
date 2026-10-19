@@ -66,7 +66,7 @@ No FUSE 2 on your system? Run it as:
 ./Vortex-*.AppImage --appimage-extract-and-run
 ```
 
-AppImages don't add themselves to your app menu or register as the `nxm://` handler. Gear Lever or AppImageLauncher handle that, or write a desktop entry yourself.
+AppImages don't add themselves to your app menu; Gear Lever or AppImageLauncher handle that. For Nexus Mods download links, turn on "Handle Nexus Links" in Vortex: the AppImage then registers itself as the `nxm://` handler and keeps pointing at wherever the AppImage file is. This uses `xdg-settings` from xdg-utils, which desktop distributions ship with their browsers.
 
 The AppImage embeds [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) information pointing at this repository's latest release, so Gear Lever, AppImageLauncher and `appimageupdatetool` can check for and apply updates in place. Vortex also shows a notification when a newer Linux release is published; the older builds from `recipes/` stay pinned and never update.
 

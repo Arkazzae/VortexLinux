@@ -1,0 +1,186 @@
+diff --git a/src/renderer/src/util/protocolRegistration/linux/nxm.appimage.test.ts b/src/renderer/src/util/protocolRegistration/linux/nxm.appimage.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/protocolRegistration/linux/nxm.appimage.test.ts
+@@ -0,0 +1,90 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const common = vi.hoisted(() => ({
++  applications: "",
++  refreshDesktopDatabase: vi.fn(),
++  getDefaultUrlSchemeHandler: vi.fn(),
++  setDefaultUrlSchemeHandler: vi.fn(),
++}));
++
++vi.mock("../../log", () => ({ log: vi.fn() }));
++vi.mock("./common", () => ({
++  applicationsDirectory: () => common.applications,
++  refreshDesktopDatabase: common.refreshDesktopDatabase,
++  getDefaultUrlSchemeHandler: common.getDefaultUrlSchemeHandler,
++  setDefaultUrlSchemeHandler: common.setDefaultUrlSchemeHandler,
++}));
++
++import { registerLinuxNxmProtocolHandler } from "./nxm";
++
++const options = { setAsDefault: true, executablePath: "/tmp/.mount_x/vortex", appPath: "" };
++
++describe.runIf(process.platform === "linux")("nxm links from an AppImage", () => {
++  let root: string;
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-nxm-"));
++    common.applications = path.join(root, "applications");
++    vi.stubEnv("NODE_ENV", "production");
++    vi.stubEnv("IS_FLATPAK", "");
++    vi.clearAllMocks();
++  });
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  it("registers a desktop entry that starts the AppImage file itself", () => {
++    const appImage = path.join(root, "My Apps", "Vortex-2.9.0-x86_64.AppImage");
++    vi.stubEnv("APPIMAGE", appImage);
++    common.getDefaultUrlSchemeHandler.mockReturnValue("org.mo2.desktop");
++
++    expect(registerLinuxNxmProtocolHandler(options)).toBe(true);
++
++    const desktop = fs.readFileSync(
++      path.join(common.applications, "com.nexusmods.vortex.appimage.desktop"),
++      "utf8",
++    );
++    const wrapper = path.join(common.applications, "com.nexusmods.vortex.appimage.sh");
++    expect(desktop).toContain(`Exec=${wrapper} %u\n`);
++    expect(desktop).toContain("MimeType=x-scheme-handler/nxm;\n");
++    expect(desktop).toContain("NoDisplay=true\n");
++    expect(fs.readFileSync(wrapper, "utf8")).toContain(`exec "${appImage}" "$@"\n`);
++    expect(fs.statSync(wrapper).mode & 0o111).not.toBe(0);
++    expect(common.refreshDesktopDatabase).toHaveBeenCalledWith(common.applications);
++    expect(common.setDefaultUrlSchemeHandler).toHaveBeenCalledWith(
++      "nxm",
++      "com.nexusmods.vortex.appimage.desktop",
++    );
++  });
++
++  it("follows the AppImage when it was moved or replaced", () => {
++    vi.stubEnv("APPIMAGE", path.join(root, "old.AppImage"));
++    registerLinuxNxmProtocolHandler(options);
++    common.refreshDesktopDatabase.mockClear();
++
++    vi.stubEnv("APPIMAGE", path.join(root, "new.AppImage"));
++    registerLinuxNxmProtocolHandler(options);
++
++    const wrapper = path.join(common.applications, "com.nexusmods.vortex.appimage.sh");
++    expect(fs.readFileSync(wrapper, "utf8")).toContain(`exec "${path.join(root, "new.AppImage")}"`);
++    expect(common.refreshDesktopDatabase).toHaveBeenCalledOnce();
++
++    common.refreshDesktopDatabase.mockClear();
++    registerLinuxNxmProtocolHandler(options);
++    expect(common.refreshDesktopDatabase).not.toHaveBeenCalled();
++  });
++
++  it("leaves package installs on the packaged desktop file", () => {
++    vi.stubEnv("APPIMAGE", "");
++    registerLinuxNxmProtocolHandler(options);
++    expect(fs.existsSync(common.applications)).toBe(false);
++    expect(common.setDefaultUrlSchemeHandler).toHaveBeenCalledWith(
++      "nxm",
++      "com.nexusmods.vortex.desktop",
++    );
++  });
++});
+diff --git a/src/renderer/src/util/protocolRegistration/linux/nxm.ts b/src/renderer/src/util/protocolRegistration/linux/nxm.ts
+--- a/src/renderer/src/util/protocolRegistration/linux/nxm.ts
++++ b/src/renderer/src/util/protocolRegistration/linux/nxm.ts
+@@ -28,6 +28,9 @@ const NXM_PROTOCOL = "nxm";
+ const PACKAGE_DESKTOP_ID = "com.nexusmods.vortex.desktop";
+ const DEV_DESKTOP_ID = "com.nexusmods.vortex.dev.desktop";
+ const DEV_WRAPPER_FILE_NAME = "com.nexusmods.vortex.dev.sh";
++// An AppImage installs no desktop file, so it registers its own entry pointing at the image.
++const APPIMAGE_DESKTOP_ID = "com.nexusmods.vortex.appimage.desktop";
++const APPIMAGE_WRAPPER_FILE_NAME = "com.nexusmods.vortex.appimage.sh";
+ 
+ /**
+  * Required registration inputs for Linux `nxm` routing.
+@@ -60,6 +63,8 @@ export function registerLinuxNxmProtocolHandler(
+       options.executablePath,
+       options.appPath,
+     );
++  } else if (desktopId === APPIMAGE_DESKTOP_ID) {
++    didChangeDesktopFiles = ensureAppImageDesktopEntry(applicationsDir, appImagePath()!);
+   }
+ 
+   if (didChangeDesktopFiles) {
+@@ -94,6 +99,12 @@ function isFlatpakBuild(): boolean {
+   return process.env.IS_FLATPAK === "true";
+ }
+ 
++/** The AppImage file itself; the mounted directory Vortex runs from changes every launch. */
++function appImagePath(): string | undefined {
++  const appImage = process.env.APPIMAGE;
++  return appImage !== undefined && path.isAbsolute(appImage) ? appImage : undefined;
++}
++
+ function isDevelopmentBuild(): boolean {
+   return process.defaultApp === true || process.env.NODE_ENV === "development";
+ }
+@@ -103,6 +114,10 @@ function desktopIdForCurrentBuild(): string {
+     return PACKAGE_DESKTOP_ID;
+   }
+ 
++  if (appImagePath() !== undefined) {
++    return APPIMAGE_DESKTOP_ID;
++  }
++
+   if (isDevelopmentBuild()) {
+     return DEV_DESKTOP_ID;
+   }
+@@ -251,3 +266,44 @@ function ensureDevDesktopEntry(
+ 
+   return wrapperChanged || desktopChanged;
+ }
++
++/**
++ * Write the desktop entry an AppImage uses for nxm:// links. The wrapper runs the AppImage
++ * file, whose AppRun adds --download for nxm:// arguments. Vortex rewrites both on every
++ * registration, so moving or replacing the AppImage only needs one start of the new file.
++ */
++function ensureAppImageDesktopEntry(applicationsDir: string, appImage: string): boolean {
++  const wrapperPath = path.join(applicationsDir, APPIMAGE_WRAPPER_FILE_NAME);
++  const desktopFilePath = path.join(applicationsDir, APPIMAGE_DESKTOP_ID);
++
++  warnIfApplicationsPathNeedsEscaping(applicationsDir);
++
++  const wrapperChanged = writeFileIfChanged(
++    wrapperPath,
++    "#!/bin/sh\n" +
++      "unset LD_LIBRARY_PATH\n" +
++      "unset LD_PRELOAD\n" +
++      `exec "${escapeShellScriptArgument(appImage)}" "$@"\n`,
++    0o755,
++  );
++
++  // Hidden from menus: integrating the AppImage itself is left to AppImageLauncher or Gear Lever.
++  const desktopChanged = writeFileIfChanged(
++    desktopFilePath,
++    "[Desktop Entry]\n" +
++      "Type=Application\n" +
++      "Name=Vortex (AppImage)\n" +
++      "GenericName=Mod Manager\n" +
++      "Comment=Handles Nexus Mods download links for the Vortex AppImage\n" +
++      "NoDisplay=true\n" +
++      `Exec=${escapeDesktopExecFilePath(wrapperPath)} %u\n` +
++      `TryExec=${escapeDesktopFilePath(wrapperPath)}\n` +
++      "Icon=vortex\n" +
++      "Terminal=false\n" +
++      "MimeType=x-scheme-handler/nxm;\n" +
++      "StartupWMClass=Vortex\n",
++    0o755,
++  );
++
++  return wrapperChanged || desktopChanged;
++}

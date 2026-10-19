@@ -17,6 +17,9 @@ publishes a new Vortex version, taking any pending notes with it.
 - Mods whose archives use Windows backslashes between folders, such as
   Appearance Runtime Plugin for Cyberpunk 2077, install into those folders
   instead of as one file named after the whole path. (#16)
+- The AppImage handles "Mod Manager Download" links from the Nexus Mods
+  website. With "Handle Nexus Links" on, it adds its own hidden desktop entry
+  for nxm:// links, since an AppImage installs none. (#18)
 
 ## 2.8.2-4 - 2026-10-16
 
