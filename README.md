@@ -102,7 +102,7 @@ cd dist/arch-build
 makepkg -si
 ```
 
-The build pins both Vortex and libloot to exact upstream commits and downloads the source, Node dependencies, Electron and the Microsoft runtime files. First build is a big one.
+The build pins Vortex to an exact upstream commit and downloads the source, Node dependencies, Electron and the Microsoft runtime files. First build is a big one.
 
 Patches live in `patches/`, in the order listed by `_patches` in `PKGBUILD`.
 `prepare-arch-build.sh` copies the packaging files and patches into
@@ -146,7 +146,7 @@ What this does not cover: launching a real game, Steam login, Flatpak permission
 ```sh
 scripts/test-appimage.sh dist/Vortex-*.AppImage             # the AppImage check
 scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against the newest Vortex
-scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite (needs Rust for libloot)
+scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite
 ```
 
 `--ref pinned` checks the patches against the pinned version instead, and `--keep` keeps the prepared source for the test suite.

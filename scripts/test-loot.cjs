@@ -26,25 +26,23 @@ function plugin(master = false, dependencies = []) {
   return Buffer.concat([header, body]);
 }
 
-async function testLoot(extensionPath) {
-  const { LootAsync } = require(path.join(extensionPath, 'libloot-adapter.cjs'));
+// lootPath is a node-loot package: the one in the renderer's dependencies or assets/loot of a
+// packaged Vortex. Plugins are loaded by absolute path, as Vortex resolves them on Linux.
+async function testLoot(lootPath) {
+  const { LootAsync } = require(path.join(lootPath, 'index.js'));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vortex-loot-test-'));
   const data = path.join(root, 'Game', 'data');
   const local = path.join(root, 'Local');
   fs.mkdirSync(data, { recursive: true });
   fs.mkdirSync(local);
   let loot;
-  const call = (method, ...args) => new Promise((resolve, reject) => {
-    loot[method](...args, (error, value) => error ? reject(error) : resolve(value));
-  });
+  const call = (method, ...args) => loot[method](...args);
+  const plugins = (...names) => names.map((name) => path.join(data, name));
   try {
     for (const name of ['Skyrim.esm', 'Alpha.esp', 'Beta.esp']) {
       fs.writeFileSync(path.join(data, name), plugin(name.endsWith('.esm'), name.endsWith('.esp') ? ['Skyrim.esm'] : []));
     }
-    loot = await new Promise((resolve, reject) => {
-      LootAsync.create('skyrimse', path.join(root, 'Game'), local, 'en', () => {}, undefined,
-        (error, value) => error ? reject(error) : resolve(value));
-    });
+    loot = await LootAsync.create('skyrimse', path.join(root, 'Game'), local, 'en', () => {});
     const masterlist = path.join(root, 'masterlist.yaml');
     const userlist = path.join(root, 'userlist.yaml');
     fs.writeFileSync(masterlist, `groups:
@@ -63,7 +61,7 @@ plugins:
 `);
     await call('loadLists', masterlist, '', '');
     await call('loadCurrentLoadOrderState');
-    await call('loadPlugins', ['alpha.esp', 'beta.esp', 'skyrim.esm'], false);
+    await call('loadPlugins', plugins('Alpha.esp', 'Beta.esp', 'Skyrim.esm'), false);
     assert.deepEqual(await call('sortPlugins', ['alpha.esp', 'beta.esp', 'skyrim.esm']), ['Skyrim.esm', 'Beta.esp', 'Alpha.esp']);
     const info = await call('getPlugin', 'alpha.esp');
     assert.equal(info.name, 'Alpha.esp');
@@ -71,14 +69,15 @@ plugins:
     assert.equal(typeof info.isEmpty, 'boolean');
     const metadata = await call('getPluginMetadata', 'Alpha.esp');
     assert.equal(metadata.group, 'late');
-    assert.equal(metadata.messages[0].content, 'Zażółć — metadata from native LOOT');
+    assert.equal(metadata.messages[0].content[0].text, 'Zażółć — metadata from native LOOT');
     assert.equal(metadata.requirements[0].name, 'Skyrim.esm');
     assert.equal(metadata.tags[0].name, 'Relev');
     assert.deepEqual((await call('getGroupsPath', 'default', 'late')).map((entry) => entry.name), ['default', 'late']);
     fs.writeFileSync(userlist, 'plugins:\n  - name: Alpha.esp\n    group: default\n');
     await call('loadLists', masterlist, userlist, '');
     assert.equal((await call('getPluginMetadata', 'Alpha.esp')).group, 'default');
-    await call('loadLists', masterlist, '', '');
+    fs.writeFileSync(userlist, 'plugins: []\n');
+    await call('loadLists', masterlist, userlist, '');
     assert.equal((await call('getPluginMetadata', 'Alpha.esp')).group, 'late');
     fs.writeFileSync(userlist, 'plugins:\n  - name: Beta.esp\n    after: [Alpha.esp]\n');
     await call('loadLists', masterlist, userlist, '');
@@ -87,18 +86,16 @@ plugins:
     assert.match(cycleError.message, /^Cyclic interaction/);
     assert.deepEqual(new Set(cycleError.cycle.map((vertex) => vertex.name)), new Set(['Alpha.esp', 'Beta.esp']));
     assert.ok(cycleError.cycle.some((vertex) => vertex.typeOfEdgeToNextVertex === 'userlistLoadAfter'), JSON.stringify(cycleError.cycle));
-    await call('loadLists', masterlist, '', '');
+    fs.writeFileSync(userlist, 'plugins: []\n');
+    await call('loadLists', masterlist, userlist, '');
     fs.writeFileSync(path.join(data, 'New.esp.ghost'), plugin());
-    await call('loadPlugins', ['new.esp'], true);
+    await call('loadPlugins', plugins('New.esp.ghost'), true);
     assert.equal((await call('getPlugin', 'new.esp')).name, 'New.esp');
-    await assert.rejects(call('loadPlugins', ['missing.esp'], true), /missing/i);
-    fs.writeFileSync(path.join(data, 'ALPHA.esp'), plugin());
-    await assert.rejects(call('sortPlugins', ['alpha.esp']), /same name/i);
-    const pending = call('clearConditionCache');
+    await assert.rejects(call('loadPlugins', plugins('Missing.esp'), true));
     loot.close();
-    await assert.rejects(pending, /closed/);
+    assert.equal(loot.isClosed(), true);
     await assert.rejects(call('clearConditionCache'), /closed/);
-    console.log('Native LOOT: sorting, metadata, cycles, casing, ghost plugins and worker shutdown passed');
+    console.log('Native LOOT: sorting, metadata, cycles, ghost plugins and worker shutdown passed');
   } finally {
     loot?.close();
     fs.rmSync(root, { recursive: true, force: true });

@@ -1,78 +1,3 @@
-diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
---- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
-+++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
-@@ -348,8 +348,11 @@
-     deployPath: string,
-     blackList: BlacklistSet,
-   ): Promise<void> {
--    return Promise.resolve(
--      fs
-+    return Promise.resolve().then(() => {
-+      // turbowalk bypasses the filesystem compatibility wrapper. Resolve before
-+      // its missing-directory handler so an unavailable prefix still rejects.
-+      sourcePath = resolveCaseInsensitiveSync(sourcePath);
-+      return fs
-         .statAsync(sourcePath)
-         .then(() =>
-           turbowalk(
-@@ -386,32 +389,35 @@
-             return null;
-           }
-           throw err;
--        }),
--    );
-+        });
-+    });
-   }
- 
-   public deactivate(sourcePath: string, dataPath: string, sourceName: string): PromiseLike<void> {
--    return turbowalk(
--      sourcePath,
--      (entries) => {
--        if (this.mContext === undefined) {
--          return;
--        }
--        entries.forEach((entry) => {
--          if (!entry.isDirectory) {
--            const relPath: string = path.relative(sourcePath, entry.filePath);
--            const normPath = this.mNormalize(path.join(dataPath, relPath));
--            if (
--              this.mContext.newDeployment[normPath] !== undefined &&
--              this.mContext.newDeployment[normPath].source === sourceName
--            ) {
--              delete this.mContext.newDeployment[normPath];
-+    return Promise.resolve().then(() => {
-+      sourcePath = resolveCaseInsensitiveSync(sourcePath);
-+      return turbowalk(
-+        sourcePath,
-+        (entries) => {
-+          if (this.mContext === undefined) {
-+            return;
-+          }
-+          entries.forEach((entry) => {
-+            if (!entry.isDirectory) {
-+              const relPath: string = path.relative(sourcePath, entry.filePath);
-+              const normPath = this.mNormalize(path.join(dataPath, relPath));
-+              if (
-+                this.mContext.newDeployment[normPath] !== undefined &&
-+                this.mContext.newDeployment[normPath].source === sourceName
-+              ) {
-+                delete this.mContext.newDeployment[normPath];
-+              }
-             }
--          }
--        });
--      },
--      { skipHidden: false },
--    );
-+          });
-+        },
-+        { skipHidden: false },
-+      );
-+    });
-   }
- 
-   public prePurge(): Promise<void> {
 diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.staging.test.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.staging.test.ts
 new file mode 100644
 --- /dev/null
@@ -209,228 +134,86 @@ new file mode 100644
 +    },
 +  );
 +}
-diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/src/extensions/mod_management/index.ts
---- a/src/renderer/src/extensions/mod_management/index.ts
-+++ b/src/renderer/src/extensions/mod_management/index.ts
-@@ -136,6 +136,10 @@
- import { getModSources, registerModSource } from "./util/modSource";
- import sortMods from "./util/sort";
- import { setResolvedCB } from "./util/testModReference";
-+import {
-+  validateDeploymentTargets,
-+  validateProfileDeploymentTargets,
-+} from "./util/validateDeploymentTargets";
- import ActivationButton from "./views/ActivationButton";
- import DeactivationButton from "./views/DeactivationButton";
- import type { IDuplicatesMap, IRemoveDuplicateMap } from "./views/DuplicatesDialog";
-@@ -364,30 +368,6 @@
- 
-   if (activator.noRedundancy !== true) {
-     return reportRedundant(api, profile.id, overwritten);
--  }
--}
--
--async function validateDeploymentTarget(api: IExtensionApi, undiscovered: string[]) {
--  if (undiscovered.length === 0) {
--    return;
--  }
--  const result = await api.showDialog(
--    "error",
--    "Deployment target unknown",
--    {
--      text:
--        "The deployment directory for some mod type(s) ({{ types }}) " +
--        "is unknown. Mods of these types will not be deployed. " +
--        "Maybe this/these type(s) require further configuration or " +
--        "external tools.",
--      parameters: {
--        types: undiscovered.join(", "),
--      },
--    },
--    [{ label: "Cancel" }, { label: "Ignore" }],
--  );
--  if (result.action === "Cancel") {
--    throw new UserCanceled();
-   }
- }
- 
-@@ -630,7 +610,7 @@
-   return Object.keys(modPaths).filter((typeId) => truthy(modPaths[typeId]));
- }
- 
--function genUpdateModDeployment(installManager: InstallManager) {
-+export function genUpdateModDeployment(installManager: InstallManager) {
-   return (
-     api: IExtensionApi,
-     manual: boolean,
-@@ -683,7 +663,7 @@
-     }
-     const stagingPath = installPathForGame(state, gameId);
- 
--    const modPaths = game.getModPaths(gameDiscovery.path);
-+    let modPaths = game.getModPaths(gameDiscovery.path);
-     const activator = getCurrentActivator(state, gameId, true);
- 
-     if (activator === undefined) {
-@@ -774,15 +754,18 @@
-                 await installManager.waitForIdle();
-               }
- 
--              // Consume the set of installation paths whose mods finished
--              // installing or were removed since the last deployment. Their
--              // external changes (refchange / srcdeleted) are expected and
--              // will be auto-resolved per-mod.
--              const recentChanges = installManager.consumeRecentChanges();
-+              // Installations may have changed both the mod list and its enabled state.
-+              const currentState = api.getState();
-+              profile = currentState.persistent.profiles[profile.id];
-+              if (profile === undefined) {
-+                throw new ProcessCanceled("The profile is no longer available.");
-+              }
-+              let mods: Record<string, IMod> = currentState.persistent.mods?.[gameId] ?? {};
-+              modPaths = game.getModPaths(gameDiscovery.path);
-+              validateProfileDeploymentTargets(api, game, profile, mods, modPaths);
- 
-               let mergeResult: { [modType: string]: IMergeResultByType };
-               const lastDeployment: { [typeId: string]: IDeployedFile[] } = {};
--              const mods: Record<string, IMod> = state.persistent.mods?.[profile?.gameId] ?? {};
-               notification.message = t("Deploying mods");
-               api.sendNotification(notification);
-               api.store.dispatch(startActivity("mods", "deployment"));
-@@ -816,6 +799,23 @@
-                 log("warn", "profile no longer found?", profileId);
-               }
- 
-+              mods = updatedState.persistent.mods?.[gameId] ?? {};
-+              const updatedModPaths = game.getModPaths(gameDiscovery.path);
-+              validateProfileDeploymentTargets(api, game, profile, mods, updatedModPaths);
-+              if (!_.isEqual(modPaths, updatedModPaths)) {
-+                // The loaded manifests belong to the original targets. Retry with
-+                // a consistent set instead of applying those manifests elsewhere.
-+                throw new ProcessCanceled(
-+                  t("Deployment folders changed during preparation. Please deploy again."),
-+                );
-+              }
-+
-+              // Consume the set of installation paths whose mods finished
-+              // installing or were removed since the last deployment. Their
-+              // external changes (refchange / srcdeleted) are expected and
-+              // will be auto-resolved per-mod.
-+              const recentChanges = installManager.consumeRecentChanges();
-+
-               progress(t("Checking for external changes"), 5);
-               await dealWithExternalChanges(
-                 api,
-@@ -849,10 +849,6 @@
-               const deployProgress = (name, percent) =>
-                 progress(t("Deploying: ") + name, 50 + percent / 2);
- 
--              const undiscovered = Object.keys(modPaths).filter(
--                (typeId) => !truthy(modPaths[typeId]),
--              );
--              await validateDeploymentTarget(api, undiscovered);
-               await deployAllModTypes(
-                 api,
-                 activator,
-@@ -901,6 +897,7 @@
-             if (err instanceof UserCanceled) {
-               // nop
-             } else if (err instanceof ProcessCanceled) {
-+              api.store.dispatch(setDeploymentNecessary(gameId, true));
-               api.sendNotification({
-                 type: "warning",
-                 title: "Deployment interrupted",
-@@ -1223,7 +1220,7 @@
-   };
- }
- 
--function onDeploySingleMod(api: IExtensionApi) {
-+export function onDeploySingleMod(api: IExtensionApi) {
-   return async (gameId: string, modId: string, enable?: boolean) => {
-     const state: IState = api.store.getState();
-     const game = getGame(gameId);
-@@ -1241,8 +1238,19 @@
-       return;
-     }
- 
--    const dataPath = game.getModPaths(discovery.path)[mod.type || ""];
-+    const modPaths = game.getModPaths(discovery.path);
-+    const dataPath = modPaths[mod.type || ""];
-     if (!truthy(dataPath)) {
-+      try {
-+        validateDeploymentTargets(api, game, [mod], modPaths);
-+      } catch (err) {
-+        api.sendNotification({
-+          type: "warning",
-+          title: "Deployment interrupted",
-+          message: unknownToError(err).message,
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+--- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+@@ -348,8 +348,11 @@ abstract class LinkingActivator implements IDeploymentMethod {
+     deployPath: string,
+     blackList: BlacklistSet,
+   ): Promise<void> {
+-    return Promise.resolve(
+-      fs
++    return Promise.resolve().then(() => {
++      // turbowalk bypasses the filesystem compatibility wrapper. Resolve before
++      // its missing-directory handler so an unavailable prefix still rejects.
++      sourcePath = resolveCaseInsensitiveSync(sourcePath);
++      return fs
+         .statAsync(sourcePath)
+         .then(() =>
+           turbowalk(
+@@ -386,32 +389,35 @@ abstract class LinkingActivator implements IDeploymentMethod {
+             return null;
+           }
+           throw err;
+-        }),
+-    );
 +        });
-+        api.store.dispatch(setDeploymentNecessary(gameId, true));
-+      }
-       return;
-     }
-     const stagingPath: string = installPathForGame(state, gameId);
-@@ -1262,7 +1270,33 @@
++    });
+   }
  
-     const subdir = genSubDirFunc(game, getModType(mod.type));
-     await withActivationLock(async () => {
-+      let deploymentPrepared = false;
-       try {
-+        // Another deployment or extension setup may have changed the target
-+        // while this request was waiting for the activation lock.
-+        const currentState = api.getState();
-+        const currentGame = getGame(gameId);
-+        const currentDiscovery = currentState.settings.gameMode.discovered?.[gameId];
-+        const currentMod = currentState.persistent.mods?.[gameId]?.[modId];
-+        if (
-+          currentGame === undefined ||
-+          currentDiscovery?.path === undefined ||
-+          currentMod === undefined
-+        ) {
-+          throw new ProcessCanceled(api.translate("The game or mod is no longer available."));
-+        }
-+        const currentModPaths = currentGame.getModPaths(currentDiscovery.path);
-+        validateDeploymentTargets(api, currentGame, [currentMod], currentModPaths);
-+        if (
-+          currentModPaths[currentMod.type || ""] !== dataPath ||
-+          currentMod.type !== mod.type ||
-+          currentMod.installationPath !== mod.installationPath ||
-+          installPathForGame(currentState, gameId) !== stagingPath
-+        ) {
-+          throw new ProcessCanceled(
-+            api.translate("Deployment folders changed while waiting. Please deploy again."),
-+          );
-+        }
-         const normalize = await getDeploymentNormalizeFunc(game, discovery.path, dataPath);
-         const lastActivation = await loadActivation(
-           api,
-@@ -1273,6 +1307,7 @@
-           activator,
-         );
-         resetDeploymentFailures(api, gameId);
-+        deploymentPrepared = true;
-         await activator.prepare(dataPath, false, lastActivation, normalize);
-         if (mod !== undefined) {
-           if (enable !== false) {
-@@ -1298,11 +1333,12 @@
-         );
-         reportRecordedFailures(api, gameId);
-       } catch (unknownErr) {
--        if (activator.cancel !== undefined) {
-+        if (deploymentPrepared && activator.cancel !== undefined) {
-           activator.cancel(gameId, dataPath, stagingPath);
-         }
-         const err = unknownToError(unknownErr);
-         if (err instanceof ProcessCanceled) {
-+          api.store.dispatch(setDeploymentNecessary(gameId, true));
-           api.sendNotification({
-             type: "warning",
-             title: "Deployment interrupted",
+   public deactivate(sourcePath: string, dataPath: string, sourceName: string): PromiseLike<void> {
+-    return turbowalk(
+-      sourcePath,
+-      (entries) => {
+-        if (this.mContext === undefined) {
+-          return;
+-        }
+-        entries.forEach((entry) => {
+-          if (!entry.isDirectory) {
+-            const relPath: string = path.relative(sourcePath, entry.filePath);
+-            const normPath = this.mNormalize(path.join(dataPath, relPath));
+-            if (
+-              this.mContext.newDeployment[normPath] !== undefined &&
+-              this.mContext.newDeployment[normPath].source === sourceName
+-            ) {
+-              delete this.mContext.newDeployment[normPath];
+-            }
++    return Promise.resolve().then(() => {
++      sourcePath = resolveCaseInsensitiveSync(sourcePath);
++      return turbowalk(
++        sourcePath,
++        (entries) => {
++          if (this.mContext === undefined) {
++            return;
+           }
+-        });
+-      },
+-      { skipHidden: false },
+-    );
++          entries.forEach((entry) => {
++            if (!entry.isDirectory) {
++              const relPath: string = path.relative(sourcePath, entry.filePath);
++              const normPath = this.mNormalize(path.join(dataPath, relPath));
++              if (
++                this.mContext.newDeployment[normPath] !== undefined &&
++                this.mContext.newDeployment[normPath].source === sourceName
++              ) {
++                delete this.mContext.newDeployment[normPath];
++              }
++            }
++          });
++        },
++        { skipHidden: false },
++      );
++    });
+   }
+ 
+   public prePurge(): Promise<void> {
 diff --git a/src/renderer/src/extensions/mod_management/index.deploymentTargets.test.ts b/src/renderer/src/extensions/mod_management/index.deploymentTargets.test.ts
 new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/extensions/mod_management/index.deploymentTargets.test.ts
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,276 @@
 +import Bluebird from "bluebird";
 +import { beforeEach, describe, expect, it, vi } from "vitest";
 +
@@ -474,6 +257,7 @@ new file mode 100644
 +    settings: {
 +      gameMode: { discovered: { [gameId]: { path: "/game" } } },
 +      mods: { installPath: { [gameId]: "/staging" } },
++      window: { useModernLayout: false },
 +    },
 +    persistent: {
 +      profiles: { profile: { id: "profile", gameId, modState: { config: { enabled: true } } } },
@@ -706,75 +490,223 @@ new file mode 100644
 +    expect(api.sendNotification).not.toHaveBeenCalled();
 +  });
 +});
-diff --git a/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts
-new file mode 100644
---- /dev/null
-+++ b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts
-@@ -0,0 +1,64 @@
-+import type { IExtensionApi } from "../../../types/IExtensionContext";
-+import type { IGame } from "../../../types/IGame";
-+import { ProcessCanceled } from "../../../util/CustomErrors";
-+import { getModType } from "../../gamemode_management/util/modTypeExtensions";
-+import type { IProfile } from "../../profile_management/types/IProfile";
-+import type { IMod } from "../types/IMod";
+diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/src/extensions/mod_management/index.ts
+--- a/src/renderer/src/extensions/mod_management/index.ts
++++ b/src/renderer/src/extensions/mod_management/index.ts
+@@ -133,6 +133,10 @@ import renderModName from "./util/modName";
+ import { getModSources, registerModSource } from "./util/modSource";
+ import sortMods from "./util/sort";
+ import { setResolvedCB } from "./util/testModReference";
++import {
++  validateDeploymentTargets,
++  validateProfileDeploymentTargets,
++} from "./util/validateDeploymentTargets";
+ import ActivationButton from "./views/ActivationButton";
+ import DeactivationButton from "./views/DeactivationButton";
+ import type { IDuplicatesMap, IRemoveDuplicateMap } from "./views/DuplicatesDialog";
+@@ -364,30 +368,6 @@ async function deployAllModTypes(
+   }
+ }
+ 
+-async function validateDeploymentTarget(api: IExtensionApi, undiscovered: string[]) {
+-  if (undiscovered.length === 0) {
+-    return;
+-  }
+-  const result = await api.showDialog(
+-    "error",
+-    "Deployment target unknown",
+-    {
+-      text:
+-        "The deployment directory for some mod type(s) ({{ types }}) " +
+-        "is unknown. Mods of these types will not be deployed. " +
+-        "Maybe this/these type(s) require further configuration or " +
+-        "external tools.",
+-      parameters: {
+-        types: undiscovered.join(", "),
+-      },
+-    },
+-    [{ label: "Cancel" }, { label: "Ignore" }],
+-  );
+-  if (result.action === "Cancel") {
+-    throw new UserCanceled();
+-  }
+-}
+-
+ function checkIncompatibilities(
+   api: IExtensionApi,
+   profile: IProfile,
+@@ -627,7 +607,7 @@ function deployableModTypes(modPaths: { [typeId: string]: string }) {
+   return Object.keys(modPaths).filter((typeId) => truthy(modPaths[typeId]));
+ }
+ 
+-function genUpdateModDeployment(installManager: InstallManager) {
++export function genUpdateModDeployment(installManager: InstallManager) {
+   return (
+     api: IExtensionApi,
+     manual: boolean,
+@@ -685,7 +665,7 @@ function genUpdateModDeployment(installManager: InstallManager) {
+     }
+     const stagingPath = installPathForGame(state, gameId);
+ 
+-    const modPaths = game.getModPaths(gameDiscovery.path);
++    let modPaths = game.getModPaths(gameDiscovery.path);
+     const activator = getCurrentActivator(state, gameId, true);
+ 
+     if (activator === undefined) {
+@@ -778,15 +758,18 @@ function genUpdateModDeployment(installManager: InstallManager) {
+                 await installManager.waitForIdle();
+               }
+ 
+-              // Consume the set of installation paths whose mods finished
+-              // installing or were removed since the last deployment. Their
+-              // external changes (refchange / srcdeleted) are expected and
+-              // will be auto-resolved per-mod.
+-              const recentChanges = installManager.consumeRecentChanges();
++              // Installations may have changed both the mod list and its enabled state.
++              const currentState = api.getState();
++              profile = currentState.persistent.profiles[profile.id];
++              if (profile === undefined) {
++                throw new ProcessCanceled("The profile is no longer available.");
++              }
++              let mods: Record<string, IMod> = currentState.persistent.mods?.[gameId] ?? {};
++              modPaths = game.getModPaths(gameDiscovery.path);
++              validateProfileDeploymentTargets(api, game, profile, mods, modPaths);
+ 
+               let mergeResult: { [modType: string]: IMergeResultByType };
+               const lastDeployment: { [typeId: string]: IDeployedFile[] } = {};
+-              const mods: Record<string, IMod> = state.persistent.mods?.[profile?.gameId] ?? {};
+               notification.message = t("Deploying mods");
+               if (showNotification) {
+                 api.sendNotification(notification);
+@@ -822,6 +805,23 @@ function genUpdateModDeployment(installManager: InstallManager) {
+                 log("warn", "profile no longer found?", profileId);
+               }
+ 
++              mods = updatedState.persistent.mods?.[gameId] ?? {};
++              const updatedModPaths = game.getModPaths(gameDiscovery.path);
++              validateProfileDeploymentTargets(api, game, profile, mods, updatedModPaths);
++              if (!_.isEqual(modPaths, updatedModPaths)) {
++                // The loaded manifests belong to the original targets. Retry with
++                // a consistent set instead of applying those manifests elsewhere.
++                throw new ProcessCanceled(
++                  t("Deployment folders changed during preparation. Please deploy again."),
++                );
++              }
 +
-+/** Validate only mods being deployed; supported types returning undefined intentionally do not deploy. */
-+export function validateDeploymentTargets(
-+  api: IExtensionApi,
-+  game: IGame,
-+  mods: IMod[],
-+  modPaths: { [typeId: string]: string },
-+): void {
-+  const missing = new Map<string, string[]>();
-+  for (const mod of mods) {
-+    if (mod.state !== "installed") {
-+      continue;
-+    }
-+    const typeId = mod.type || "";
-+    if (Object.prototype.hasOwnProperty.call(modPaths, typeId) && modPaths[typeId]) {
-+      continue;
-+    }
-+    const type = getModType(typeId);
-+    if (type?.isSupported(game.id) && type.getPath(game) === undefined) {
-+      // Collections and externally managed installers (for example UMM).
-+      continue;
-+    }
-+    const names = missing.get(typeId) ?? [];
-+    names.push(mod.attributes?.customFileName || mod.attributes?.name || mod.id);
-+    missing.set(typeId, names);
-+  }
-+  if (missing.size > 0) {
-+    throw new ProcessCanceled(
-+      api.translate(
-+        "Deployment cannot continue because these mods have no supported target folder: {{mods}}. " +
-+          "Check the game extension and its configuration, or disable these mods before deploying again.",
-+        {
-+          replace: {
-+            mods: Array.from(
-+              missing,
-+              ([typeId, names]) => `${names.join(", ")} (${typeId || api.translate("Default")})`,
-+            ).join("; "),
-+          },
-+        },
-+      ),
-+    );
-+  }
-+}
++              // Consume the set of installation paths whose mods finished
++              // installing or were removed since the last deployment. Their
++              // external changes (refchange / srcdeleted) are expected and
++              // will be auto-resolved per-mod.
++              const recentChanges = installManager.consumeRecentChanges();
 +
-+export function validateProfileDeploymentTargets(
-+  api: IExtensionApi,
-+  game: IGame,
-+  profile: IProfile,
-+  mods: Record<string, IMod>,
-+  modPaths: { [typeId: string]: string },
-+): void {
-+  validateDeploymentTargets(
-+    api,
-+    game,
-+    Object.values(mods).filter((mod) => profile.modState?.[mod.id]?.enabled),
-+    modPaths,
-+  );
-+}
+               progress(t("Checking for external changes"), 5);
+               await dealWithExternalChanges(
+                 api,
+@@ -855,10 +855,6 @@ function genUpdateModDeployment(installManager: InstallManager) {
+               const deployProgress = (name, percent) =>
+                 progress(t("Deploying: ") + name, 50 + percent / 2, name);
+ 
+-              const undiscovered = Object.keys(modPaths).filter(
+-                (typeId) => !truthy(modPaths[typeId]),
+-              );
+-              await validateDeploymentTarget(api, undiscovered);
+               await deployAllModTypes(
+                 api,
+                 activator,
+@@ -907,6 +903,7 @@ function genUpdateModDeployment(installManager: InstallManager) {
+             if (err instanceof UserCanceled) {
+               // nop
+             } else if (err instanceof ProcessCanceled) {
++              api.store.dispatch(setDeploymentNecessary(gameId, true));
+               api.sendNotification({
+                 type: "warning",
+                 title: "Deployment interrupted",
+@@ -1235,7 +1232,7 @@ function onModsEnabled(api: IExtensionApi, deploymentTimer: Debouncer) {
+   };
+ }
+ 
+-function onDeploySingleMod(api: IExtensionApi) {
++export function onDeploySingleMod(api: IExtensionApi) {
+   return async (gameId: string, modId: string, enable?: boolean) => {
+     const state: IState = api.store.getState();
+     const game = getGame(gameId);
+@@ -1253,8 +1250,19 @@ function onDeploySingleMod(api: IExtensionApi) {
+       return;
+     }
+ 
+-    const dataPath = game.getModPaths(discovery.path)[mod.type || ""];
++    const modPaths = game.getModPaths(discovery.path);
++    const dataPath = modPaths[mod.type || ""];
+     if (!truthy(dataPath)) {
++      try {
++        validateDeploymentTargets(api, game, [mod], modPaths);
++      } catch (err) {
++        api.sendNotification({
++          type: "warning",
++          title: "Deployment interrupted",
++          message: unknownToError(err).message,
++        });
++        api.store.dispatch(setDeploymentNecessary(gameId, true));
++      }
+       return;
+     }
+     const stagingPath: string = installPathForGame(state, gameId);
+@@ -1274,7 +1282,33 @@ function onDeploySingleMod(api: IExtensionApi) {
+ 
+     const subdir = genSubDirFunc(game, getModType(mod.type));
+     await withActivationLock(async () => {
++      let deploymentPrepared = false;
+       try {
++        // Another deployment or extension setup may have changed the target
++        // while this request was waiting for the activation lock.
++        const currentState = api.getState();
++        const currentGame = getGame(gameId);
++        const currentDiscovery = currentState.settings.gameMode.discovered?.[gameId];
++        const currentMod = currentState.persistent.mods?.[gameId]?.[modId];
++        if (
++          currentGame === undefined ||
++          currentDiscovery?.path === undefined ||
++          currentMod === undefined
++        ) {
++          throw new ProcessCanceled(api.translate("The game or mod is no longer available."));
++        }
++        const currentModPaths = currentGame.getModPaths(currentDiscovery.path);
++        validateDeploymentTargets(api, currentGame, [currentMod], currentModPaths);
++        if (
++          currentModPaths[currentMod.type || ""] !== dataPath ||
++          currentMod.type !== mod.type ||
++          currentMod.installationPath !== mod.installationPath ||
++          installPathForGame(currentState, gameId) !== stagingPath
++        ) {
++          throw new ProcessCanceled(
++            api.translate("Deployment folders changed while waiting. Please deploy again."),
++          );
++        }
+         const normalize = await getDeploymentNormalizeFunc(game, discovery.path, dataPath);
+         const lastActivation = await loadActivation(
+           api,
+@@ -1285,6 +1319,7 @@ function onDeploySingleMod(api: IExtensionApi) {
+           activator,
+         );
+         resetDeploymentFailures(api, gameId);
++        deploymentPrepared = true;
+         await activator.prepare(dataPath, false, lastActivation, normalize);
+         if (mod !== undefined) {
+           if (enable !== false) {
+@@ -1310,11 +1345,12 @@ function onDeploySingleMod(api: IExtensionApi) {
+         );
+         reportRecordedFailures(api, gameId);
+       } catch (unknownErr) {
+-        if (activator.cancel !== undefined) {
++        if (deploymentPrepared && activator.cancel !== undefined) {
+           activator.cancel(gameId, dataPath, stagingPath);
+         }
+         const err = unknownToError(unknownErr);
+         if (err instanceof ProcessCanceled) {
++          api.store.dispatch(setDeploymentNecessary(gameId, true));
+           api.sendNotification({
+             type: "warning",
+             title: "Deployment interrupted",
 diff --git a/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.test.ts b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.test.ts
 new file mode 100644
 --- /dev/null
@@ -880,10 +812,79 @@ new file mode 100644
 +    ).toThrow(ProcessCanceled);
 +  });
 +});
+diff --git a/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/validateDeploymentTargets.ts
+@@ -0,0 +1,64 @@
++import type { IExtensionApi } from "../../../types/IExtensionContext";
++import type { IGame } from "../../../types/IGame";
++import { ProcessCanceled } from "../../../util/CustomErrors";
++import { getModType } from "../../gamemode_management/util/modTypeExtensions";
++import type { IProfile } from "../../profile_management/types/IProfile";
++import type { IMod } from "../types/IMod";
++
++/** Validate only mods being deployed; supported types returning undefined intentionally do not deploy. */
++export function validateDeploymentTargets(
++  api: IExtensionApi,
++  game: IGame,
++  mods: IMod[],
++  modPaths: { [typeId: string]: string },
++): void {
++  const missing = new Map<string, string[]>();
++  for (const mod of mods) {
++    if (mod.state !== "installed") {
++      continue;
++    }
++    const typeId = mod.type || "";
++    if (Object.prototype.hasOwnProperty.call(modPaths, typeId) && modPaths[typeId]) {
++      continue;
++    }
++    const type = getModType(typeId);
++    if (type?.isSupported(game.id) && type.getPath(game) === undefined) {
++      // Collections and externally managed installers (for example UMM).
++      continue;
++    }
++    const names = missing.get(typeId) ?? [];
++    names.push(mod.attributes?.customFileName || mod.attributes?.name || mod.id);
++    missing.set(typeId, names);
++  }
++  if (missing.size > 0) {
++    throw new ProcessCanceled(
++      api.translate(
++        "Deployment cannot continue because these mods have no supported target folder: {{mods}}. " +
++          "Check the game extension and its configuration, or disable these mods before deploying again.",
++        {
++          replace: {
++            mods: Array.from(
++              missing,
++              ([typeId, names]) => `${names.join(", ")} (${typeId || api.translate("Default")})`,
++            ).join("; "),
++          },
++        },
++      ),
++    );
++  }
++}
++
++export function validateProfileDeploymentTargets(
++  api: IExtensionApi,
++  game: IGame,
++  profile: IProfile,
++  mods: Record<string, IMod>,
++  modPaths: { [typeId: string]: string },
++): void {
++  validateDeploymentTargets(
++    api,
++    game,
++    Object.values(mods).filter((mod) => profile.modState?.[mod.id]?.enabled),
++    modPaths,
++  );
++}
 diff --git a/src/renderer/src/extensions/symlink_activator/index.ts b/src/renderer/src/extensions/symlink_activator/index.ts
 --- a/src/renderer/src/extensions/symlink_activator/index.ts
 +++ b/src/renderer/src/extensions/symlink_activator/index.ts
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,7 @@ import { UserCanceled } from "../../util/CustomErrors";
  import * as fs from "../../util/fs";
  import getVortexPath from "../../util/getVortexPath";
  import type { TFunction } from "../../util/i18n";
@@ -891,7 +892,7 @@ diff --git a/src/renderer/src/extensions/symlink_activator/index.ts b/src/render
  import { log } from "../../util/log";
  import { activeGameId, gameName } from "../../util/selectors";
  import walk from "../../util/walk";
-@@ -222,7 +223,7 @@
+@@ -222,7 +223,7 @@ class DeploymendMethod extends LinkingDeployment {
      return (
        fs
          .readlinkAsync(linkPath)
