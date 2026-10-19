@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.9.0-1 - 2026-10-19
+
 - Vortex 2.9.0.
 - LOOT uses the native binding that now comes with Vortex itself instead of
   one built from libloot's sources, so building the package no longer needs
