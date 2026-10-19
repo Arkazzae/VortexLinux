@@ -1,5 +1,5 @@
 diff --git a/extensions/gamebryo-archive-support/package.json b/extensions/gamebryo-archive-support/package.json
-index e683caf..c28e757 100644
+index e065fc9..3dac972 100644
 --- a/extensions/gamebryo-archive-support/package.json
 +++ b/extensions/gamebryo-archive-support/package.json
 @@ -4,7 +4,7 @@
@@ -9,8 +9,8 @@ index e683caf..c28e757 100644
 -    "build": "node -e \"if(process.platform==='win32')process.exit(1)\" || (pnpm run _build)",
 +    "build": "pnpm run _build",
      "typecheck": "pnpm tsc",
-     "test": "pnpm exec vitest run"
-   },
+     "test": "pnpm exec vitest run",
+     "lint:strict": "pnpm exec node ../../scripts/strict-lint.mjs"
 diff --git a/extensions/gamebryo-archive-support/src/archivePath.ts b/extensions/gamebryo-archive-support/src/archivePath.ts
 new file mode 100644
 index 0000000..fb8dbc5

@@ -1,7 +1,7 @@
 pkgbase = vortex-linux
 	pkgdesc = Community build of Vortex with generic Linux compatibility patches
-	pkgver = 2.8.2
-	pkgrel = 4
+	pkgver = 2.9.0
+	pkgrel = 1
 	url = https://github.com/Arkazzae/VortexLinux
 	install = vortex.install
 	arch = x86_64
@@ -14,7 +14,6 @@ pkgbase = vortex-linux
 	makedepends = patchelf
 	makedepends = python
 	makedepends = python-setuptools
-	makedepends = rust
 	makedepends = yarn
 	depends = alsa-lib
 	depends = at-spi2-core
@@ -44,7 +43,7 @@ pkgbase = vortex-linux
 	depends = xdg-utils
 	optdepends = kde-cli-tools: native trash support on KDE Plasma
 	optdepends = pipewire: screen sharing under Wayland
-	provides = vortex=2.8.2
+	provides = vortex=2.9.0
 	conflicts = vortex
 	conflicts = vortex-bin
 	conflicts = vortex-git
@@ -57,9 +56,8 @@ pkgbase = vortex-linux
 	noextract = windowsdesktop-runtime-10.0.10-win-x64.zip
 	options = !debug
 	options = !strip
-	source = vortex::git+https://github.com/Nexus-Mods/Vortex.git#commit=e136d9c83492580b6a9b5d9e723964fa3dd56bfd
+	source = vortex::git+https://github.com/Nexus-Mods/Vortex.git#commit=e04093000d0f6ccf78994670599f7a42b361a038
 	source = pnpm-11.10.0.tgz::https://registry.npmjs.org/pnpm/-/pnpm-11.10.0.tgz
-	source = libloot-136f3983c3eec7d377f83a7e7e0b0129aa5c8fe1.tar.gz::https://codeload.github.com/loot/libloot/tar.gz/136f3983c3eec7d377f83a7e7e0b0129aa5c8fe1
 	source = 0001-linux-runtime-compatibility.patch
 	source = 0002-linux-path-and-executable-discovery.patch
 	source = 0003-linux-filesystem-and-deployment.patch
@@ -93,6 +91,8 @@ pkgbase = vortex-linux
 	source = 0032-linux-deployment-target-paths.patch
 	source = 0033-linux-symlinked-extension-paths.patch
 	source = 0034-linux-case-only-platform-paths.patch
+	source = 0035-linux-backslash-archive-paths.patch
+	source = 0036-linux-appimage-nxm-links.patch
 	source = vortex.sh
 	source = vortex.desktop
 	source = README.md
@@ -105,7 +105,8 @@ pkgbase = vortex-linux
 	source = windowsdesktop-runtime-10.0.10-win-x64.zip::https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.10/windowsdesktop-runtime-10.0.10-win-x64.zip
 	sha512sums = SKIP
 	sha512sums = 0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8
-	sha512sums = 4de893736611130d7b360e89ead5d27fb15b6ced9113a7d55604370c4db9db55cb8dca170d212b15be7f51bd40aca876dbea042e5f2a86e114b57cb905aaad99
+	sha512sums = SKIP
+	sha512sums = SKIP
 	sha512sums = SKIP
 	sha512sums = SKIP
 	sha512sums = SKIP

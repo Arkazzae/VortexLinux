@@ -50,45 +50,12 @@ index 000000000..891c1c20a
 +    expect(getProductVersionLocalized("/games/Missing.exe")).toBe("");
 +  });
 +});
-diff --git a/packages/exe-version/src/index.ts b/packages/exe-version/src/index.ts
-index a290954d1..54a814ac3 100644
---- a/packages/exe-version/src/index.ts
-+++ b/packages/exe-version/src/index.ts
-@@ -8,28 +8,24 @@
- import { readVersionInfo } from "./peVersion";
- 
- export function getFileVersion(exeFile: string): string {
--  if (process.platform !== "win32") return "";
-   const info = readVersionInfo(exeFile);
-   if (info === undefined) return "";
-   return info.fileVersion.join(".");
- }
- 
- export function getProductVersion(exeFile: string): string {
--  if (process.platform !== "win32") return "";
-   const info = readVersionInfo(exeFile);
-   if (info === undefined) return "";
-   return info.productVersion.join(".");
- }
- 
- export function getFileVersionLocalized(exeFile: string): string {
--  if (process.platform !== "win32") return getFileVersion(exeFile);
-   const info = readVersionInfo(exeFile);
-   if (info === undefined) return "";
-   return info.fileVersionString;
- }
- 
- export function getProductVersionLocalized(exeFile: string): string {
--  if (process.platform !== "win32") return getProductVersion(exeFile);
-   const info = readVersionInfo(exeFile);
-   if (info === undefined) return "";
-   return info.productVersionString;
 diff --git a/src/main/electron-builder.config.json b/src/main/electron-builder.config.json
-index 080a0afb5..f1d0a19cf 100644
+index 41318379e..eff9d3fb9 100644
 --- a/src/main/electron-builder.config.json
 +++ b/src/main/electron-builder.config.json
-@@ -74,7 +74,6 @@
-     "assets/dotnetprobe*",
+@@ -76,7 +76,6 @@
+     "assets/loot/**",
      "assets/*.exe",
      "assets/css/**",
 -    "**/*.node",
@@ -96,7 +63,7 @@ index 080a0afb5..f1d0a19cf 100644
    ],
    "buildDependenciesFromSource": false,
 diff --git a/src/main/package.json b/src/main/package.json
-index f0f5b8bee..9e26507c3 100644
+index f2d2269c5..cc855bc2a 100644
 --- a/src/main/package.json
 +++ b/src/main/package.json
 @@ -3,7 +3,7 @@

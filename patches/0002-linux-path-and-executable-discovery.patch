@@ -44,7 +44,7 @@ index cec6708..cb110fa 100644
            return t("<Invalid Drive>");
          }
 diff --git a/src/renderer/src/extensions/gamemode_management/index.ts b/src/renderer/src/extensions/gamemode_management/index.ts
-index 14c83e5..62a3e9a 100644
+index 06e95bf..df00918 100644
 --- a/src/renderer/src/extensions/gamemode_management/index.ts
 +++ b/src/renderer/src/extensions/gamemode_management/index.ts
 @@ -30,6 +30,7 @@ import GameStoreHelperInstance from "../../util/GameStoreHelper";
@@ -55,7 +55,7 @@ index 14c83e5..62a3e9a 100644
  import opn from "../../util/opn";
  import { activeGameId, activeProfile } from "../../util/selectors";
  import { getSafe } from "../../util/storeHelper";
-@@ -180,7 +181,7 @@ function refreshGameInfo(store: Redux.Store<IState>, gameId: string): PromiseBB<
+@@ -187,7 +188,7 @@ function refreshGameInfo(store: Redux.Store<IState>, gameId: string): PromiseBB<
  
  function verifyGamePath(game: IGame, gamePath: string): PromiseBB<void> {
    return PromiseBB.map(game.requiredFiles || [], (file) =>
@@ -64,16 +64,16 @@ index 14c83e5..62a3e9a 100644
    )
      .then(() => undefined)
      .catch((err) => {
-@@ -314,7 +315,7 @@ function browseGameLocation(api: IExtensionApi, gameId: string): PromiseBB<void>
-             return manualGameStoreSelection(api, corrected);
-           })
-           .then(({ corrected, store }) => {
--            let executable = game.executable(corrected);
-+            let executable = resolveNativeExecutable(corrected, game.executable(corrected));
-             if (executable === game.executable()) {
-               executable = undefined;
-             }
-@@ -488,7 +489,7 @@ function removeDisappearedGames(
+@@ -330,7 +331,7 @@ async function browseGameLocation(api: IExtensionApi, gameId: string): Promise<v
+       store = await manualGameStoreSelection(api, correctedGamePath);
+     }
+ 
+-    let executable = game.executable(correctedGamePath);
++    let executable = resolveNativeExecutable(correctedGamePath, game.executable(correctedGamePath));
+     if (executable === game.executable()) {
+       executable = undefined;
+     }
+@@ -500,7 +501,7 @@ function removeDisappearedGames(
        return PromiseBB.resolve();
      }
      return PromiseBB.map(requiredFiles, (file) =>
@@ -83,21 +83,21 @@ index 14c83e5..62a3e9a 100644
        .then(() => undefined)
        .catch((err) => {
 diff --git a/src/renderer/src/extensions/gamemode_management/util/discovery.ts b/src/renderer/src/extensions/gamemode_management/util/discovery.ts
-index ed4c17c..7a866b4 100644
+index 90f5c70..4b193a7 100644
 --- a/src/renderer/src/extensions/gamemode_management/util/discovery.ts
 +++ b/src/renderer/src/extensions/gamemode_management/util/discovery.ts
-@@ -4,7 +4,6 @@ import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/
+@@ -5,7 +5,6 @@ import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/
  import Bluebird from "bluebird";
  import * as fsExtra from "fs-extra";
  import turbowalk from "turbowalk";
 -import * as winapi from "winapi-bindings";
  
- import type { IDiscoveredTool } from "../../../types/IDiscoveredTool";
- import type { IExtensionApi } from "../../../types/IExtensionContext";
-@@ -19,10 +18,12 @@ import type { Normalize } from "../../../util/getNormalizeFunc";
+ import { log } from "@/logging";
+ 
+@@ -21,10 +20,12 @@ import * as fs from "../../../util/fs";
+ import type { Normalize } from "../../../util/getNormalizeFunc";
  import getNormalizeFunc from "../../../util/getNormalizeFunc";
  import getVortexPath from "../../../util/getVortexPath";
- import { log } from "../../../util/log";
 +import { resolveNativeExecutable, resolvePlatformPath } from "../../../util/nativeExecutable";
  import StarterInfo from "../../../util/StarterInfo";
  import { getSafe } from "../../../util/storeHelper";
@@ -107,34 +107,25 @@ index ed4c17c..7a866b4 100644
  import { modPathsForGame } from "../../mod_management/selectors";
  import type { IDiscoveryResult } from "../types/IDiscoveryResult";
  import type { IToolStored } from "../types/IToolStored";
-@@ -60,7 +61,7 @@ export function quickDiscoveryTools(
-           return autoGenIcon(tool, toolPath, gameId).then(() => {
-             onDiscoveredTool(gameId, {
-               ...tool,
--              path: path.join(toolPath, tool.executable(toolPath)),
-+              path: resolvePlatformPath(toolPath, tool.executable(toolPath)),
-               hidden: false,
-               parameters: tool.parameters || [],
-               custom: false,
-@@ -81,7 +82,7 @@ export function quickDiscoveryTools(
-               return autoGenIcon(tool, resolvedPath, gameId).then(() => {
-                 onDiscoveredTool(gameId, {
-                   ...tool,
--                  path: path.join(resolvedPath, tool.executable(resolvedPath)),
-+                  path: resolvePlatformPath(resolvedPath, tool.executable(resolvedPath)),
-                   hidden: false,
-                   parameters: tool.parameters || [],
-                   custom: false,
-@@ -253,7 +254,7 @@ function handleDiscoveredGame(
-     return undefined;
-   }
+@@ -72,7 +73,7 @@ export async function quickDiscoveryTools(
+ 
+         onDiscoveredTool(gameId, {
+           ...tool,
+-          path: path.join(toolPath, tool.executable(toolPath)),
++          path: resolvePlatformPath(toolPath, tool.executable(toolPath)),
+           hidden: false,
+           parameters: tool.parameters || [],
+           custom: false,
+@@ -222,7 +223,7 @@ async function handleDiscoveredGame(
+   if (!resolvedPath) return undefined;
    log("info", "found game", { name: game.name, location: resolvedPath, store });
+ 
 -  const exe = game.executable(resolvedPath);
 +  const exe = resolveNativeExecutable(resolvedPath, game.executable(resolvedPath));
-   const disco: IDiscoveryResult = {
+   const discovery: IDiscoveryResult = {
      path: resolvedPath,
      executable: exe !== game.executable() ? exe : undefined,
-@@ -463,7 +464,7 @@ function verifyToolDir(tool: ITool, testPath: string): Bluebird<void> {
+@@ -423,7 +424,7 @@ function verifyToolDir(tool: ITool, testPath: string): Bluebird<void> {
      // is not something we want at this point because we don't even know yet if the user
      // wants to manage the game at all.
      (fileName: string) =>
@@ -143,7 +134,7 @@ index ed4c17c..7a866b4 100644
          return Bluebird.reject(err);
        }),
    ).then(() => undefined);
-@@ -572,7 +573,7 @@ function testApplicationDirValid(
+@@ -532,7 +533,7 @@ function testApplicationDirValid(
      .then(() => {
        const game = application as IGame;
        if (game.queryModPath !== undefined) {
@@ -152,7 +143,7 @@ index ed4c17c..7a866b4 100644
          const disco: IDiscoveryResult = {
            path: testPath,
            executable: exe !== game.executable() ? exe : undefined,
-@@ -581,7 +582,7 @@ function testApplicationDirValid(
+@@ -541,7 +542,7 @@ function testApplicationDirValid(
  
          return discoverRelativeTools(game, testPath, discoveredGames, onDiscoveredTool, normalize);
        } else {
@@ -161,7 +152,7 @@ index ed4c17c..7a866b4 100644
          return autoGenIcon(application, exePath, gameId).then(() => {
            onDiscoveredTool(gameId, {
              ...application,
-@@ -769,12 +770,12 @@ export async function suggestStagingPath(api: IExtensionApi, gameId: string): Pr
+@@ -729,12 +730,12 @@ export async function suggestStagingPath(api: IExtensionApi, gameId: string): Pr
  
    let suggestion: string;
  

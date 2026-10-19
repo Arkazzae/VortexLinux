@@ -9,7 +9,7 @@ const { testLoot } = require('./test-loot.cjs');
 
 async function testRuntime(appPath) {
   await require(path.join(appPath, 'assets/linux-self-test.cjs')).runLinuxSelfTest();
-  await testLoot(path.join(`${appPath}.unpacked`, 'bundledPlugins/gamebryo-plugin-management'));
+  await testLoot(path.join(`${appPath}.unpacked`, 'assets/loot'));
   const modulePath = path.join(appPath, 'node_modules/@nexusmods/fomod-installer-native/dist');
   const native = require(path.join(modulePath, 'resolve-native.js')).addon;
   assert.equal(native.ModInstaller.testSupported(['fomod/ModuleConfig.xml'], ['XmlScript']).supported, true);

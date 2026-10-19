@@ -1,3 +1,69 @@
+diff --git a/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.test.ts b/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.test.ts
+index 9bd1743..a97d31e 100644
+--- a/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.test.ts
++++ b/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.test.ts
+@@ -5,6 +5,7 @@ import * as path from "node:path";
+ import type { LootAsync } from "loot";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
++import { setCompatibilityGameProvider } from "../../../util/compatibilityPaths";
+ import { adaptLootForLinux, resolvePluginPaths } from "./linuxLoot";
+ 
+ describe.runIf(process.platform === "linux")("LOOT plugin paths on Linux", () => {
+@@ -31,6 +32,25 @@ describe.runIf(process.platform === "linux")("LOOT plugin paths on Linux", () =>
+     ]);
+   });
+ 
++  it("keeps a game installed under Documents on the host, not in the game's prefix", () => {
++    const documents = path.join(game, "Documents");
++    const host = path.join(documents, "Games", "Skyrim", "Data");
++    const prefix = path.join(game, "prefix");
++    const stale = path.join(prefix, "drive_c/users/steamuser/Documents/Games/Skyrim/Data");
++    for (const directory of [host, stale]) {
++      fs.mkdirSync(directory, { recursive: true });
++      fs.writeFileSync(path.join(directory, "Skyrim.esm"), "");
++    }
++    vi.stubEnv("VORTEX_LINUX_DOCUMENTS", documents);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++    try {
++      expect(resolvePluginPaths(host, ["skyrim.esm"])).toEqual([path.join(host, "Skyrim.esm")]);
++    } finally {
++      setCompatibilityGameProvider(undefined);
++      vi.unstubAllEnvs();
++    }
++  });
++
+   it("passes a missing plugin on as given so libloot reports it", () => {
+     expect(resolvePluginPaths(data, ["missing.esp", "/elsewhere/Gone.esp"])).toEqual([
+       "missing.esp",
+diff --git a/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.ts b/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.ts
+index e54d6f7..7d8d6e4 100644
+--- a/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.ts
++++ b/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.ts
+@@ -3,19 +3,20 @@ import * as path from "node:path";
+ 
+ import type { LootAsync } from "loot";
+ 
+-import { resolveCaseInsensitiveSync } from "../../../util/linuxCompatibility";
++import { matchExistingCaseSync } from "../../../util/linuxCompatibility";
+ 
+ /**
+  * libloot opens plugins at exactly the paths it is given. Vortex passes plugin IDs, which are
+  * lower case, and on a case-sensitive filesystem neither they nor a "data" folder spelled
+  * differently from "Data" would be found. Resolve each one to the file on disk, ghosted or not.
+- * A plugin that isn't there is passed on as given, so libloot reports it.
++ * A plugin that isn't there is passed on as given, so libloot reports it. Game files never go
++ * through the Wine user-folder mapping, so a game installed under ~/Documents stays where it is.
+  */
+ export function resolvePluginPaths(dataPath: string, plugins: string[]): string[] {
+   return plugins.map((plugin) => {
+     const requested = path.isAbsolute(plugin) ? plugin : path.join(dataPath, plugin);
+     for (const candidate of [requested, `${requested}.ghost`]) {
+-      const resolved = resolveCaseInsensitiveSync(candidate);
++      const resolved = matchExistingCaseSync(candidate);
+       if (fs.existsSync(resolved)) return resolved;
+     }
+     return plugin;
 diff --git a/src/renderer/src/util/linuxCompatibility.test.ts b/src/renderer/src/util/linuxCompatibility.test.ts
 index 4821f76..12f94eb 100644
 --- a/src/renderer/src/util/linuxCompatibility.test.ts

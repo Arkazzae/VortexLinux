@@ -26,7 +26,9 @@ These are general Linux fixes, not per-game hacks. Game-specific Vortex extensio
 
 Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension API's `util.epicGamesLauncher` is a shim over `GameStoreHelper` instead of `undefined` everywhere except Windows, so our Epic API fallback patch is gone 🎊.
 
- Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
+2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder 🎉. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
+
+Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
 
 ## Games tested (confirmed working)
 
@@ -66,7 +68,7 @@ No FUSE 2 on your system? Run it as:
 ./Vortex-*.AppImage --appimage-extract-and-run
 ```
 
-AppImages don't add themselves to your app menu or register as the `nxm://` handler. Gear Lever or AppImageLauncher handle that, or write a desktop entry yourself.
+AppImages don't add themselves to your app menu; Gear Lever or AppImageLauncher handle that. For Nexus Mods download links, turn on "Handle Nexus Links" in Vortex: the AppImage then registers itself as the `nxm://` handler and keeps pointing at wherever the AppImage file is. This uses `xdg-settings` from xdg-utils, which desktop distributions ship with their browsers.
 
 The AppImage embeds [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) information pointing at this repository's latest release, so Gear Lever, AppImageLauncher and `appimageupdatetool` can check for and apply updates in place. Vortex also shows a notification when a newer Linux release is published; the older builds from `recipes/` stay pinned and never update.
 
@@ -102,7 +104,7 @@ cd dist/arch-build
 makepkg -si
 ```
 
-The build pins both Vortex and libloot to exact upstream commits and downloads the source, Node dependencies, Electron and the Microsoft runtime files. First build is a big one.
+The build pins Vortex to an exact upstream commit and downloads the source, Node dependencies, Electron and the Microsoft runtime files. First build is a big one.
 
 Patches live in `patches/`, in the order listed by `_patches` in `PKGBUILD`.
 `prepare-arch-build.sh` copies the packaging files and patches into
@@ -146,7 +148,7 @@ What this does not cover: launching a real game, Steam login, Flatpak permission
 ```sh
 scripts/test-appimage.sh dist/Vortex-*.AppImage             # the AppImage check
 scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against the newest Vortex
-scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite (needs Rust for libloot)
+scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite
 ```
 
 `--ref pinned` checks the patches against the pinned version instead, and `--keep` keeps the prepared source for the test suite.
