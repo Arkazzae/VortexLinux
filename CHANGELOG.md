@@ -14,6 +14,9 @@ publishes a new Vortex version, taking any pending notes with it.
 - LOOT uses the native binding that now comes with Vortex itself instead of
   one built from libloot's sources, so building the package no longer needs
   Rust. It is the same libloot version, 0.29.6.
+- Mods whose archives use Windows backslashes between folders, such as
+  Appearance Runtime Plugin for Cyberpunk 2077, install into those folders
+  instead of as one file named after the whole path. (#16)
 
 ## 2.8.2-4 - 2026-10-16
 
