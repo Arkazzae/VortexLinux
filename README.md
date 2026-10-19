@@ -26,7 +26,9 @@ These are general Linux fixes, not per-game hacks. Game-specific Vortex extensio
 
 Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension API's `util.epicGamesLauncher` is a shim over `GameStoreHelper` instead of `undefined` everywhere except Windows, so our Epic API fallback patch is gone 🎊.
 
- Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
+2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder 🎉. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
+
+Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
 
 ## Games tested (confirmed working)
 
