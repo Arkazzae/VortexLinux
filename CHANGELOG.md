@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.9.0-2 - 2026-10-22
+
 - Mods whose archives use Windows backslashes between folders install
   correctly. Vortex can also remove a leftover `.installing` folder, and mods
   that earlier releases installed with backslashes in their file names, instead
