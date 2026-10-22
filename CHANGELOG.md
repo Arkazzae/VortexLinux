@@ -10,6 +10,14 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Mods whose archives use Windows backslashes between folders install
+  correctly. Vortex can also remove a leftover `.installing` folder, and mods
+  that earlier releases installed with backslashes in their file names, instead
+  of reporting them as "open in another application". (#16)
+- Folders that mods spell in different case, such as `textures` and
+  `Textures`, are deployed into one folder. Vortex created both when it linked
+  their files at the same time, and the game found only one of them. (#20)
+
 ## 2.9.0-1 - 2026-10-19
 
 - Vortex 2.9.0.

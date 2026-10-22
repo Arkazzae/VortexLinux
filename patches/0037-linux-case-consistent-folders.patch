@@ -1,0 +1,114 @@
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
+--- a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
+@@ -161,3 +161,65 @@ test.runIf(process.platform === "linux")(
+     );
+   },
+ );
++
++for (const method of ["hardlink", "symlink"] as const) {
++  test.runIf(process.platform === "linux")(
++    `${method} deployment puts folders that mods spell in different case into one folder`,
++    async ({ makeDeployment }) => {
++      // Fallout 4 has no loose Sound or Textures folders, so the mods create them while their
++      // files are linked in parallel.
++      const lowercase: Record<string, string> = {};
++      const capitalized: Record<string, string> = {};
++      for (let idx = 0; idx < 40; idx++) {
++        lowercase[`sound/fx/npc/creature${idx % 7}/a${idx}.wav`] = "a";
++        lowercase[`textures/actors/character/hair${idx % 5}/a${idx}.dds`] = "a";
++        capitalized[`Sound/FX/NPC/Creature${idx % 7}/b${idx}.wav`] = "b";
++        capitalized[`Textures/Actors/Character/Hair${idx % 5}/b${idx}.dds`] = "b";
++      }
++      const h = makeDeployment({ method, modName: "Lowercase", files: lowercase });
++      for (const [relPath, content] of Object.entries(capitalized)) {
++        const source = path.join(h.stagingDir, "Capitalized", relPath);
++        nodeFs.mkdirSync(path.dirname(source), { recursive: true });
++        nodeFs.writeFileSync(source, content);
++      }
++      const blacklist = new BlacklistSet([], { details: {} } as IGame, h.normalize);
++
++      await h.method.prepare(h.gameDir, false, [], h.normalize);
++      for (const modName of ["Lowercase", "Capitalized"]) {
++        await h.method.activate(path.join(h.stagingDir, modName), modName, "", blacklist);
++      }
++      await h.method.finalize("skyrimse", h.gameDir, h.stagingDir);
++
++      const deployed = nodeFs.readdirSync(h.gameDir, { recursive: true, withFileTypes: true });
++      const relative = (entry: nodeFs.Dirent) =>
++        path.relative(h.gameDir, path.join(entry.parentPath, entry.name)).toLowerCase();
++      expect(
++        deployed
++          .filter((entry) => entry.isDirectory())
++          .map(relative)
++          .sort(),
++      ).toEqual(
++        [
++          "sound",
++          "sound/fx",
++          "sound/fx/npc",
++          ...[0, 1, 2, 3, 4, 5, 6].map((idx) => `sound/fx/npc/creature${idx}`),
++          "textures",
++          "textures/actors",
++          "textures/actors/character",
++          ...[0, 1, 2, 3, 4].map((idx) => `textures/actors/character/hair${idx}`),
++        ].sort(),
++      );
++      expect(
++        deployed
++          .filter((entry) => !entry.isDirectory() && !entry.name.startsWith("."))
++          .map(relative)
++          .sort(),
++      ).toEqual(
++        [...Object.keys(lowercase), ...Object.keys(capitalized)]
++          .map((relPath) => relPath.toLowerCase())
++          .sort(),
++      );
++    },
++  );
++}
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+--- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+@@ -85,6 +85,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
+   private mQueue: Promise<void> = Promise.resolve();
+   private mContext: IDeploymentContext;
+   private mDirCache: Set<string>;
++  private mDirQueue: Promise<void> = Promise.resolve();
+ 
+   constructor(
+     id: string,
+@@ -663,16 +664,23 @@ abstract class LinkingActivator implements IDeploymentMethod {
+       }
+     };
+ 
+-    return Promise.resolve(
+-      this.mDirCache === undefined || !this.mDirCache.has(dirPath)
+-        ? fs.ensureDirAsync(dirPath, onDirCreated).then(() => {
+-            if (this.mDirCache === undefined) {
+-              this.mDirCache = new Set<string>();
+-            }
+-            this.mDirCache.add(dirPath);
+-          })
+-        : Promise.resolve(),
+-    ).then(() => didCreate);
++    const key = this.mNormalize !== undefined ? this.mNormalize(dirPath) : dirPath;
++    if (this.mDirCache?.has(key)) {
++      return Promise.resolve(false);
++    }
++    // Create one directory at a time. ensureDirAsync reuses the casing of a directory that
++    // exists, but links deployed in parallel to new "textures" and "Textures" folders would
++    // each find nothing and create both, and a Windows game sees only one of them.
++    const created = this.mDirQueue
++      .then(() => fs.ensureDirAsync(dirPath, onDirCreated))
++      .then(() => {
++        if (this.mDirCache === undefined) {
++          this.mDirCache = new Set<string>();
++        }
++        this.mDirCache.add(key);
++      });
++    this.mDirQueue = created.catch(() => undefined);
++    return created.then(() => didCreate);
+   }
+ 
+   private deduplicate(input: IFileChange[]): IFileChange[] {
