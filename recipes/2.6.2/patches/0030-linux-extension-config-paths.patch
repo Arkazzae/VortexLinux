@@ -1,0 +1,816 @@
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -232,7 +232,11 @@ function prefixUsers(users: string[]): string[] {
+   return selected !== undefined ? [selected] : users;
+ }
+ 
+-function windowsUserRoots(prefixes: string[], relativeRoot: string[]): string[] {
++function windowsUserRoots(
++  prefixes: string[],
++  relativeRoot: string[],
++  allowMissingRoot = false,
++): string[] {
+   return prefixes.flatMap((prefix) => {
+     const users = path.join(prefix, "drive_c", "users");
+     try {
+@@ -240,13 +244,23 @@ function windowsUserRoots(prefixes: string[], relativeRoot: string[]): string[]
+         .readdirSync(users, { withFileTypes: true })
+         .filter(
+           (entry) =>
+-            entry.isDirectory() &&
+             !["public", "default", "default user", "all users"].includes(entry.name.toLowerCase()),
+         )
+         .map((entry) => entry.name);
+       return prefixUsers(profiles)
+-        .map((user) => path.join(users, user, ...relativeRoot))
+-        .filter(fs.existsSync);
++        .filter((user) => {
++          try {
++            return fs.statSync(path.join(users, user)).isDirectory();
++          } catch {
++            return false;
++          }
++        })
++        .map(
++          (user) => resolveCandidate(path.join(users, user), path.join(...relativeRoot), 0)?.path,
++        )
++        .filter(
++          (root): root is string => root !== undefined && (allowMissingRoot || fs.existsSync(root)),
++        );
+     } catch {
+       return [];
+     }
+@@ -263,6 +277,11 @@ function resolveCandidate(
+   let existingParts = 0;
+ 
+   try {
++    if (!fs.existsSync(root)) {
++      return minimumExistingParts === 0
++        ? { existingParts: 0, path: path.join(root, relative) }
++        : undefined;
++    }
+     for (const [index, part] of parts.entries()) {
+       const exact = path.join(current, part);
+       if (fs.existsSync(exact)) {
+@@ -299,6 +318,24 @@ export function resolveSelectedWindowsUserPathSync(input: string): string {
+ }
+ 
+ export function resolveWindowsUserPathSync(input: string): string {
++  return resolveUserPathSync(input, false);
++}
++
++/** Resolve Windows-only roots for extension filesystem calls, including the root itself. */
++export function resolveExtensionUserPathSync(input: string): string {
++  return gameProvider?.() === undefined ? input : resolveUserPathSync(input, true);
++}
++
++function unavailablePrefix(): Error {
++  return Object.assign(
++    new Error(
++      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or configure its WINEPREFIX.",
++    ),
++    { code: "ENOENT" },
++  );
++}
++
++function resolveUserPathSync(input: string, extensionRoots: boolean): string {
+   if (process.platform !== "linux" || !path.isAbsolute(input)) {
+     return input;
+   }
+@@ -310,9 +347,10 @@ export function resolveWindowsUserPathSync(input: string): string {
+   const selected = gameProvider?.() !== undefined;
+   let prefixes: string[] | undefined;
+   const candidates = linuxUserPathMappings()
++    .filter((mapping) => !extensionRoots || mapping.gameData)
+     .flatMap((mapping) => {
+       const relative = path.relative(mapping.linuxRoot, input);
+-      if (relative.startsWith("..") || path.isAbsolute(relative) || relative.length === 0) {
++      if (!isPathInside(mapping.linuxRoot, input) || (!extensionRoots && relative.length === 0)) {
+         return [];
+       }
+       const myGames = relative.split(path.sep)[0].toLowerCase() === "my games";
+@@ -320,20 +358,24 @@ export function resolveWindowsUserPathSync(input: string): string {
+       prefixes ??= compatibilityPrefixes();
+       if (prefixes === undefined) {
+         if (!gameData) return [];
+-        throw Object.assign(
+-          new Error(
+-            "The selected game's Wine/Proton prefix is unavailable. Launch the game once, or configure its WINEPREFIX.",
+-          ),
+-          { code: "ENOENT" },
+-        );
++        throw unavailablePrefix();
+       }
+       // The selected game's own data belongs in its prefix even before the game
+       // creates it. Other paths are redirected only when the prefix already has
+       // them, so Linux files in Documents or ~/.config stay where they are.
+       const minimumExistingParts = selected && gameData ? 0 : myGames ? 2 : 1;
+-      return windowsUserRoots(prefixes, mapping.windowsRoot).map((root) =>
+-        resolveCandidate(root, relative, minimumExistingParts),
+-      );
++      const roots = windowsUserRoots(prefixes, mapping.windowsRoot, selected && gameData);
++      const resolved = roots.map((root) => resolveCandidate(root, relative, minimumExistingParts));
++      if (
++        selected &&
++        gameData &&
++        prefixes.length > 0 &&
++        resolved.every((entry) => entry === undefined)
++      ) {
++        // An unusable profile must never turn a Windows write into a host write.
++        throw unavailablePrefix();
++      }
++      return resolved;
+     })
+     .filter((candidate): candidate is ICandidate => candidate !== undefined);
+ 
+diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer/src/util/compatibilitySelection.test.ts
+--- a/src/renderer/src/util/compatibilitySelection.test.ts
++++ b/src/renderer/src/util/compatibilitySelection.test.ts
+@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ import {
+   resetCompatibilityPathCache,
++  resolveExtensionUserPathSync,
+   resolveWindowsUserPathSync,
+   setCompatibilityGameProvider,
+ } from "./compatibilityPaths";
+@@ -194,4 +195,120 @@ describe.runIf(process.platform === "linux")("selected compatibility prefix", ()
+     resetCompatibilityPathCache();
+     expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
+   });
++
++  it("uses a symlinked steamuser profile instead of stale host configuration", () => {
++    const prefix = path.join(home, "prefix");
++    const user = path.join(home, "moved-user");
++    const relativeConfig = "Example/Saved/Config/Windows/Engine.ini";
++    const local = path.join(home, "Local");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    fs.mkdirSync(path.join(user, "AppData/Local", path.dirname(relativeConfig)), {
++      recursive: true,
++    });
++    fs.mkdirSync(path.join(prefix, "drive_c/users"), { recursive: true });
++    fs.symlinkSync(user, path.join(prefix, "drive_c/users/steamuser"));
++    fs.mkdirSync(path.join(local, path.dirname(relativeConfig)), { recursive: true });
++    fs.writeFileSync(path.join(local, relativeConfig), "host");
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++    const expected = path.join(prefix, "drive_c/users/steamuser/AppData/Local", relativeConfig);
++    expect(resolveCaseInsensitiveSync(path.join(local, relativeConfig))).toBe(expected);
++    fs.writeFileSync(expected, "prefix");
++    expect(fs.readFileSync(path.join(local, relativeConfig), "utf8")).toBe("host");
++  });
++
++  it("creates a missing AppData root inside the selected user profile", () => {
++    const prefix = path.join(home, "prefix");
++    fixture(prefix);
++    const local = path.join(home, "Local");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++    const destination = resolveCaseInsensitiveSync(path.join(local, "Example/Engine.ini"));
++    expect(destination).toBe(
++      path.join(prefix, "drive_c/users/steamuser/AppData/Local/Example/Engine.ini"),
++    );
++    fs.mkdirSync(path.dirname(destination), { recursive: true });
++    fs.writeFileSync(destination, "config");
++    expect(fs.existsSync(local)).toBe(false);
++  });
++
++  it.each(["missing", "broken-symlink", "file"])("rejects a %s selected user profile", (kind) => {
++    const prefix = path.join(home, "prefix");
++    const users = path.join(prefix, "drive_c/users");
++    const local = path.join(home, "Local");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    fs.mkdirSync(users, { recursive: true });
++    if (kind === "broken-symlink") {
++      fs.symlinkSync(path.join(home, "missing-user"), path.join(users, "steamuser"));
++      fs.mkdirSync(path.join(users, "other/AppData/Local"), { recursive: true });
++    } else if (kind === "file") {
++      fs.writeFileSync(path.join(users, "steamuser"), "not a profile");
++      fs.mkdirSync(path.join(users, "other/AppData/Local"), { recursive: true });
++    }
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++    expect(() => resolveCaseInsensitiveSync(path.join(local, "Example/Engine.ini"))).toThrow(
++      /unavailable/,
++    );
++    expect(() => resolveExtensionUserPathSync(local)).toThrow(/unavailable/);
++    expect(fs.existsSync(local)).toBe(false);
++  });
++
++  it.each([
++    ["VORTEX_LINUX_LOCAL_APPDATA", "Local", "AppData/Local"],
++    ["VORTEX_LINUX_LOCAL_LOW", "LocalLow", "AppData/LocalLow"],
++    ["VORTEX_LINUX_SAVED_GAMES", "Saved Games", "Saved Games"],
++  ])(
++    "maps the exact extension root %s only with a selected Windows game",
++    (env, hostRoot, windowsRoot) => {
++      const prefix = path.join(home, "prefix");
++      fixture(prefix);
++      const root = path.join(home, hostRoot);
++      vi.stubEnv(env, root);
++      fs.mkdirSync(root);
++      expect(resolveExtensionUserPathSync(root)).toBe(root);
++      setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++      expect(resolveExtensionUserPathSync(root)).toBe(
++        path.join(prefix, "drive_c/users/steamuser", windowsRoot),
++      );
++      // Existing callers keep their root semantics; only the extension adapter opts in.
++      expect(resolveWindowsUserPathSync(root)).toBe(root);
++      setCompatibilityGameProvider(() => ({ path: home, executable: "Game.sh" }));
++      expect(resolveExtensionUserPathSync(root)).toBe(root);
++    },
++  );
++
++  it("preserves shared host paths and Vortex data in extension operations", () => {
++    const prefix = path.join(home, "prefix");
++    fixture(prefix);
++    const appData = path.join(home, ".config");
++    const local = path.join(home, "Local");
++    const userData = path.join(local, "Vortex");
++    vi.stubEnv("VORTEX_LINUX_APPDATA", appData);
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    vi.stubEnv("VORTEX_USERDATA", userData);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++    for (const hostPath of [
++      documents,
++      path.join(documents, relative),
++      appData,
++      path.join(appData, "other/settings"),
++      userData,
++      path.join(userData, "mods/test"),
++      path.join(home, "LocalOther/file"),
++    ]) {
++      expect(resolveExtensionUserPathSync(hostPath)).toBe(hostPath);
++    }
++  });
++
++  it("resolves Windows root casing before creating new configuration", () => {
++    const prefix = path.join(home, "prefix");
++    const actualRoot = path.join(prefix, "drive_c/users/steamuser/appdata/local");
++    fs.mkdirSync(actualRoot, { recursive: true });
++    const local = path.join(home, "Local");
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
++    expect(resolveExtensionUserPathSync(local)).toBe(actualRoot);
++    expect(resolveCaseInsensitiveSync(path.join(local, "Example/Engine.ini"))).toBe(
++      path.join(actualRoot, "Example/Engine.ini"),
++    );
++  });
+ });
+diff --git a/src/renderer/src/util/extensionFs.test.ts b/src/renderer/src/util/extensionFs.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/extensionFs.test.ts
+@@ -0,0 +1,248 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { pathToFileURL } from "node:url";
++import { promisify } from "node:util";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { type CompatibilityGame, setCompatibilityGameProvider } from "./compatibilityPaths";
++import { wrapExtensionFs } from "./extensionFs";
++
++describe.runIf(process.platform === "linux")("extension filesystem game paths", () => {
++  let root: string;
++  let local: string;
++  let profile: string;
++  let game: CompatibilityGame | undefined;
++  const oldEnvironment = new Map<string, string | undefined>();
++
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-extension-fs-"));
++    local = path.join(root, "host", "Local");
++    profile = path.join(root, "prefix", "drive_c", "users", "steamuser");
++    fs.mkdirSync(profile, { recursive: true });
++    setEnvironment("VORTEX_LINUX_LOCAL_APPDATA", local);
++    setEnvironment("VORTEX_LINUX_LOCAL_LOW", path.join(root, "host", "LocalLow"));
++    setEnvironment("VORTEX_LINUX_APPDATA", path.join(root, "host", ".config"));
++    setEnvironment("VORTEX_LINUX_DOCUMENTS", path.join(root, "host", "Documents"));
++    setEnvironment("VORTEX_LINUX_SAVED_GAMES", path.join(root, "host", "Saved Games"));
++    setEnvironment("VORTEX_USERDATA", path.join(root, "host", ".config", "Vortex"));
++    game = {
++      path: path.join(root, "game"),
++      environment: { WINEPREFIX: path.join(root, "prefix") },
++    };
++    setCompatibilityGameProvider(() => game);
++  });
++
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    fs.rmSync(root, { recursive: true, force: true });
++    for (const [key, value] of oldEnvironment) {
++      if (value === undefined) delete process.env[key];
++      else process.env[key] = value;
++    }
++    oldEnvironment.clear();
++  });
++
++  it.each([false, true])("checks the prefix filesystem with a stale host root: %s", (stale) => {
++    if (stale) {
++      fs.mkdirSync(local, { recursive: true });
++      fs.writeFileSync(path.join(local, "host.ini"), "keep");
++    }
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    // This is the exact-root mkdir/stat sequence used by extension partition checks.
++    extensionFs.mkdirSync(local, { recursive: true });
++    const actualRoot = path.join(profile, "AppData", "Local");
++    const actualStat = fs.statSync(actualRoot);
++    expect(extensionFs.statSync(local).ino).toBe(actualStat.ino);
++    expect(extensionFs.statSync(local).dev).toBe(actualStat.dev);
++    const config = path.join(local, "Example", "Saved", "Config");
++    extensionFs.mkdirSync(config, { recursive: true });
++    extensionFs.writeFileSync(path.join(config, "Engine.ini"), "prefix");
++    expect(
++      fs.readFileSync(path.join(actualRoot, "Example", "Saved", "Config", "Engine.ini"), "utf8"),
++    ).toBe("prefix");
++    expect(fs.existsSync(path.join(local, "Example"))).toBe(false);
++    if (stale) expect(fs.readFileSync(path.join(local, "host.ini"), "utf8")).toBe("keep");
++    else expect(fs.existsSync(local)).toBe(false);
++  });
++
++  it("maps callback mkdir, read/write, stat, and exists including promisified exists", async () => {
++    const extensionFs = wrapExtensionFs(fs, "node:fs");
++    await promisify(extensionFs.mkdir)(local, { recursive: true });
++    const file = path.join(local, "Engine.ini");
++    await promisify(extensionFs.writeFile)(file, "callback");
++    expect((await promisify(extensionFs.stat)(file)).size).toBe(8);
++    expect(await promisify(extensionFs.readFile)(file, "utf8")).toBe("callback");
++    expect(await new Promise((resolve) => extensionFs.exists(file, resolve))).toBe(true);
++    expect(await promisify(extensionFs.exists)(file)).toBe(true);
++    expect(fs.readFileSync(path.join(profile, "AppData", "Local", "Engine.ini"), "utf8")).toBe(
++      "callback",
++    );
++  });
++
++  it.each(["fs", "node:fs", "fs/promises", "node:fs/promises"])(
++    "maps promise operations from %s",
++    async (id) => {
++      const extensionFs = id.endsWith("/promises")
++        ? wrapExtensionFs(fs.promises, id)
++        : wrapExtensionFs(fs, id).promises;
++      await extensionFs.mkdir(local, { recursive: true });
++      const file = path.join(local, "Engine.ini");
++      await extensionFs.writeFile(file, "promise");
++      expect(await extensionFs.readFile(file, "utf8")).toBe("promise");
++      expect((await extensionFs.stat(file)).size).toBe(7);
++      expect(fs.readFileSync(path.join(profile, "AppData", "Local", "Engine.ini"), "utf8")).toBe(
++        "promise",
++      );
++    },
++  );
++
++  it.each(["LocalLow", "Saved Games"])("maps %s alongside Local", (name) => {
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    const logical = path.join(root, "host", name);
++    extensionFs.mkdirSync(logical, { recursive: true });
++    extensionFs.writeFileSync(path.join(logical, "settings.ini"), name);
++    const actual =
++      name === "LocalLow" ? path.join(profile, "AppData", name) : path.join(profile, name);
++    expect(fs.readFileSync(path.join(actual, "settings.ini"), "utf8")).toBe(name);
++    expect(fs.existsSync(logical)).toBe(false);
++  });
++
++  it("resolves captured methods at each operation after selecting and switching games", () => {
++    game = undefined;
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    const mkdir = extensionFs.mkdirSync;
++    const write = extensionFs.writeFileSync;
++    mkdir(local, { recursive: true });
++    write(path.join(local, "settings.ini"), "no game");
++    const select = (prefix: string) => {
++      fs.mkdirSync(path.join(prefix, "drive_c", "users", "steamuser"), { recursive: true });
++      game = { path: path.join(root, "game"), environment: { WINEPREFIX: prefix } };
++      mkdir(local, { recursive: true });
++    };
++    select(path.join(root, "prefix"));
++    write(path.join(local, "settings.ini"), "first");
++    const second = path.join(root, "second");
++    select(second);
++    write(path.join(local, "settings.ini"), "second");
++    expect(fs.readFileSync(path.join(profile, "AppData", "Local", "settings.ini"), "utf8")).toBe(
++      "first",
++    );
++    expect(
++      fs.readFileSync(
++        path.join(second, "drive_c", "users", "steamuser", "AppData", "Local", "settings.ini"),
++        "utf8",
++      ),
++    ).toBe("second");
++    expect(fs.readFileSync(path.join(local, "settings.ini"), "utf8")).toBe("no game");
++    game = { path: path.join(root, "native"), executable: "game.sh" };
++    write(path.join(local, "settings.ini"), "native");
++    expect(fs.readFileSync(path.join(local, "settings.ini"), "utf8")).toBe("native");
++  });
++
++  it("keeps Documents, shared appData, and Vortex data on the host", () => {
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    for (const [logical, physical] of [
++      [
++        path.join(root, "host", "Documents", "My Games", "Example"),
++        path.join(profile, "Documents", "My Games", "Example"),
++      ],
++      [
++        path.join(root, "host", ".config", "Example"),
++        path.join(profile, "AppData", "Roaming", "Example"),
++      ],
++      [process.env.VORTEX_USERDATA!, path.join(profile, "AppData", "Roaming", "Vortex")],
++    ]) {
++      fs.mkdirSync(physical, { recursive: true });
++      fs.writeFileSync(path.join(physical, "settings.ini"), "prefix");
++      extensionFs.mkdirSync(logical, { recursive: true });
++      extensionFs.writeFileSync(path.join(logical, "settings.ini"), "host");
++      expect(extensionFs.readFileSync(path.join(logical, "settings.ini"), "utf8")).toBe("host");
++      expect(fs.readFileSync(path.join(physical, "settings.ini"), "utf8")).toBe("prefix");
++    }
++  });
++
++  it("maps both sides of copy, rename, hardlink, and symlink operations", async () => {
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    extensionFs.mkdirSync(local, { recursive: true });
++    const file = path.join(local, "Engine.ini");
++    extensionFs.writeFileSync(file, "mod");
++    extensionFs.copyFileSync(file, file + ".copy");
++    await promisify(extensionFs.rename)(file + ".copy", file + ".renamed");
++    await extensionFs.promises.link(file + ".renamed", file + ".hardlink");
++    extensionFs.symlinkSync(file, file + ".symlink");
++    extensionFs.symlinkSync("Engine.ini", file + ".relative");
++    expect(extensionFs.statSync(file + ".hardlink").ino).toBe(
++      extensionFs.statSync(file + ".renamed").ino,
++    );
++    expect(extensionFs.readFileSync(file + ".symlink", "utf8")).toBe("mod");
++    expect(extensionFs.readFileSync(file + ".relative", "utf8")).toBe("mod");
++    expect(extensionFs.realpathSync.native(file + ".symlink")).toBe(
++      path.join(profile, "AppData", "Local", "Engine.ini"),
++    );
++    extensionFs.unlinkSync(file + ".hardlink");
++    expect(fs.existsSync(path.join(profile, "AppData", "Local", "Engine.ini.hardlink"))).toBe(
++      false,
++    );
++    expect(fs.existsSync(local)).toBe(false);
++  });
++
++  it("preserves Buffer paths, URL paths, and file descriptors", () => {
++    fs.mkdirSync(local, { recursive: true });
++    const file = path.join(local, "host.ini");
++    fs.writeFileSync(file, "host");
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    expect(extensionFs.readFileSync(Buffer.from(file), "utf8")).toBe("host");
++    expect(extensionFs.readFileSync(pathToFileURL(file), "utf8")).toBe("host");
++    const fd = fs.openSync(file, "r");
++    try {
++      expect(extensionFs.readFileSync(fd, "utf8")).toBe("host");
++    } finally {
++      fs.closeSync(fd);
++    }
++  });
++
++  it("reports unavailable prefixes using the operation's error convention", async () => {
++    fs.mkdirSync(local, { recursive: true });
++    game = {
++      path: path.join(root, "game"),
++      environment: { WINEPREFIX: path.join(root, "missing") },
++    };
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    expect(() => extensionFs.mkdirSync(local, { recursive: true })).toThrow(/prefix/i);
++    await expect(promisify(extensionFs.mkdir)(local, { recursive: true })).rejects.toMatchObject({
++      code: "ENOENT",
++    });
++    await expect(extensionFs.promises.stat(local)).rejects.toMatchObject({ code: "ENOENT" });
++    expect(extensionFs.existsSync(local)).toBe(false);
++    expect(await new Promise((resolve) => extensionFs.exists(local, resolve))).toBe(false);
++    expect(await promisify(extensionFs.exists)(local)).toBe(false);
++  });
++
++  it("leaves the shared module unchanged and caches private views and methods", () => {
++    const originalStat = fs.statSync;
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    expect(extensionFs).not.toBe(fs);
++    expect(wrapExtensionFs(fs, "node:fs")).toBe(extensionFs);
++    expect(extensionFs.statSync).toBe(extensionFs.statSync);
++    expect(extensionFs.promises).toBe(wrapExtensionFs(fs.promises, "node:fs/promises"));
++    expect(fs.statSync).toBe(originalStat);
++    expect(wrapExtensionFs(fs, "unrelated-module")).toBe(fs);
++  });
++
++  it("does not adapt fs on other platforms", () => {
++    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
++    try {
++      Object.defineProperty(process, "platform", { value: "win32" });
++      expect(wrapExtensionFs(fs, "fs")).toBe(fs);
++    } finally {
++      Object.defineProperty(process, "platform", descriptor);
++    }
++  });
++
++  function setEnvironment(key: string, value: string) {
++    oldEnvironment.set(key, process.env[key]);
++    process.env[key] = value;
++  }
++});
+diff --git a/src/renderer/src/util/extensionFs.ts b/src/renderer/src/util/extensionFs.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/extensionFs.ts
+@@ -0,0 +1,141 @@
++import { promisify } from "node:util";
++
++import { resolveExtensionUserPathSync } from "./compatibilityPaths";
++
++// Extensions often use Node's fs directly, including successful mkdir/stat calls
++// on stale Linux directories. Resolve their game-specific Windows paths before
++// the operation, rather than waiting for an ENOENT fallback.
++const singlePathMethods = new Set([
++  "access",
++  "appendFile",
++  "chmod",
++  "chown",
++  "exists",
++  "lchmod",
++  "lchown",
++  "lstat",
++  "lutimes",
++  "mkdir",
++  "mkdtemp",
++  "open",
++  "opendir",
++  "readFile",
++  "readdir",
++  "readlink",
++  "realpath",
++  "rm",
++  "rmdir",
++  "stat",
++  "statfs",
++  "truncate",
++  "unlink",
++  "utimes",
++  "writeFile",
++]);
++const twoPathMethods = new Set(["copyFile", "cp", "link", "rename", "symlink"]);
++const moduleCache = new WeakMap<object, Map<boolean, object>>();
++type MethodKind = "sync" | "callback" | "promise";
++type FsMethod = (...args: unknown[]) => unknown;
++
++function wrapMethod(
++  method: FsMethod,
++  receiver: object,
++  pathArguments: number[],
++  kind: MethodKind,
++  exists: boolean,
++): typeof method {
++  const helpers = new Map<PropertyKey, typeof method>();
++  // A separate callable avoids violating Proxy invariants for Node's read-only
++  // promisify.custom property, while leaving the original function untouched.
++  const invoke = (...args: unknown[]) => Reflect.apply(method, receiver, args);
++  return new Proxy(invoke, {
++    apply(target, _this, args: unknown[]) {
++      let mapped: unknown[];
++      try {
++        mapped = [...args];
++        for (const index of pathArguments) {
++          // Node also accepts file descriptors, Buffers, and URLs. Preserve
++          // those values and let Node validate their original overloads.
++          if (typeof mapped[index] === "string") {
++            mapped[index] = resolveExtensionUserPathSync(mapped[index]);
++          }
++        }
++      } catch (error) {
++        if (kind === "promise") return exists ? Promise.resolve(false) : Promise.reject(error);
++        if (kind === "callback") {
++          const callback = args[args.length - 1];
++          if (typeof callback === "function") {
++            queueMicrotask(() => callback(exists ? false : error));
++            return;
++          }
++        }
++        if (exists) return false;
++        throw error;
++      }
++      return Reflect.apply(target, receiver, mapped);
++    },
++    get(_target, key) {
++      const value: unknown = Reflect.get(method, key);
++      // Keep realpath.native and promisify(fs.exists) on the same adapter.
++      if ((key === "native" || key === promisify.custom) && typeof value === "function") {
++        if (!helpers.has(key)) {
++          helpers.set(
++            key,
++            wrapMethod(
++              value as FsMethod,
++              receiver,
++              pathArguments,
++              key === promisify.custom ? "promise" : kind,
++              exists,
++            ),
++          );
++        }
++        return helpers.get(key);
++      }
++      return value;
++    },
++  });
++}
++
++/** A private fs view for extension modules; never modifies Node's shared fs. */
++export function wrapExtensionFs<T extends object>(target: T, moduleId: string): T {
++  if (
++    process.platform !== "linux" ||
++    !["fs", "node:fs", "fs/promises", "node:fs/promises"].includes(moduleId)
++  ) {
++    return target;
++  }
++  const promises = moduleId.endsWith("/promises");
++  let cached = moduleCache.get(target);
++  if (cached?.has(promises)) return cached.get(promises) as T;
++  cached ??= new Map();
++  const methods = new Map<PropertyKey, unknown>();
++  const proxy = new Proxy(target, {
++    get(fs, key, receiver) {
++      const value: unknown = Reflect.get(fs, key, receiver);
++      if (!promises && key === "promises" && typeof value === "object" && value !== null) {
++        return wrapExtensionFs(value, "fs/promises");
++      }
++      if (typeof key !== "string" || typeof value !== "function") return value;
++      const name = key.replace(/Sync$/, "");
++      if (!singlePathMethods.has(name) && !twoPathMethods.has(name)) return value;
++      if (!methods.has(key)) {
++        const kind = promises ? "promise" : key.endsWith("Sync") ? "sync" : "callback";
++        methods.set(
++          key,
++          wrapMethod(
++            value as FsMethod,
++            fs,
++            twoPathMethods.has(name) ? [0, 1] : [0],
++            kind,
++            name === "exists",
++          ),
++        );
++      }
++      return methods.get(key);
++    },
++  });
++  cached.set(promises, proxy);
++  moduleCache.set(target, cached);
++  return proxy;
++}
+diff --git a/src/renderer/src/util/extensionRequire.test.ts b/src/renderer/src/util/extensionRequire.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/extensionRequire.test.ts
+@@ -0,0 +1,59 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++const modules = vi.hoisted(() => ({ load: vi.fn(), paths: [] as { path: string }[] }));
++vi.mock("../api", () => ({}));
++vi.mock("../controls/ReactSelectWrap", () => ({}));
++vi.mock("../ExtensionManager", () => ({ default: { getExtensionPaths: () => modules.paths } }));
++vi.mock("../extensions/extension_manager/queries", () => ({ findInstalled: vi.fn() }));
++vi.mock("./deprecatedApiUsage", () => ({ deprecatedApiGet: vi.fn() }));
++vi.mock("./webpack-hacks", () => ({ webpackRequireHack: modules.load }));
++
++import { setCompatibilityGameProvider } from "./compatibilityPaths";
++import { extensionRequire } from "./extensionRequire";
++
++describe.runIf(process.platform === "linux")("extension-only filesystem require", () => {
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    modules.load.mockReset();
++    modules.paths = [];
++    vi.unstubAllEnvs();
++  });
++
++  it("maps an extension's fs while application callers keep Node's shared module", async () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-extension-require-"));
++    try {
++      const local = path.join(root, "host", "Local");
++      const prefix = path.join(root, "prefix");
++      const actual = path.join(prefix, "drive_c", "users", "steamuser", "AppData", "Local");
++      fs.mkdirSync(path.dirname(actual), { recursive: true });
++      vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", local);
++      setCompatibilityGameProvider(() => ({
++        path: path.join(root, "game"),
++        environment: { WINEPREFIX: prefix },
++      }));
++      modules.paths = [{ path: path.join(root, "extensions") + path.sep }];
++      modules.load.mockImplementation((id: string) =>
++        id.endsWith("/promises") ? fs.promises : fs,
++      );
++      const originalRequire = vi.fn(() => fs);
++      const load = extensionRequire(originalRequire, () => []);
++      const appModule = { filename: path.join(root, "application", "main.js") };
++      const extModule = { filename: path.join(root, "extensions", "game-example", "index.js") };
++      expect(load.call(appModule, "fs")).toBe(fs);
++      const extensionFs: typeof fs = load.call(extModule, "fs");
++      extensionFs.mkdirSync(local, { recursive: true });
++      expect(extensionFs.statSync(local).ino).toBe(fs.statSync(actual).ino);
++      const extensionPromises: typeof fs.promises = load.call(extModule, "node:fs/promises");
++      await extensionPromises.writeFile(path.join(local, "Engine.ini"), "extension");
++      expect(fs.readFileSync(path.join(actual, "Engine.ini"), "utf8")).toBe("extension");
++      expect(fs.existsSync(local)).toBe(false);
++      expect(originalRequire).toHaveBeenCalledTimes(1);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
+diff --git a/src/renderer/src/util/extensionRequire.ts b/src/renderer/src/util/extensionRequire.ts
+--- a/src/renderer/src/util/extensionRequire.ts
++++ b/src/renderer/src/util/extensionRequire.ts
+@@ -7,6 +7,7 @@ import * as api from "../api";
+ import * as reactSelect from "../controls/ReactSelectWrap";
+ import ExtensionManager from "../ExtensionManager";
+ import type { IRegisteredExtension } from "../types/extensions";
++import { wrapExtensionFs } from "./extensionFs";
+ import type { LogLevel } from "./log";
+ import { webpackRequireHack } from "./webpack-hacks";
+ 
+@@ -101,7 +102,7 @@ const handlerMapReactAct: { [extId: string]: typeof reduxAct } = {};
+  * @param {any} orig
+  * @returns
+  */
+-function extensionRequire(orig, getExtensions: () => IRegisteredExtension[]) {
++export function extensionRequire(orig, getExtensions: () => IRegisteredExtension[]) {
+   const extensionPaths = ExtensionManager.getExtensionPaths();
+   return function (id) {
+     if (id === "vortex-api" || id === "@nexusmods/vortex-api") {
+@@ -137,7 +138,7 @@ function extensionRequire(orig, getExtensions: () => IRegisteredExtension[]) {
+       if (res === undefined) {
+         res = orig.apply(this, arguments);
+       }
+-      return res;
++      return wrapExtensionFs(res, id);
+     } else {
+       return orig.apply(this, arguments);
+     }
+diff --git a/src/renderer/src/util/linuxSelfTest.ts b/src/renderer/src/util/linuxSelfTest.ts
+--- a/src/renderer/src/util/linuxSelfTest.ts
++++ b/src/renderer/src/util/linuxSelfTest.ts
+@@ -10,6 +10,7 @@ import {
+   purgeMatchingHardlinks,
+ } from "../extensions/hardlink_activator/hardlinkIdentity";
+ import { resolveWindowsUserPathSync, setCompatibilityGameProvider } from "./compatibilityPaths";
++import { wrapExtensionFs } from "./extensionFs";
+ import { resolveGameTool } from "./linux/gameTools";
+ import { heroicPrefix, readHeroicGames } from "./linux/heroic";
+ import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
+@@ -17,7 +18,12 @@ import { GetPrivateProfileString, WritePrivateProfileString } from "./linuxIni";
+ 
+ export async function runLinuxSelfTest(): Promise<void> {
+   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-runtime-fixtures-"));
+-  const variables = ["VORTEX_LINUX_DOCUMENTS", "XDG_CONFIG_HOME", "VORTEX_USERDATA"];
++  const variables = [
++    "VORTEX_LINUX_DOCUMENTS",
++    "VORTEX_LINUX_LOCAL_APPDATA",
++    "XDG_CONFIG_HOME",
++    "VORTEX_USERDATA",
++  ];
+   const previous = variables.map((key) => process.env[key]);
+   const prefix = path.join(root, "prefix");
+   const documents = path.join(root, "Documents");
+@@ -25,6 +31,7 @@ export async function runLinuxSelfTest(): Promise<void> {
+     process.env.VORTEX_LINUX_DOCUMENTS = documents;
+     process.env.XDG_CONFIG_HOME = path.join(root, "config");
+     process.env.VORTEX_USERDATA = path.join(root, "config/Vortex");
++    process.env.VORTEX_LINUX_LOCAL_APPDATA = path.join(root, "Local");
+     const ini = path.join(
+       prefix,
+       "drive_c/users/steamuser/Documents/My Games/Example/settings.ini",
+@@ -55,6 +62,23 @@ export async function runLinuxSelfTest(): Promise<void> {
+       resolveWindowsUserPathSync(process.env.VORTEX_USERDATA),
+       process.env.VORTEX_USERDATA,
+     );
++
++    const extensionFs = wrapExtensionFs(fs, "node:fs");
++    const local = process.env.VORTEX_LINUX_LOCAL_APPDATA;
++    const prefixLocal = path.join(prefix, "drive_c/users/steamuser/AppData/Local");
++    extensionFs.mkdirSync(path.join(local, "Example"), { recursive: true });
++    assert.equal(fs.readdirSync(root).includes("Local"), false);
++    assert.equal(extensionFs.statSync(local).ino, fs.statSync(prefixLocal).ino);
++    fs.mkdirSync(local);
++    fs.writeFileSync(path.join(local, "host.txt"), "host");
++    await extensionFs.promises.writeFile(path.join(local, "Example/Engine.ini"), "mod");
++    assert.equal(fs.readFileSync(path.join(prefixLocal, "Example/Engine.ini"), "utf8"), "mod");
++    assert.deepEqual(fs.readdirSync(local), ["host.txt"]);
++    const user = path.join(prefix, "drive_c/users/steamuser");
++    const movedUser = path.join(prefix, "moved-user");
++    fs.renameSync(user, movedUser);
++    fs.symlinkSync(movedUser, user);
++    assert.equal(extensionFs.readFileSync(path.join(local, "Example/Engine.ini"), "utf8"), "mod");
+     setCompatibilityGameProvider(undefined);
+ 
+     const staging = path.join(root, "staging");
+@@ -117,7 +141,7 @@ export async function runLinuxSelfTest(): Promise<void> {
+       prefix,
+     });
+     console.log(
+-      "Packaged Linux fixtures: INI, selected prefix, Heroic, tool arguments and hardlink purge passed",
++      "Packaged Linux fixtures: INI, selected prefix, extension filesystem, Heroic, tool arguments and hardlink purge passed",
+     );
+   } finally {
+     setCompatibilityGameProvider(undefined);

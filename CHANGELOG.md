@@ -10,6 +10,11 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- The 2.6.2 recipe carries the Linux fixes from 2.8.2-3 through 2.9.0-3:
+  extension config paths, deployment preflight and target logging, extensions
+  behind a symlinked home, differently cased game paths, backslash archive
+  paths, nxm:// links from the AppImage, mixed-case deployment folders and the
+  default Wine prefix. The 1.16.9 recipe gets the last three. (#16, #20, #22)
 - Building the package, also with the 1.16.9 and 2.6.2 recipes, no longer
   downloads QuickBMS from altervista.org: the server refuses the download and
   on some networks the request hung until the build was interrupted. The
