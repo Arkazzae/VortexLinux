@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.9.0-4 - 2026-10-23
+
 - Experimental: games installed through Lutris' Wine runner are recognised.
   Point Vortex at the game folder and it deploys into the game's Lutris prefix,
   starts the game through Lutris and runs modding tools with the game's Wine
