@@ -1,0 +1,158 @@
+diff --git a/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.linux.test.ts b/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.linux.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.linux.test.ts
+@@ -0,0 +1,64 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import {
++  resetCompatibilityPathCache,
++  setCompatibilityGameProvider,
++} from "../../../util/compatibilityPaths";
++import { pluginPath } from "./gameSupport";
++
++// Keep the host's own Steam libraries out of the no-game lookup below.
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++
++describe.runIf(process.platform === "linux")("plugin folder on Linux", () => {
++  let root: string;
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    resetCompatibilityPathCache();
++    vi.unstubAllEnvs();
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  it("points plugin management at the selected game's Wine prefix", () => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-plugin-folder-"));
++    vi.mocked(os.homedir).mockReturnValue(root);
++    vi.stubEnv("XDG_DATA_HOME", path.join(root, ".local/share"));
++    vi.stubEnv("VORTEX_COMPAT_PREFIXES", "");
++    const prefix = path.join(root, "pfx");
++    const local = path.join(prefix, "drive_c/users/steamuser/AppData/Local");
++    fs.mkdirSync(local, { recursive: true });
++    // Vortex's main process exports the host folder as LOCALAPPDATA on Linux.
++    vi.stubEnv("LOCALAPPDATA", path.join(root, "Local"));
++    vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", path.join(root, "Local"));
++    setCompatibilityGameProvider(() => ({
++      path: path.join(root, "game"),
++      environment: { WINEPREFIX: prefix },
++    }));
++
++    expect(pluginPath("skyrimse")).toBe(path.join(local, "Skyrim Special Edition"));
++
++    // The game's own "Plugins.txt" must not shadow the list Vortex writes.
++    const folder = path.join(local, "Skyrim Special Edition");
++    fs.mkdirSync(folder, { recursive: true });
++    fs.writeFileSync(path.join(folder, "Plugins.txt"), "# stub");
++    expect(pluginPath("skyrimse")).toBe(folder);
++    expect(fs.readdirSync(folder).sort()).toEqual(["plugins.txt"]);
++    expect(fs.readFileSync(path.join(folder, "plugins.txt"), "utf8")).toBe("# stub");
++    fs.writeFileSync(path.join(folder, "LoadOrder.txt"), "old");
++    fs.writeFileSync(path.join(folder, "loadorder.txt"), "vortex");
++    pluginPath("skyrimse");
++    expect(fs.readdirSync(folder).sort()).toEqual([
++      "LoadOrder.txt.vortex_backup",
++      "loadorder.txt",
++      "plugins.txt",
++    ]);
++    expect(fs.readFileSync(path.join(folder, "loadorder.txt"), "utf8")).toBe("vortex");
++
++    // Without a selected game there is nothing to map to.
++    setCompatibilityGameProvider(undefined);
++    expect(pluginPath("skyrimse")).toBe(path.join(root, "Local", "Skyrim Special Edition"));
++  });
++});
+diff --git a/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.ts b/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.ts
+--- a/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.ts
++++ b/src/renderer/src/extensions/gamebryo_plugin_management/util/gameSupport.ts
+@@ -1,3 +1,4 @@
++import * as nodeFs from "node:fs";
+ import * as path from "path";
+ 
+ import Bluebird from "bluebird";
+@@ -8,6 +9,7 @@ import type { IExtensionApi } from "../../../types/IExtensionContext";
+ import type { IState } from "../../../types/IState";
+ import * as fs from "../../../util/fs";
+ import getVortexPath from "../../../util/getVortexPath";
++import { resolveCaseInsensitiveSync } from "../../../util/linuxCompatibility";
+ import { makeOverlayableDictionary } from "../../../util/util";
+ import { discoveryByGame, gameById } from "../../gamemode_management/selectors";
+ import type { IDiscoveryResult } from "../../gamemode_management/types/IDiscoveryResult";
+@@ -381,6 +383,39 @@ export function appDataPath(gameMode: string): string {
+     : path.resolve(getVortexPath("appData"), "..", "Local", dataPath);
+ }
+ 
++/**
++ * The game creates "Plugins.txt" while Vortex writes "plugins.txt". Windows
++ * doesn't care, but on a case-sensitive disk Wine hands the game whichever name
++ * matches exactly, so a stale capitalised file would shadow Vortex's list. Keep
++ * one file per name, under the name Vortex uses.
++ */
++function unshadowPluginFiles(folder: string): void {
++  let entries: string[];
++  try {
++    entries = nodeFs.readdirSync(folder);
++  } catch {
++    return;
++  }
++  for (const name of ["plugins.txt", "loadorder.txt"]) {
++    const others = entries.filter((entry) => entry !== name && entry.toLowerCase() === name);
++    if (others.length === 0) continue;
++    const target = path.join(folder, name);
++    for (const other of others) {
++      const source = path.join(folder, other);
++      const moveTo = entries.includes(name) ? `${source}.vortex_backup` : target;
++      try {
++        nodeFs.renameSync(source, moveTo);
++        log("info", "renamed differently cased plugin list", { from: source, to: moveTo });
++      } catch (err) {
++        log("warn", "failed to rename differently cased plugin list", {
++          from: source,
++          error: err instanceof Error ? err.message : String(err),
++        });
++      }
++    }
++  }
++}
++
+ export function gameDataPath(gameMode: string): string {
+   const customDataPath = gameSupport.get(gameMode, "gameDataPath");
+   if (customDataPath) {
+@@ -394,10 +429,29 @@ export function pluginPath(gameMode: string): string {
+   // The path of the plugins.txt file, not the path to where the game
+   //  stores its plugins.
+   const pluginsPath = gameSupport.get(gameMode, "pluginsPath");
+-  if (pluginsPath) {
+-    return pluginsPath;
++  const result = pluginsPath ? pluginsPath : appDataPath(gameMode);
++  return process.platform === "linux" ? prefixedPluginPath(result) : result;
++}
++
++/**
++ * Plugin management reads, writes and watches this folder with Node's own fs,
++ * which knows nothing about the game's Wine prefix. Hand it the folder the game
++ * actually reads; for native games the mapping leaves the path alone.
++ */
++function prefixedPluginPath(hostPath: string): string {
++  try {
++    const folder = resolveCaseInsensitiveSync(hostPath);
++    unshadowPluginFiles(folder);
++    return folder;
++  } catch (err) {
++    // No usable prefix yet, for example before the game's first launch. The
++    // callers report the missing files themselves.
++    log("debug", "plugin folder stays on the host", {
++      hostPath,
++      error: err instanceof Error ? err.message : String(err),
++    });
++    return hostPath;
+   }
+-  return appDataPath(gameMode);
+ }
+ 
+ export function pluginFormat(gameMode: string): PluginFormat {

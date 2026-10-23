@@ -10,6 +10,13 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Plugin management writes `plugins.txt` and `loadorder.txt` into the game's
+  Proton or Wine prefix again. Vortex 2.9.0 rewrote that code to use Node's
+  file system directly, which skipped the Linux folder mapping, so the files
+  ended up in `~/Local/<game>` and the game loaded no plugins. A `Plugins.txt`
+  the game left behind in a different letter case is renamed, so it can't
+  shadow Vortex's list on a case-sensitive disk. (#31)
+
 ## 2.9.0-4 - 2026-10-23
 
 - Experimental: games installed through Lutris' Wine runner are recognised.
