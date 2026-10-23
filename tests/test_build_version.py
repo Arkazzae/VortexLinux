@@ -103,6 +103,7 @@ class BuildVersionTests(unittest.TestCase):
             f"\tpkgver = {version}\n"
             f"\tpkgrel = {revision}\n"
             f"\tsource = vortex::git+https://github.com/Nexus-Mods/Vortex.git#commit={UPSTREAM_COMMIT}\n"
+            "\tsha512sums = SKIP\n"
             "pkgname = vortex-linux\n"
         ))
 
@@ -278,6 +279,31 @@ class BuildVersionTests(unittest.TestCase):
 
         self.assertIn("SRCINFO", result.stderr)
         self.assertFalse(self.output("1.16.9").exists())
+
+    def test_recipe_checksums_must_pair_with_sources(self):
+        recipe_path = self.maintained_recipe()
+        srcinfo = self.repository / recipe_path / ".SRCINFO"
+        srcinfo.write_text(srcinfo.read_text().replace(
+            "pkgname = vortex-linux\n", "\tsource = fix.patch\npkgname = vortex-linux\n"))
+        self.commit("Patch without a checksum")
+
+        result = self.run_builder("--version", "1.16.9", "--prepare-only", success=False)
+
+        self.assertIn("sha512sums", result.stderr)
+        self.assertFalse(self.output("1.16.9").exists())
+
+    def test_downloaded_sources_need_a_checksum(self):
+        recipe_path = self.maintained_recipe()
+        srcinfo = self.repository / recipe_path / ".SRCINFO"
+        srcinfo.write_text(srcinfo.read_text().replace(
+            "pkgname = vortex-linux\n",
+            "\tsource = pnpm.tgz::https://registry.npmjs.org/pnpm/-/pnpm-11.10.0.tgz\n"
+            "\tsha512sums = SKIP\npkgname = vortex-linux\n"))
+        self.commit("Download without a checksum")
+
+        result = self.run_builder("--version", "1.16.9", "--prepare-only", success=False)
+
+        self.assertIn("no checksum for a downloaded source", result.stderr)
 
     def test_maintained_recipe_cannot_borrow_missing_scripts_from_root(self):
         recipe_path = self.maintained_recipe()
