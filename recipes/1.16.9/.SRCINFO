@@ -1,7 +1,7 @@
 pkgbase = vortex-linux
 	pkgdesc = Vortex 1.16.9 with Linux compatibility patches
 	pkgver = 1.16.9
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/Arkazzae/VortexLinux
 	install = vortex.install
 	arch = x86_64
