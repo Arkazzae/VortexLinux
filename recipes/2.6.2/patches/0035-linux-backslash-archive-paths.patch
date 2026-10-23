@@ -1,0 +1,310 @@
+diff --git a/src/renderer/src/extensions/mod_management/InstallManager.ts b/src/renderer/src/extensions/mod_management/InstallManager.ts
+--- a/src/renderer/src/extensions/mod_management/InstallManager.ts
++++ b/src/renderer/src/extensions/mod_management/InstallManager.ts
+@@ -184,6 +184,7 @@ import type { IModInstaller, ISupportedInstaller } from "./types/IModInstaller";
+ import type { IInstallationDetails, InstallFunc } from "./types/InstallFunc";
+ import type { IReplaceChoice, ReplaceChoice } from "./types/IReplaceChoice";
+ import type { ISupportedResult, ITestSupportedDetails, TestSupported } from "./types/TestSupported";
++import { splitBackslashNames } from "./util/archivePaths";
+ import { getCSharpScriptAllowListForGame } from "./util/cSharpScriptAllowList";
+ import gatherDependencies, {
+   findDownloadByRef,
+@@ -251,6 +252,9 @@ class InstructionGroups {
+ }
+ 
+ async function buildFileList(basePath: string): Promise<string[]> {
++  if (process.platform === "linux") {
++    await splitBackslashNames(basePath);
++  }
+   const fileList: string[] = [];
+   await walk(basePath, (iterPath, stats) => {
+     const relPath = path.normalize(path.relative(basePath, iterPath));
+diff --git a/src/renderer/src/extensions/mod_management/util/archivePaths.test.ts b/src/renderer/src/extensions/mod_management/util/archivePaths.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/archivePaths.test.ts
+@@ -0,0 +1,120 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { withPatchedPath } from "../../../test-utils/patchedPath";
++import { splitBackslashNames } from "./archivePaths";
++
++function tree(root: string): string[] {
++  const result: string[] = [];
++  const walk = (directory: string) => {
++    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
++      const full = path.join(directory, entry.name);
++      const relative = path.relative(root, full);
++      if (entry.isDirectory()) {
++        result.push(`${relative}/`);
++        walk(full);
++      } else {
++        result.push(`${relative}=${fs.readFileSync(full, "utf8")}`);
++      }
++    }
++  };
++  walk(root);
++  return result.sort();
++}
++
++for (const patchedPath of [false, true]) {
++  const split = (root: string) =>
++    patchedPath ? withPatchedPath(() => splitBackslashNames(root)) : splitBackslashNames(root);
++
++  describe.runIf(process.platform === "linux")(
++    `archive entries with backslash separators${patchedPath ? " (renderer path patch)" : ""}`,
++    () => {
++      let root: string;
++      beforeEach(() => {
++        root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-archive-paths-"));
++      });
++      afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
++
++      it("turns the names 7-Zip extracts from a Windows-style archive into folders", async () => {
++        // What 7-Zip on Linux extracts from the Appearance Runtime Plugin archive.
++        fs.mkdirSync(path.join(root, "red4ext\\plugins\\"));
++        fs.writeFileSync(
++          path.join(root, "red4ext\\plugins\\AppearanceRuntimePlugin\\AppearanceRuntimePlugin.dll"),
++          "dll",
++        );
++        fs.mkdirSync(path.join(root, "normal"));
++        fs.writeFileSync(path.join(root, "normal", "readme.txt"), "readme");
++
++        await split(root);
++
++        expect(tree(root)).toEqual([
++          "normal/",
++          "normal/readme.txt=readme",
++          "red4ext/",
++          "red4ext/plugins/",
++          "red4ext/plugins/AppearanceRuntimePlugin/",
++          "red4ext/plugins/AppearanceRuntimePlugin/AppearanceRuntimePlugin.dll=dll",
++        ]);
++      });
++
++      it("turns empty entries that end in a backslash into folders", async () => {
++        // 7-Zip extracts folder entries as empty files when the archive doesn't mark them as
++        // folders, e.g. when it says it was made on Unix.
++        fs.writeFileSync(path.join(root, "bin\\x64\\"), "");
++        fs.writeFileSync(path.join(root, "bin\\x64\\plugins\\"), "");
++        fs.writeFileSync(path.join(root, "bin\\x64\\plugins\\Mod.dll"), "dll");
++        fs.writeFileSync(path.join(root, "bin\\x64\\plugins\\Empty\\"), "");
++
++        await split(root);
++
++        expect(tree(root)).toEqual([
++          "bin/",
++          "bin/x64/",
++          "bin/x64/plugins/",
++          "bin/x64/plugins/Empty/",
++          "bin/x64/plugins/Mod.dll=dll",
++        ]);
++      });
++
++      it("merges into folders that already exist, also below a renamed folder", async () => {
++        fs.mkdirSync(path.join(root, "Data", "Scripts"), { recursive: true });
++        fs.writeFileSync(path.join(root, "Data", "Scripts", "kept.pex"), "kept");
++        fs.mkdirSync(path.join(root, "Data\\Scripts"));
++        fs.writeFileSync(path.join(root, "Data\\Scripts", "added.pex"), "added");
++        fs.writeFileSync(path.join(root, "Data\\Scripts", "Source\\added.psc"), "source");
++
++        await split(root);
++
++        expect(tree(root)).toEqual([
++          "Data/",
++          "Data/Scripts/",
++          "Data/Scripts/Source/",
++          "Data/Scripts/Source/added.psc=source",
++          "Data/Scripts/added.pex=added",
++          "Data/Scripts/kept.pex=kept",
++        ]);
++      });
++
++      it("keeps entries inside the extraction folder", async () => {
++        fs.writeFileSync(path.join(root, "..\\..\\escape.txt"), "x");
++        fs.writeFileSync(path.join(root, "\\absolute.txt"), "y");
++
++        await split(root);
++
++        expect(tree(root)).toEqual(["absolute.txt=y", "escape.txt=x"]);
++      });
++
++      it("leaves archives without backslashes untouched", async () => {
++        fs.mkdirSync(path.join(root, "Data"));
++        fs.writeFileSync(path.join(root, "Data", "plugin.esp"), "esp");
++
++        await split(root);
++
++        expect(tree(root)).toEqual(["Data/", "Data/plugin.esp=esp"]);
++      });
++    },
++  );
++}
+diff --git a/src/renderer/src/extensions/mod_management/util/archivePaths.ts b/src/renderer/src/extensions/mod_management/util/archivePaths.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/mod_management/util/archivePaths.ts
+@@ -0,0 +1,55 @@
++import * as fs from "node:fs/promises";
++import * as path from "node:path";
++
++/**
++ * Some archives made on Windows separate folders with "\" instead of "/". 7-Zip on Linux keeps
++ * the backslashes as part of the name, so "red4ext\plugins\Mod.dll" is extracted as one file.
++ * Move every such entry to the folders its name describes, merging with folders that already
++ * exist. "." and ".." segments are dropped, so nothing can leave the extraction folder.
++ */
++export async function splitBackslashNames(root: string): Promise<void> {
++  const visit = async (directory: string): Promise<void> => {
++    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
++      const source = child(directory, entry.name);
++      if (!entry.name.includes("\\")) {
++        if (entry.isDirectory()) await visit(source);
++        continue;
++      }
++      const parts = entry.name
++        .split("\\")
++        .filter((part) => part.length > 0 && part !== "." && part !== "..");
++      if (parts.length === 0) continue;
++      const target = parts.reduce(child, directory);
++      if (entry.isFile() && entry.name.endsWith("\\") && (await fs.stat(source)).size === 0) {
++        // A folder entry the archive doesn't mark as one, which 7-Zip extracts as an empty file.
++        await fs.mkdir(target, { recursive: true });
++        await fs.unlink(source);
++        continue;
++      }
++      await move(source, target, entry.isDirectory());
++      if (entry.isDirectory()) await visit(target);
++    }
++  };
++  await visit(root);
++}
++
++/**
++ * The renderer patches path.join to turn backslashes into slashes for extensions
++ * (util/pathCompatibility.ts), which would rewrite the very names this file moves.
++ */
++function child(directory: string, name: string): string {
++  return `${directory}/${name}`;
++}
++
++async function move(source: string, target: string, isDirectory: boolean): Promise<void> {
++  const existing = await fs.stat(target).catch(() => undefined);
++  if (isDirectory && existing?.isDirectory()) {
++    for (const entry of await fs.readdir(source, { withFileTypes: true })) {
++      await move(child(source, entry.name), child(target, entry.name), entry.isDirectory());
++    }
++    await fs.rmdir(source);
++    return;
++  }
++  await fs.mkdir(path.dirname(target), { recursive: true });
++  await fs.rename(source, target);
++}
+diff --git a/src/renderer/src/test-utils/patchedPath.ts b/src/renderer/src/test-utils/patchedPath.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/test-utils/patchedPath.ts
+@@ -0,0 +1,21 @@
++import { createRequire, syncBuiltinESMExports } from "node:module";
++import type * as path from "node:path";
++
++import { patchPathCompatibility } from "../util/pathCompatibility";
++
++/**
++ * Runs fn with path.join, normalize and resolve turning backslashes into slashes, the way the
++ * renderer patches them at startup (util/monkeyPatching.ts).
++ */
++export async function withPatchedPath<T>(fn: () => PromiseLike<T>): Promise<T> {
++  const hostPath: typeof path = createRequire(__filename)("node:path");
++  const { join, normalize, resolve } = hostPath;
++  patchPathCompatibility(hostPath, "linux");
++  syncBuiltinESMExports();
++  try {
++    return await fn();
++  } finally {
++    Object.assign(hostPath, { join, normalize, resolve });
++    syncBuiltinESMExports();
++  }
++}
+diff --git a/src/renderer/src/util/fs.linuxCompatibility.test.ts b/src/renderer/src/util/fs.linuxCompatibility.test.ts
+--- a/src/renderer/src/util/fs.linuxCompatibility.test.ts
++++ b/src/renderer/src/util/fs.linuxCompatibility.test.ts
+@@ -7,8 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ // @ts-expect-error -- Vitest supports virtual modules at runtime but omits this overload.
+ vi.mock("original-fs", async () => import("node:fs"), { virtual: true });
+ 
++import { withPatchedPath } from "../test-utils/patchedPath";
+ import { resetCompatibilityPathCache } from "./compatibilityPaths";
+-import { copyAsync, readFileSync, statAsync, statSync, writeFileAsync } from "./fs";
++import { copyAsync, readFileSync, removeAsync, statAsync, statSync, writeFileAsync } from "./fs";
+ 
+ describe.runIf(process.platform === "linux")("filesystem compatibility profile paths", () => {
+   let tempDir: string;
+@@ -91,3 +92,23 @@ describe.runIf(process.platform === "linux")("filesystem compatibility profile p
+     process.env[key] = value;
+   }
+ });
++
++describe.runIf(process.platform === "linux")("removing names with backslashes", () => {
++  let tempDir: string;
++  beforeEach(() => {
++    tempDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), "vortex-fs-remove-"));
++  });
++  afterEach(() => nodeFs.rmSync(tempDir, { force: true, recursive: true }));
++
++  it("removes a mod that was installed with Windows separators in its file names", async () => {
++    const modPath = path.join(tempDir, "Appearance Runtime Plugin");
++    nodeFs.mkdirSync(path.join(modPath, "red4ext\\plugins\\"), { recursive: true });
++    nodeFs.writeFileSync(path.join(modPath, "red4ext\\plugins\\Mod\\Mod.dll"), "dll");
++    nodeFs.mkdirSync(path.join(modPath, "red4ext", "plugins"), { recursive: true });
++    nodeFs.writeFileSync(path.join(modPath, "red4ext", "plugins", "Other.dll"), "dll");
++
++    await withPatchedPath(() => removeAsync(modPath, { showDialogCallback: () => false }));
++
++    expect(nodeFs.existsSync(modPath)).toBe(false);
++  });
++});
+diff --git a/src/renderer/src/util/fs.ts b/src/renderer/src/util/fs.ts
+--- a/src/renderer/src/util/fs.ts
++++ b/src/renderer/src/util/fs.ts
+@@ -937,6 +937,9 @@ function removeInt(
+ }
+ 
+ function rimrafAsync(remPath: string): PromiseBB<void> {
++  if (process.platform === "linux") {
++    return PromiseBB.resolve(removeTree(remPath));
++  }
+   return new PromiseBB((resolve, reject) => {
+     // don't use the rimraf implementation of busy retries because it's f*cked:
+     // https://github.com/isaacs/rimraf/issues/187
+@@ -956,6 +959,26 @@ function rimrafAsync(remPath: string): PromiseBB<void> {
+   });
+ }
+ 
++/**
++ * rimraf builds child paths with path.join, which the renderer patches to turn backslashes into
++ * slashes (pathCompatibility.ts). Names extracted from Windows archives, such as
++ * "red4ext\plugins\Mod.dll", then look already gone and their folder can't be removed.
++ */
++async function removeTree(remPath: string): Promise<void> {
++  const ignoreMissing = (err: unknown) => {
++    if (getErrorCode(err) !== "ENOENT") throw err;
++  };
++  const stats = await fs.lstat(remPath).catch(ignoreMissing);
++  if (!stats) return;
++  if (stats.isDirectory()) {
++    const names = await fs.readdir(remPath);
++    await Promise.all(names.map((name) => removeTree(`${remPath}/${name}`)));
++    await fs.rmdir(remPath).catch(ignoreMissing);
++  } else {
++    await fs.unlink(remPath).catch(ignoreMissing);
++  }
++}
++
+ /** @deprecated use node:fs directly */
+ export function readlinkAsync(linkPath: string): PromiseBB<string> {
+   linkPath = resolveCaseInsensitiveSync(linkPath);

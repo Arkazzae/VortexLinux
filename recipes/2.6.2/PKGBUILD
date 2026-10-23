@@ -2,7 +2,7 @@
 
 pkgname=vortex-linux
 pkgver=2.6.2
-pkgrel=4
+pkgrel=5
 pkgdesc="Community build of Vortex with generic Linux compatibility patches"
 arch=('x86_64')
 url="https://github.com/Arkazzae/VortexLinux"
@@ -134,6 +134,15 @@ _patches=(
   '0027-linux-release-notifications.patch'
   '0028-linux-atomic-config-writes.patch'
   '0029-linux-prefix-config-purge.patch'
+  '0030-linux-extension-config-paths.patch'
+  '0031-linux-deployment-preflight.patch'
+  '0032-linux-deployment-target-paths.patch'
+  '0033-linux-symlinked-extension-paths.patch'
+  '0034-linux-case-only-platform-paths.patch'
+  '0035-linux-backslash-archive-paths.patch'
+  '0036-linux-appimage-nxm-links.patch'
+  '0037-linux-case-consistent-folders.patch'
+  '0038-linux-default-wine-prefix.patch'
 )
 
 source=(
@@ -170,6 +179,15 @@ sha512sums=(
   "$_libloot_sha512"
   # All following local files are versioned together with this PKGBUILD, so
   # hashing them only duplicates Git integrity.
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
+  'SKIP'
   'SKIP'
   'SKIP'
   'SKIP'

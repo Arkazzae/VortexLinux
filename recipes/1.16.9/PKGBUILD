@@ -2,7 +2,7 @@
 
 pkgname=vortex-linux
 pkgver=1.16.9
-pkgrel=1
+pkgrel=2
 pkgdesc="Vortex 1.16.9 with Linux compatibility patches"
 arch=('x86_64')
 url="https://github.com/Arkazzae/VortexLinux"
@@ -75,6 +75,9 @@ _patches=(
   '0009-linux-fomod.patch'
   '0010-linux-mod-conflicts.patch'
   '0011-linux-arc-assets.patch'
+  '0012-linux-backslash-archive-paths.patch'
+  '0013-linux-case-consistent-folders.patch'
+  '0014-linux-default-wine-prefix.patch'
 )
 
 source=(
@@ -107,6 +110,9 @@ sha512sums=(
   '8587e705e47d0a6e0410dbc508cd15359145262a8123056c7db5f3bfd6e715bf8497bb6af0f76fed7b680cde964bdf1f0a676c265114ee6a6529d78fd41c8553'
   'ff4579ab459bb25aa7c0ff75b62acebe576f6084b36aa842971cf250a5d8c6cd3bc9420b22ce63c7f93a0857bc6ef29291db39c3e7a23aab5adfd5a4dd6c5d71'
   "$_libloot_sha512"
+  'SKIP'
+  'SKIP'
+  'SKIP'
   'SKIP'
   'SKIP'
   'SKIP'

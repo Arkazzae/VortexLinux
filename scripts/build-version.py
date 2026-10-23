@@ -140,6 +140,18 @@ def validate_recipe(commit, contents, version, build_format, recipe_path="."):
     expected_source = f"vortex::git+https://github.com/Nexus-Mods/Vortex.git#commit={upstream}"
     if expected_source not in sources:
         raise BuildError("The selected .SRCINFO does not match the pinned upstream commit")
+    # makepkg pairs sha512sums with sources by position and only complains after
+    # downloading everything. A patch added to one array but not the other, or a
+    # SKIP slipped in above the pnpm checksum, shows up here instead.
+    checksums = re.findall(r"^\s*sha512sums = (.+)$", srcinfo, re.MULTILINE)
+    if len(checksums) != len(sources):
+        raise BuildError(
+            f"The selected .SRCINFO lists {len(sources)} sources but {len(checksums)} sha512sums"
+        )
+    for source, checksum in zip(sources, checksums):
+        downloaded = "::http" in source or source.startswith("http")
+        if downloaded and checksum == "SKIP":
+            raise BuildError(f"The selected .SRCINFO has no checksum for a downloaded source: {source}")
 
     required = ["scripts/build-arch-package.sh"]
     if build_format != "arch":
