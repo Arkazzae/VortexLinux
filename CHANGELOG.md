@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.9.0-5 - 2026-10-23
+
 - Plugin management writes `plugins.txt` and `loadorder.txt` into the game's
   Proton or Wine prefix again. Vortex 2.9.0 rewrote that code to use Node's
   file system directly, which skipped the Linux folder mapping, so the files
