@@ -159,6 +159,10 @@ scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite
 
 Open an issue with the game, the store, where it's installed, how to reproduce it, and the relevant chunk of `~/.config/Vortex/vortex.log`. Scrub your Nexus tokens and private download links out of the log first.
 
+## Thanks
+
+Most of what got fixed here started as somebody's bug report. The people behind those reports and pull requests are listed in [THANKS.md](THANKS.md).
+
 ## License
 
 The build files and Linux patches here are GPL-3.0-only. Vortex itself stays under the upstream Nexus Mods license. See [LICENSE](LICENSE).
