@@ -1,5 +1,5 @@
 diff --git a/src/extensions/mod_management/InstallManager.ts b/src/extensions/mod_management/InstallManager.ts
-index 55faf41..75c5cf3 100644
+index 55faf41..eefb334 100644
 --- a/src/extensions/mod_management/InstallManager.ts
 +++ b/src/extensions/mod_management/InstallManager.ts
 @@ -99,6 +99,7 @@ import {
@@ -18,6 +18,14 @@ index 55faf41..75c5cf3 100644
        .then(() =>
          walk(tempPath, (iterPath, stats) => {
            if (stats.isFile()) {
+@@ -3962,6 +3964,7 @@ class InstallManager {
+         }
+       })
+       .then(async () => {
++        if (process.platform === "linux") await splitBackslashNames(tempPath);
+         await walk(
+           tempPath,
+           toBluebird(async (iterPath, stats) => {
 diff --git a/src/extensions/mod_management/util/archivePaths.test.ts b/src/extensions/mod_management/util/archivePaths.test.ts
 new file mode 100644
 index 0000000..018a115
