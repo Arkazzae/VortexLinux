@@ -1,0 +1,265 @@
+diff --git a/src/renderer/src/renderer.tsx b/src/renderer/src/renderer.tsx
+--- a/src/renderer/src/renderer.tsx
++++ b/src/renderer/src/renderer.tsx
+@@ -161,6 +161,7 @@ import type { IState } from "./types/IState";
+ import { relaunch } from "./util/commandLine";
+ import { ProcessCanceled, UserCanceled } from "./util/CustomErrors";
+ import { recordErrorSpan, setOutdated, terminate, toError } from "./util/errorHandling";
++import { extensionInStack } from "./util/extensionPaths";
+ import {} from "./util/extensionRequire";
+ import { setTFunction } from "./util/fs";
+ import GlobalNotifications from "./util/GlobalNotifications";
+@@ -383,12 +384,8 @@ function errorHandler(evt: any) {
+   const dynPaths = ExtensionManager.getExtensionPaths().filter((extPath) => !extPath.bundled);
+ 
+   if (dynPaths.length > 0) {
+-    if (stack.includes(`at ${dynPaths[0].path}`)) {
+-      const extPath = (dynPaths[0].path + path.sep).replace(/[\\]/g, "\\\\");
+-      const re = new RegExp(`at ${extPath}(Vortex Extension Update - )?([^/\\\\]*)`);
+-      const reMatch = stack.match(re);
+-      const extName = reMatch?.[2] ?? "unknown";
+-
++    const extName = extensionInStack(stack, dynPaths[0].path);
++    if (extName !== undefined) {
+       error["extension"] = extName;
+ 
+       log("error", "extension caused an unhandled exception", {
+diff --git a/src/renderer/src/util/extensionPaths.test.ts b/src/renderer/src/util/extensionPaths.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/extensionPaths.test.ts
+@@ -0,0 +1,72 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++
++import { extensionInStack, isInsideExtensionRoot } from "./extensionPaths";
++
++// Fedora Atomic links /home to /var/home: Vortex records extension paths
++// under /home while Node reports module filenames and stack frames under
++// /var/home.
++describe.runIf(process.platform === "linux")("extension roots behind a symlink", () => {
++  let root: string;
++  let linked: string;
++  let real: string;
++
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-extension-paths-"));
++    real = path.join(root, "var", "home", "plugins");
++    fs.mkdirSync(path.join(real, "game-example"), { recursive: true });
++    fs.symlinkSync(path.join(root, "var", "home"), path.join(root, "home"));
++    linked = path.join(root, "home", "plugins");
++  });
++
++  afterEach(() => {
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  it("places a module reported by its real path inside the linked root", () => {
++    expect(isInsideExtensionRoot(path.join(real, "game-example", "index.js"), linked)).toBe(true);
++  });
++
++  it("keeps modules outside the root outside", () => {
++    expect(isInsideExtensionRoot(path.join(root, "app", "index.js"), linked)).toBe(false);
++  });
++
++  // plugins/ doesn't exist until the first extension is installed.
++  it("places a module inside a root created after its first lookup", () => {
++    const later = path.join(root, "home", "later-plugins");
++    const extModule = path.join(root, "var", "home", "later-plugins", "game-example", "index.js");
++
++    expect(isInsideExtensionRoot(extModule, later)).toBe(true);
++    fs.mkdirSync(path.dirname(extModule), { recursive: true });
++    expect(isInsideExtensionRoot(extModule, later)).toBe(true);
++  });
++
++  it("names the extension a stack frame under the real path points into", () => {
++    const stack = `Error: boom\n    at ${path.join(real, "game-example", "index.js")}:3:9`;
++
++    expect(extensionInStack(stack, linked)).toBe("game-example");
++  });
++
++  it("names an extension installed as an update archive", () => {
++    const stack = `Error: boom\n    at ${path.join(linked, "Vortex Extension Update - game-example", "index.js")}:3:9`;
++
++    expect(extensionInStack(stack, linked)).toBe("game-example");
++  });
++
++  it("names the extension below a root whose path has regex characters", () => {
++    const special = path.join(root, "Data (2TB)", "plugins");
++    fs.mkdirSync(path.join(special, "game-example"), { recursive: true });
++    const stack = `Error: boom\n    at ${path.join(special, "game-example", "index.js")}:3:9`;
++
++    expect(extensionInStack(stack, special)).toBe("game-example");
++  });
++
++  it("does not claim a stack that never enters the root", () => {
++    const stack = `Error: boom\n    at ${path.join(root, "app", "renderer.js")}:1:1`;
++
++    expect(extensionInStack(stack, linked)).toBeUndefined();
++  });
++});
+diff --git a/src/renderer/src/util/extensionPaths.ts b/src/renderer/src/util/extensionPaths.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/extensionPaths.ts
+@@ -0,0 +1,55 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import * as _ from "lodash";
++
++// Node reports module filenames and stack frames with symlinks resolved, but
++// extension paths are built from userData and keep them. On Fedora Atomic
++// /home links to /var/home, so a plain prefix check misses every
++// user-installed extension. Cached because the require hook asks on every
++// require in the application.
++const realRoots = new Map<string, string>();
++
++// A root that doesn't exist yet, such as plugins/ before the first extension
++// is installed, takes the real path of its nearest existing parent, so the
++// cached value still holds once the folder is created.
++function realPathOf(input: string): string {
++  try {
++    return fs.realpathSync(input);
++  } catch {
++    const parent = path.dirname(input);
++    return parent === input ? input : path.join(realPathOf(parent), path.basename(input));
++  }
++}
++
++function realRoot(root: string): string {
++  let real = realRoots.get(root);
++  if (real === undefined) {
++    real = realPathOf(root);
++    realRoots.set(root, real);
++  }
++  return real;
++}
++
++function spellings(root: string): string[] {
++  const real = realRoot(root);
++  return real === root ? [root] : [root, real];
++}
++
++export function isInsideExtensionRoot(filename: string, root: string): boolean {
++  return spellings(root).some((spelling) => filename.startsWith(spelling));
++}
++
++/**
++ * Name of the extension below root that a stack trace runs through, or
++ * undefined if the stack never enters root.
++ */
++export function extensionInStack(stack: string, root: string): string | undefined {
++  const spelling = spellings(root).find((iter) => stack.includes(`at ${iter}`));
++  if (spelling === undefined) {
++    return undefined;
++  }
++  const extPath = _.escapeRegExp(spelling + path.sep);
++  const re = new RegExp(`at ${extPath}(Vortex Extension Update - )?([^/\\\\]*)`);
++  return stack.match(re)?.[2] ?? "unknown";
++}
+diff --git a/src/renderer/src/util/extensionRequire.test.ts b/src/renderer/src/util/extensionRequire.test.ts
+--- a/src/renderer/src/util/extensionRequire.test.ts
++++ b/src/renderer/src/util/extensionRequire.test.ts
+@@ -12,6 +12,8 @@ vi.mock("../extensions/extension_manager/queries", () => ({ findInstalled: vi.fn
+ vi.mock("./deprecatedApiUsage", () => ({ deprecatedApiGet: vi.fn() }));
+ vi.mock("./webpack-hacks", () => ({ webpackRequireHack: modules.load }));
+ 
++import * as api from "../api";
++import type { IRegisteredExtension } from "../types/extensions";
+ import { setCompatibilityGameProvider } from "./compatibilityPaths";
+ import { extensionRequire } from "./extensionRequire";
+ 
+@@ -56,4 +58,49 @@ describe.runIf(process.platform === "linux")("extension-only filesystem require"
+       fs.rmSync(root, { recursive: true, force: true });
+     }
+   });
++
++  // Fedora Atomic links /home to /var/home: Vortex records extension paths
++  // under /home while Node reports module filenames under /var/home.
++  function symlinkedExtensionRoot(): { root: string; linked: string; real: string } {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-extension-symlink-"));
++    const real = path.join(root, "var", "home", "plugins");
++    fs.mkdirSync(path.join(real, "game-example"), { recursive: true });
++    fs.symlinkSync(path.join(root, "var", "home"), path.join(root, "home"));
++    return { root, linked: path.join(root, "home", "plugins"), real };
++  }
++
++  it("serves application modules to an extension reached through a symlinked root", () => {
++    const { root, linked, real } = symlinkedExtensionRoot();
++    try {
++      const bundled = { walk: "bundled" };
++      modules.paths = [{ path: linked }];
++      modules.load.mockImplementation((id: string) => (id === "turbowalk" ? bundled : undefined));
++      const originalRequire = vi.fn(() => {
++        throw new Error("Cannot find module 'turbowalk'");
++      });
++      const load = extensionRequire(originalRequire, () => []);
++      const extModule = { filename: path.join(real, "game-example", "index.js") };
++      expect(load.call(extModule, "turbowalk")).toBe(bundled);
++      expect(originalRequire).not.toHaveBeenCalled();
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  it("gives an extension reached through a symlinked root its own api proxy", () => {
++    const { root, linked, real } = symlinkedExtensionRoot();
++    try {
++      modules.paths = [{ path: linked }];
++      const extension = {
++        name: "game-example",
++        namespace: "game-example",
++        path: path.join(linked, "game-example"),
++      } as IRegisteredExtension;
++      const load = extensionRequire(vi.fn(), () => [extension]);
++      const extModule = { filename: path.join(real, "game-example", "index.js") };
++      expect(load.call(extModule, "vortex-api") === api).toBe(false);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
+ });
+diff --git a/src/renderer/src/util/extensionRequire.ts b/src/renderer/src/util/extensionRequire.ts
+--- a/src/renderer/src/util/extensionRequire.ts
++++ b/src/renderer/src/util/extensionRequire.ts
+@@ -8,6 +8,7 @@ import * as reactSelect from "../controls/ReactSelectWrap";
+ import ExtensionManager from "../ExtensionManager";
+ import type { IRegisteredExtension } from "../types/extensions";
+ import { wrapExtensionFs } from "./extensionFs";
++import { isInsideExtensionRoot } from "./extensionPaths";
+ import type { LogLevel } from "./log";
+ import { webpackRequireHack } from "./webpack-hacks";
+ 
+@@ -106,7 +107,7 @@ export function extensionRequire(orig, getExtensions: () => IRegisteredExtension
+   const extensionPaths = ExtensionManager.getExtensionPaths();
+   return function (id) {
+     if (id === "vortex-api" || id === "@nexusmods/vortex-api") {
+-      const ext = getExtensions().find((iter) => this.filename.startsWith(iter.path));
++      const ext = getExtensions().find((iter) => isInsideExtensionRoot(this.filename, iter.path));
+       if (ext !== undefined) {
+         if (handlerMapAPI[ext.name] === undefined) {
+           handlerMapAPI[ext.name] = new Proxy(api, new ExtProxyHandler(ext));
+@@ -120,7 +121,7 @@ export function extensionRequire(orig, getExtensions: () => IRegisteredExtension
+     } else if (id === "react-select") {
+       return reactSelect;
+     } else if (id === "redux-act") {
+-      const ext = getExtensions().find((iter) => this.filename.startsWith(iter.path));
++      const ext = getExtensions().find((iter) => isInsideExtensionRoot(this.filename, iter.path));
+       if (ext !== undefined) {
+         if (handlerMapReactAct[ext.name] === undefined) {
+           handlerMapReactAct[ext.name] = new Proxy(reduxAct, new ExtProxyHandlerReduxAct(ext));
+@@ -128,7 +129,9 @@ export function extensionRequire(orig, getExtensions: () => IRegisteredExtension
+         return handlerMapReactAct[ext.name];
+       }
+     }
+-    if (extensionPaths.find((iter) => this.filename.startsWith(iter.path)) !== undefined) {
++    if (
++      extensionPaths.find((iter) => isInsideExtensionRoot(this.filename, iter.path)) !== undefined
++    ) {
+       let res;
+       try {
+         res = webpackRequireHack(id);
