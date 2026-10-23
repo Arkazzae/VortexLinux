@@ -1,0 +1,801 @@
+diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
+--- a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
++++ b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
+@@ -23,6 +23,7 @@ import { XboxLauncher } from "@/util/xbox/XboxLauncher";
+ 
+ import { setNextProfile } from "../../actions";
+ import { getNormalizeFunc } from "../../util/api";
++import { BottlesStore } from "../../util/Bottles";
+ import { ProcessCanceled, SetupError, UserCanceled } from "../../util/CustomErrors";
+ import EpicGamesLauncher from "../../util/EpicGamesLauncher";
+ import * as fs from "../../util/fs";
+@@ -85,7 +86,7 @@ class GameModeManager {
+       UPlayLauncher.create(),
+       XboxLauncher.create(api),
+       ...(process.platform === "linux"
+-        ? [new HeroicStore("gog"), new HeroicStore("amazon"), new LutrisStore()]
++        ? [new HeroicStore("gog"), new HeroicStore("amazon"), new LutrisStore(), new BottlesStore()]
+         : []),
+     ].filter(Boolean);
+     this.mActiveSearch = null;
+diff --git a/src/renderer/src/util/Bottles.test.ts b/src/renderer/src/util/Bottles.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/Bottles.test.ts
+@@ -0,0 +1,283 @@
++import { execFileSync } from "node:child_process";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { dump, load } from "js-yaml";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { BottlesStore } from "./Bottles";
++import { resetCompatibilityPathCache, selectedGamePrefix } from "./compatibilityPaths";
++import {
++  bottlesLaunchCommand,
++  bottlesPrefix,
++  bottlesRoots,
++  findBottlesLaunch,
++  readBottles,
++  readBottlesGames,
++  shellQuote,
++} from "./linux/bottles";
++import { resolveGameTool } from "./linux/gameTools";
++
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++
++describe.runIf(process.platform === "linux")("Bottles integration", () => {
++  let home: string;
++  let data: string;
++  function yaml(file: string, value: unknown): void {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, dump(value));
++  }
++  function program(name: string): string {
++    const binary = path.join(home, "bin", name);
++    fs.mkdirSync(path.dirname(binary), { recursive: true });
++    fs.writeFileSync(binary, "#!/bin/sh\n", { mode: 0o755 });
++    return binary;
++  }
++  function runner(name: string, root = data): string {
++    const binary = path.join(root, "runners", name, "bin/wine");
++    fs.mkdirSync(path.dirname(binary), { recursive: true });
++    fs.writeFileSync(binary, "#!/bin/sh\n", { mode: 0o755 });
++    return binary;
++  }
++  /** A bottle whose game lives inside drive_c, as Bottles installs it. */
++  function bottle(
++    name: string,
++    options: { folder?: string; location?: string; root?: string; runner?: string } = {},
++  ) {
++    const root = options.root ?? data;
++    const folder = path.join(root, "bottles", options.folder ?? name);
++    const location = options.location ?? folder;
++    fs.mkdirSync(path.join(location, "drive_c/users"), { recursive: true });
++    const gameRoot = path.join(location, "drive_c/GOG Games/Example");
++    fs.mkdirSync(path.join(gameRoot, "bin"), { recursive: true });
++    fs.writeFileSync(path.join(gameRoot, "bin/Example.exe"), "");
++    fs.writeFileSync(path.join(gameRoot, "goggame-1207658691.info"), "{}");
++    if (options.location) yaml(path.join(folder, "placeholder.yml"), { Path: location });
++    yaml(path.join(location, "bottle.yml"), {
++      Name: name,
++      Path: options.location ?? options.folder ?? name,
++      Custom_Path: options.location !== undefined,
++      Environment: "Gaming",
++      Runner: options.runner ?? "soda-9.0-1",
++      Environment_Variables: { DXVK_ASYNC: 1, SHARED: "yes" },
++      External_Programs: {
++        "1f0e": {
++          id: "1f0e",
++          name: "Example Game",
++          executable: "Example.exe",
++          path: path.join(gameRoot, "bin/Example.exe"),
++        },
++      },
++    });
++    return { location, gameRoot };
++  }
++
++  beforeEach(() => {
++    home = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-bottles-"));
++    vi.mocked(os.homedir).mockReturnValue(home);
++    vi.stubEnv("XDG_DATA_HOME", path.join(home, ".local/share"));
++    vi.stubEnv("PATH", path.join(home, "bin"));
++    vi.stubEnv("BOTTLES_CLI_BINARY", "bottles-cli");
++    [{ dataPath: data }] = bottlesRoots();
++    resetCompatibilityPathCache();
++  });
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    resetCompatibilityPathCache();
++    fs.rmSync(home, { recursive: true, force: true });
++  });
++
++  it("lists programs as games rooted at the GOG folder, skipping Steam bottles", () => {
++    const { gameRoot } = bottle("Gaming");
++    yaml(path.join(data, "bottles/SteamProton/bottle.yml"), {
++      Name: "SteamProton",
++      Environment: "Steam",
++    });
++    expect(readBottlesGames()).toEqual([
++      expect.objectContaining({
++        appid: "bottles-Gaming-1f0e",
++        name: "Example Game",
++        gameStoreId: "bottles",
++        gamePath: gameRoot,
++      }),
++    ]);
++    expect(readBottles()[0]).toMatchObject({ env: { DXVK_ASYNC: "1", SHARED: "yes" } });
++  });
++
++  it("follows placeholders and a custom bottles directory", () => {
++    const external = path.join(home, "disk/bottles/Default");
++    bottle("Default", { location: external });
++    const custom = path.join(home, "custom-bottles");
++    yaml(path.join(data, "data.yml"), { custom_bottles_path: custom });
++    // Like Bottles, ignore a custom directory that does not exist.
++    expect(readBottles().map((entry) => entry.name)).toEqual(["Default"]);
++    fs.mkdirSync(custom);
++    expect(readBottles()).toEqual([]);
++    bottle("Other", { root: path.dirname(custom), folder: "../custom-bottles/Other" });
++    expect(readBottles().map((entry) => entry.name)).toEqual(["Other"]);
++    fs.rmSync(path.join(data, "data.yml"));
++    expect(readBottles()).toEqual([expect.objectContaining({ name: "Default", path: external })]);
++  });
++
++  it("identifies game folders inside a bottle and resolves the bottle as prefix", async () => {
++    const { location, gameRoot } = bottle("Gaming");
++    const store = new BottlesStore();
++    expect(await store.identifyGame(gameRoot)).toBe(true);
++    expect(await store.identifyGame(path.join(home, "elsewhere"))).toBe(false);
++    expect(
++      selectedGamePrefix({ path: gameRoot, store: "bottles", executable: "bin/Example.exe" }),
++    ).toBe(location);
++    expect((await store.findByName("example game")).program.id).toBe("1f0e");
++  });
++
++  it("matches a game outside the bottle through its program and rejects two bottles", () => {
++    const { location } = bottle("Gaming");
++    const outside = path.join(home, "Games/Outside");
++    fs.mkdirSync(outside, { recursive: true });
++    fs.writeFileSync(path.join(outside, "Outside.exe"), "");
++    const config = path.join(location, "bottle.yml");
++    const parsed = {
++      ...(load(fs.readFileSync(config, "utf8")) as object),
++    } as any;
++    parsed.External_Programs.other = {
++      id: "other",
++      name: "Outside",
++      path: path.join(outside, "Outside.exe"),
++    };
++    yaml(config, parsed);
++    expect(bottlesPrefix({ path: outside, store: "bottles" })).toBe(location);
++    expect(findBottlesLaunch({ path: outside, store: "bottles" })?.program.name).toBe("Outside");
++
++    const second = bottle("Second");
++    const shared = path.join(second.location, "bottle.yml");
++    const secondConfig = load(fs.readFileSync(shared, "utf8")) as any;
++    secondConfig.External_Programs.other = {
++      id: "x",
++      name: "Outside",
++      path: path.join(outside, "Outside.exe"),
++    };
++    yaml(shared, secondConfig);
++    expect(() => bottlesPrefix({ path: outside, store: "bottles" })).toThrow(/Several bottles/);
++  });
++
++  it("matches a game folder linked into the bottle from another disk", () => {
++    const { location } = bottle("Gaming");
++    const disk = path.join(home, "disk/Linked Game");
++    fs.mkdirSync(disk, { recursive: true });
++    const linked = path.join(location, "drive_c/Games/Linked Game");
++    fs.mkdirSync(path.dirname(linked), { recursive: true });
++    fs.symlinkSync(disk, linked);
++    expect(bottlesPrefix({ path: linked, store: "bottles" })).toBe(location);
++  });
++
++  it("starts a program through bottles-cli with shell-safe arguments", () => {
++    const cli = program("bottles-cli");
++    const { gameRoot } = bottle("Gaming");
++    const launch = findBottlesLaunch({ path: gameRoot, store: "bottles" })!;
++    const args = ["-skip intro", "it's", "$(touch nope)"];
++    const command = bottlesLaunchCommand(launch.bottle, launch.program, args);
++    expect(command).toEqual({
++      executable: cli,
++      args: ["run", "-b", "Gaming", "-p", "Example Game", ...args.map(shellQuote)],
++      options: { shell: false },
++    });
++    // bottles-cli joins the arguments into a /bin/sh command line.
++    const echoed = execFileSync(
++      "/bin/sh",
++      ["-c", `printf '%s\\n' ${args.map(shellQuote).join(" ")}`],
++      {
++        encoding: "utf8",
++      },
++    );
++    expect(echoed.split("\n").slice(0, 3)).toEqual(args);
++  });
++
++  it("refuses to address a bottle whose name is shared", () => {
++    program("bottles-cli");
++    bottle("Default");
++    bottle("Default", { folder: "Default__156" });
++    const games = readBottlesGames();
++    expect(games).toHaveLength(2);
++    expect(() => bottlesLaunchCommand(games[0].bottle, games[0].program)).toThrow(/Rename them/);
++  });
++
++  it("runs tools with the bottle's runner so Vortex can wait for them", async () => {
++    const { location, gameRoot } = bottle("Gaming");
++    new BottlesStore();
++    const wine = runner("soda-9.0-1");
++    const command = await resolveGameTool(
++      path.join(gameRoot, "Tools/Edit.exe"),
++      [path.join(gameRoot, "Data")],
++      { env: { EXTRA: "1" } },
++      { path: gameRoot, store: "bottles" },
++    );
++    expect(command.executable).toBe(wine);
++    expect(command.args[1]).toMatch(/^Z:\\/);
++    expect(command.options.env).toMatchObject({
++      WINEPREFIX: location,
++      EXTRA: "1",
++      DXVK_ASYNC: "1",
++    });
++  });
++
++  it.each([
++    ["sys-wine-9.0", /^wine$/],
++    ["GE-Proton9-20", /Proton runner.*not supported/],
++    ["missing-runner", /not installed/],
++  ])("resolves the %s runner", async (name, expected) => {
++    program("wine");
++    const { gameRoot } = bottle("Gaming", { runner: name });
++    new BottlesStore();
++    const run = resolveGameTool(
++      path.join(gameRoot, "Tool.exe"),
++      [],
++      {},
++      {
++        path: gameRoot,
++        store: "bottles",
++      },
++    );
++    if (expected.source === "^wine$") expect((await run).executable).toBe("wine");
++    else await expect(run).rejects.toThrow(expected);
++  });
++
++  it("starts Flatpak programs and tools inside the Bottles sandbox", async () => {
++    vi.stubEnv("XDG_DATA_HOME", path.join(home, "unused"));
++    const flatpakData = bottlesRoots()[1].dataPath;
++    const { location, gameRoot } = bottle("Gaming", { root: flatpakData });
++    const wine = runner("soda-9.0-1", flatpakData);
++    const flatpak = program("flatpak");
++    new BottlesStore();
++    const launch = findBottlesLaunch({ path: gameRoot, store: "bottles" })!;
++    expect(bottlesLaunchCommand(launch.bottle, launch.program).args).toEqual([
++      "run",
++      "--command=bottles-cli",
++      "com.usebottles.bottles",
++      "run",
++      "-b",
++      "Gaming",
++      "-p",
++      "Example Game",
++    ]);
++    const command = await resolveGameTool(
++      path.join(gameRoot, "Tool.exe"),
++      [],
++      {},
++      {
++        path: gameRoot,
++        store: "bottles",
++      },
++    );
++    expect(command.executable).toBe(flatpak);
++    expect(command.args).toEqual([
++      "run",
++      `--command=${wine}`,
++      "--env=DXVK_ASYNC=1",
++      "--env=SHARED=yes",
++      `--env=WINEPREFIX=${location}`,
++      "com.usebottles.bottles",
++      path.join(gameRoot, "Tool.exe"),
++    ]);
++  });
++});
+diff --git a/src/renderer/src/util/Bottles.ts b/src/renderer/src/util/Bottles.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/Bottles.ts
+@@ -0,0 +1,117 @@
++import Bluebird from "bluebird";
++
++import type { IExtensionApi } from "../types/IExtensionContext";
++import {
++  GameEntryNotFound,
++  GameStoreNotFound,
++  type IGameStore,
++  type IGameStoreSnapshot,
++} from "../types/IGameStore";
++import { registerCompatibilityStore, resetCompatibilityPathCache } from "./compatibilityPaths";
++import {
++  bottlesCli,
++  bottlesLaunchCommand,
++  bottlesPrefix,
++  bottlesRoots,
++  bottlesToolCommand,
++  matchBottles,
++  readBottlesGames,
++  type BottlesGame,
++} from "./linux/bottles";
++import { registerGameToolRunner } from "./linux/gameTools";
++
++/**
++ * Windows games installed in a Bottles bottle. A game folder inside a bottle, or
++ * one holding a program added to a bottle, uses that bottle's prefix and runner.
++ */
++export class BottlesStore implements IGameStore {
++  public readonly id = "bottles";
++  public readonly name = "Bottles";
++  // After the native stores and Lutris, so a game they know is not claimed by Bottles.
++  public readonly priority = 75;
++  private games: BottlesGame[] | undefined;
++  private installed = false;
++  public constructor() {
++    registerCompatibilityStore(this.id, bottlesPrefix);
++    registerGameToolRunner(this.id, bottlesToolCommand);
++  }
++  public allGames(): Bluebird<BottlesGame[]> {
++    return Bluebird.try(() => {
++      if (this.games === undefined) {
++        this.games = readBottlesGames();
++        this.installed = bottlesRoots().some((root) => bottlesCli(root.flatpak) !== undefined);
++      }
++      return this.games;
++    });
++  }
++  public snapshot(): IGameStoreSnapshot {
++    return { entries: this.games ?? [], isInstalled: this.installed };
++  }
++  public reloadGames(): Bluebird<void> {
++    this.games = undefined;
++    resetCompatibilityPathCache();
++    return this.allGames().then(() => undefined);
++  }
++  private find(predicate: (game: BottlesGame) => boolean, query: string): Bluebird<BottlesGame> {
++    return this.allGames().then((games) => {
++      const matches = games.filter(predicate);
++      if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
++      if (matches.length > 1)
++        throw new Error(
++          "Several Bottles programs match this game. Select the game directory manually.",
++        );
++      return matches[0];
++    });
++  }
++  public findByAppId(id: string | string[]): Bluebird<BottlesGame> {
++    const ids = Array.isArray(id) ? id : [id];
++    return this.find((game) => ids.includes(game.appid), ids.join(", "));
++  }
++  public findByName(name: string): Bluebird<BottlesGame> {
++    return Bluebird.try(() => new RegExp(`^(?:${name})$`, "i")).then((pattern) =>
++      this.find((game) => pattern.test(game.name), name),
++    );
++  }
++  public identifyGame(gamePath: string): Bluebird<boolean> {
++    return Bluebird.try(() => matchBottles(gamePath).length > 0).catch(() => false);
++  }
++  public getGameStorePath(): Bluebird<string | undefined> {
++    return Bluebird.resolve(
++      bottlesRoots()
++        .map((root) => bottlesCli(root.flatpak)?.executable)
++        .find(Boolean),
++    );
++  }
++  public isGameStoreInstalled(): Bluebird<boolean> {
++    return this.getGameStorePath().then(Boolean);
++  }
++  public isGameInstalled(name: string): Bluebird<boolean> {
++    return this.findByName(name)
++      .then(() => true)
++      .catch(GameEntryNotFound, () => false);
++  }
++  public launchGame(
++    appInfo: string | { appId: string; parameters?: string[] },
++    api?: IExtensionApi,
++  ): Bluebird<void> {
++    return this.isGameStoreInstalled()
++      .then((installed) => {
++        if (!installed) throw new GameStoreNotFound(this.name);
++        return this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
++      })
++      .then((game) => {
++        if (!api) throw new Error("Bottles launch requires the Vortex application API");
++        const command = bottlesLaunchCommand(
++          game.bottle,
++          game.program,
++          typeof appInfo === "string" ? [] : appInfo.parameters,
++        );
++        return api.runExecutable(command.executable, command.args, {
++          ...command.options,
++          cwd: game.gamePath,
++          suggestDeploy: true,
++          detach: true,
++        });
++      });
++  }
++}
+diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
+--- a/src/renderer/src/util/StarterInfo.ts
++++ b/src/renderer/src/util/StarterInfo.ts
+@@ -25,6 +25,7 @@ import {
+ } from "./CustomErrors";
+ import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
+ import getVortexPath from "./getVortexPath";
++import { bottlesLaunchCommand, findBottlesLaunch } from "./linux/bottles";
+ import { findHeroicGame, heroicLaunchCommand } from "./linux/heroic";
+ import { findLutrisLaunchGame, lutrisLaunchCommand } from "./linux/lutris";
+ import { resolvePlatformPath } from "./nativeExecutable";
+@@ -309,6 +310,31 @@ class StarterInfo implements IStarterInfo {
+       }
+     }
+ 
++    // Bottles applies the program's own settings. Without a single program to
++    // start, the game runs through the bottle's runner instead.
++    if (process.platform === "linux" && info.isGame && info.store === "bottles") {
++      try {
++        const discovery = api.store.getState().settings.gameMode.discovered[info.gameId];
++        const launch = findBottlesLaunch({ path: discovery?.path, store: info.store });
++        if (launch) {
++          const command = bottlesLaunchCommand(launch.bottle, launch.program, info.commandLine);
++          await api.runExecutable(command.executable, command.args, {
++            ...command.options,
++            cwd: discovery.path,
++            env: info.environment,
++            suggestDeploy: true,
++            detach: true,
++            // bottles-cli exits as soon as the game has started.
++            onSpawned: spawned,
++          });
++          return;
++        }
++      } catch (err) {
++        onShowError("Failed to start game through Bottles", err, false);
++        return;
++      }
++    }
++
+     const steamGameEntry = info.isGame ? await findSteamEntry(info) : undefined;
+     if (steamGameEntry !== undefined) {
+       const steamStore = storeLookup.getGameStore(getGameStoresSafe(), "steam") as Steam;
+diff --git a/src/renderer/src/util/linux/bottles.ts b/src/renderer/src/util/linux/bottles.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/linux/bottles.ts
+@@ -0,0 +1,323 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { load } from "js-yaml";
++
++import type { CompatibilityGame } from "../compatibilityPaths";
++import type { ToolCommand } from "./gameTools";
++import { findProgram } from "./heroic";
++import { canonicalPath } from "./steamLibraries";
++
++const FLATPAK_ID = "com.usebottles.bottles";
++
++export interface BottlesRoot {
++  /** Bottles' data directory, holding runners and the default bottles folder. */
++  dataPath: string;
++  flatpak: boolean;
++}
++
++export interface BottlesProgram {
++  id: string;
++  name: string;
++  exe: string;
++  /** The executable, as configured and resolved. */
++  exePaths: string[];
++}
++
++export interface Bottle {
++  /** The name bottles-cli addresses the bottle by. */
++  name: string;
++  path: string;
++  /** The bottle folder, as configured and resolved. */
++  locations: string[];
++  runner?: string;
++  env: Record<string, string>;
++  programs: BottlesProgram[];
++  root: BottlesRoot;
++  /** Bottles keys bottles by name, so bottles-cli cannot address a duplicate. */
++  duplicateName: boolean;
++}
++
++export interface BottlesGame {
++  appid: string;
++  name: string;
++  gamePath: string;
++  gameStoreId: "bottles";
++  bottle: Bottle;
++  program: BottlesProgram;
++}
++
++export function bottlesRoots(): BottlesRoot[] {
++  const home = os.homedir();
++  return [
++    {
++      dataPath: path.join(process.env.XDG_DATA_HOME ?? path.join(home, ".local/share"), "bottles"),
++      flatpak: false,
++    },
++    { dataPath: path.join(home, ".var/app", FLATPAK_ID, "data/bottles"), flatpak: true },
++  ];
++}
++
++function readYaml(file: string): any {
++  try {
++    return load(fs.readFileSync(file, "utf8"));
++  } catch {
++    return undefined;
++  }
++}
++
++function absolute(value: unknown): string | undefined {
++  if (typeof value !== "string") return undefined;
++  const expanded = value.replace(/^~(?=\/|$)/, os.homedir());
++  return path.isAbsolute(expanded) ? path.normalize(expanded) : undefined;
++}
++
++function isInside(root: string, candidate: string): boolean {
++  const relative = path.relative(root, candidate);
++  return (
++    relative === "" ||
++    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
++  );
++}
++
++/**
++ * A path as configured and with symlinks resolved. Game folders are often
++ * linked into a prefix from another disk, so either form may be the one that
++ * lies inside the prefix.
++ */
++function aliases(input: string): string[] {
++  const resolved = path.resolve(input);
++  const canonical = canonicalPath(input);
++  return resolved === canonical ? [resolved] : [resolved, canonical];
++}
++
++function insideAny(roots: string[], candidates: string[]): boolean {
++  return roots.some((root) => candidates.some((candidate) => isInside(root, candidate)));
++}
++
++function stringEnv(value: unknown): Record<string, string> {
++  if (value === null || typeof value !== "object") return {};
++  return Object.fromEntries(
++    Object.entries(value).flatMap(([key, entry]) =>
++      key && ["string", "number", "boolean"].includes(typeof entry) ? [[key, String(entry)]] : [],
++    ),
++  );
++}
++
++/** Bottles stores program paths as host paths, older entries as C:\ paths. */
++function programExe(bottlePath: string, value: unknown): string | undefined {
++  if (typeof value !== "string") return undefined;
++  const drive = /^[cC]:[\\/](.*)$/.exec(value);
++  if (drive) return path.join(bottlePath, "drive_c", ...drive[1].split(/[\\/]+/));
++  return absolute(value);
++}
++
++function bottlesDirectory(root: BottlesRoot): string {
++  const custom = absolute(readYaml(path.join(root.dataPath, "data.yml"))?.custom_bottles_path);
++  return custom && fs.existsSync(custom) ? custom : path.join(root.dataPath, "bottles");
++}
++
++export function readBottles(): Bottle[] {
++  const bottles: Bottle[] = [];
++  for (const root of bottlesRoots()) {
++    const directory = bottlesDirectory(root);
++    let entries: string[];
++    try {
++      entries = fs.readdirSync(directory);
++    } catch {
++      continue;
++    }
++    const found: Bottle[] = [];
++    for (const entry of entries) {
++      // A bottle stored elsewhere leaves a placeholder pointing at it.
++      const placeholder = absolute(readYaml(path.join(directory, entry, "placeholder.yml"))?.Path);
++      const location = placeholder ?? path.join(directory, entry);
++      const config = readYaml(path.join(location, "bottle.yml"));
++      if (config === undefined || config === null || typeof config !== "object") continue;
++      // Steam bottles wrap a Proton prefix that the Steam store already handles.
++      if (config.Environment === "Steam" || typeof config.Name !== "string") continue;
++      const bottlePath = canonicalPath(location);
++      const programs = Object.entries(
++        config.External_Programs !== null && typeof config.External_Programs === "object"
++          ? config.External_Programs
++          : {},
++      ).flatMap(([key, program]: [string, any]) => {
++        const exe = programExe(bottlePath, program?.path);
++        const name = typeof program?.name === "string" ? program.name : undefined;
++        return exe && name
++          ? [
++              {
++                id: String(program?.id ?? key),
++                name,
++                exe: canonicalPath(exe),
++                exePaths: aliases(exe),
++              },
++            ]
++          : [];
++      });
++      found.push({
++        name: config.Name,
++        path: bottlePath,
++        locations: aliases(location),
++        runner: typeof config.Runner === "string" ? config.Runner : undefined,
++        env: stringEnv(config.Environment_Variables),
++        programs,
++        root,
++        duplicateName: false,
++      });
++    }
++    for (const bottle of found) {
++      bottle.duplicateName = found.filter((other) => other.name === bottle.name).length > 1;
++    }
++    bottles.push(...found);
++  }
++  return bottles;
++}
++
++function gameRoot(exe: string, bottlePath: string): string {
++  // GOG games mark their root folder; game extensions expect that one.
++  const stop = isInside(bottlePath, exe) ? bottlePath : path.parse(exe).root;
++  for (let current = path.dirname(exe); isInside(stop, current); current = path.dirname(current)) {
++    try {
++      if (fs.readdirSync(current).some((name) => /^goggame-\d+\.info$/.test(name))) return current;
++    } catch {
++      break;
++    }
++    if (current === stop || current === path.dirname(current)) break;
++  }
++  return path.dirname(exe);
++}
++
++/** Every program added to a bottle, as a game store entry. */
++export function readBottlesGames(): BottlesGame[] {
++  return readBottles().flatMap((bottle) =>
++    bottle.programs.map((program) => ({
++      // Bottles has no store IDs; this can never match another store's game.
++      appid: `bottles-${bottle.name}-${program.id}`,
++      name: program.name,
++      gamePath: canonicalPath(gameRoot(program.exe, bottle.path)),
++      gameStoreId: "bottles" as const,
++      bottle,
++      program,
++    })),
++  );
++}
++
++/** Bottles that contain the game folder, or run a program from inside it. */
++export function matchBottles(gamePath: string | undefined): Bottle[] {
++  if (!gamePath) return [];
++  const targets = aliases(gamePath);
++  return readBottles().filter(
++    (bottle) =>
++      insideAny(bottle.locations, targets) ||
++      bottle.programs.some((program) => insideAny(targets, program.exePaths)),
++  );
++}
++
++function selectedBottle(game: CompatibilityGame): Bottle | undefined {
++  const matches = matchBottles(game.path);
++  if (new Set(matches.map((bottle) => bottle.path)).size > 1)
++    throw new Error("Several bottles contain this game. Set WINEPREFIX for it explicitly.");
++  return matches[0];
++}
++
++export function bottlesPrefix(game: CompatibilityGame): string | undefined {
++  const bottle = selectedBottle(game);
++  return bottle && fs.existsSync(path.join(bottle.path, "drive_c")) ? bottle.path : undefined;
++}
++
++/** The program to start: the only one in the selected bottle whose executable is inside the game folder. */
++export function findBottlesLaunch(
++  game: CompatibilityGame,
++): { bottle: Bottle; program: BottlesProgram } | undefined {
++  if (!game.path) return undefined;
++  const bottle = selectedBottle(game);
++  if (!bottle) return undefined;
++  const targets = aliases(game.path);
++  const programs = bottle.programs.filter((program) => insideAny(targets, program.exePaths));
++  return programs.length === 1 ? { bottle, program: programs[0] } : undefined;
++}
++
++export function bottlesCli(flatpak: boolean): { executable: string; args: string[] } | undefined {
++  if (!bottlesRoots().some((root) => root.flatpak === flatpak && fs.existsSync(root.dataPath)))
++    return undefined;
++  const executable = flatpak
++    ? findProgram("flatpak")
++    : findProgram(process.env.BOTTLES_CLI_BINARY ?? "bottles-cli");
++  return executable
++    ? { executable, args: flatpak ? ["run", "--command=bottles-cli", FLATPAK_ID] : [] }
++    : undefined;
++}
++
++/** bottles-cli joins arguments into a shell command line, so each needs quoting. */
++export function shellQuote(value: string): string {
++  return `'${value.replaceAll("'", `'\\''`)}'`;
++}
++
++export function bottlesLaunchCommand(
++  bottle: Bottle,
++  program: BottlesProgram,
++  args: string[] = [],
++): ToolCommand {
++  if (bottle.duplicateName)
++    throw new Error(
++      `Several bottles are named "${bottle.name}". Rename them in Bottles so Vortex can start the right one.`,
++    );
++  const cli = bottlesCli(bottle.root.flatpak);
++  if (!cli)
++    throw new Error(
++      "bottles-cli was not found. Install Bottles or set BOTTLES_CLI_BINARY to bottles-cli.",
++    );
++  return {
++    executable: cli.executable,
++    args: [...cli.args, "run", "-b", bottle.name, "-p", program.name, ...args.map(shellQuote)],
++    options: { shell: false },
++  };
++}
++
++function runnerBinary(bottle: Bottle): string {
++  const runner = bottle.runner;
++  if (!runner) throw new Error(`Select a runner for the "${bottle.name}" bottle in Bottles`);
++  if (runner.startsWith("sys-")) return "wine";
++  const build = path.join(bottle.root.dataPath, "runners", runner);
++  for (const binary of ["bin/wine", "bin/wine64"]) {
++    if (fs.existsSync(path.join(build, binary))) return path.join(build, binary);
++  }
++  if (/proton/i.test(runner) || fs.existsSync(path.join(build, "proton")))
++    throw new Error(
++      `Running tools with Bottles' Proton runner (${runner}) is not supported yet. Select a Wine runner for the bottle in Bottles.`,
++    );
++  throw new Error(`Bottles' runner ${runner} is not installed`);
++}
++
++/**
++ * Run a Windows tool with the bottle's own runner. bottles-cli would return as
++ * soon as the tool starts, and Vortex has to know when a tool exits.
++ */
++export async function bottlesToolCommand(
++  command: ToolCommand,
++  selected: CompatibilityGame,
++): Promise<ToolCommand> {
++  const bottle = selectedBottle(selected);
++  if (!bottle) throw new Error("The selected game is not in a Bottles bottle");
++  const prefix = command.options.env?.WINEPREFIX ?? bottlesPrefix(selected);
++  if (!prefix || !fs.existsSync(path.join(prefix, "drive_c")))
++    throw new Error("The bottle's Wine prefix is unavailable");
++  let executable = runnerBinary(bottle);
++  const env: Record<string, string> = { ...bottle.env, ...command.options.env, WINEPREFIX: prefix };
++  let args = [command.executable, ...command.args];
++  if (bottle.root.flatpak) {
++    const flatpak = findProgram("flatpak");
++    if (!flatpak) throw new Error("Flatpak was not found");
++    args = [
++      "run",
++      `--command=${executable}`,
++      ...Object.entries(env).map(([key, value]) => `--env=${key}=${value}`),
++      FLATPAK_ID,
++      ...args,
++    ];
++    executable = flatpak;
++  } else if (!findProgram(executable)) throw new Error(`Bottles' runner is missing: ${executable}`);
++  return { executable, args, options: { ...command.options, shell: false, env } };
++}

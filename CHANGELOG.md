@@ -10,6 +10,15 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Experimental: games installed through Lutris' Wine runner are recognised.
+  Point Vortex at the game folder and it deploys into the game's Lutris prefix,
+  starts the game through Lutris and runs modding tools with the game's Wine
+  build. GOG and Epic games from Lutris' services are also found when a game
+  extension looks them up by store ID.
+- Experimental: games installed in a Bottles bottle are recognised the same
+  way. A game folder inside a bottle, or one holding a program added to a
+  bottle, uses that bottle as its prefix, starts through `bottles-cli` and runs
+  tools with the bottle's runner.
 - The 2.6.2 recipe carries the Linux fixes from 2.8.2-3 through 2.9.0-3:
   extension config paths, deployment preflight and target logging, extensions
   behind a symlinked home, differently cased game paths, backslash archive
