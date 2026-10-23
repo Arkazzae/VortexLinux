@@ -52,6 +52,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The container runs as root while the checkout belongs to the runner's
+      # user, and Git refuses to read a repository owned by someone else.
+      - name: Let Git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Select and export the matching packaging snapshot
         id: prepare
         env:
