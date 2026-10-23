@@ -14,6 +14,7 @@ This repo does the other thing: it patches Vortex to actually understand Linux, 
 - Maps `Documents` / `AppData` into the right prefix, so mods and saves land where the game actually looks
 - Discovers Epic, GOG and Amazon games in native and Flatpak Heroic installations
 - Launches games through Steam or Heroic
+- Experimental: recognises Windows games installed through Lutris or Bottles, deploys into their prefix and launches them through the launcher
 - Runs Windows modding tools in the game’s Wine/Proton prefix, including calls made by extensions
 - Reads and writes Windows INI files while preserving encoding, comments and hardlinks
 - Builds Bethesda plugin management with native Linux LOOT
@@ -21,6 +22,17 @@ This repo does the other thing: it patches Vortex to actually understand Linux, 
 - Resolves Windows path casing consistently and keeps staging files safe when external changes are detected
 
 These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so some games may still need fixes.
+
+### What runs where
+
+| Part | Runs as |
+|---|---|
+| Vortex itself: UI, downloads, installers, deployment | native Linux process |
+| Game discovery and launch through Steam, Heroic, Lutris, Bottles | native, through each launcher |
+| Mod deployment, INI edits, LOOT sorting, FOMOD installers | native |
+| Windows-only modding tools such as xEdit or BodySlide | the game's own Wine or Proton prefix |
+| Windows .NET runtimes those tools need | bundled, loaded through Wine |
+| Vortex's few Windows-only helpers, and tools run with no game selected | a separate Wine prefix under `~/.local/share/vortex-linux` |
 
 ## Upstream is catching up 🎉
 
@@ -92,6 +104,23 @@ ambiguity instead of choosing by modification time.
 If Heroic is an AppImage outside `PATH`, set `HEROIC_BINARY` to its executable.
 Launch it once before scanning for games. Linux-native Heroic games keep their
 native configuration paths.
+
+**Lutris and Bottles (experimental).** Games that use Lutris' Wine runner work
+too. If Vortex doesn't find the game by itself, set its folder manually, as it
+appears inside the Lutris prefix (also when that folder is a symlink to another
+disk). Vortex recognises that it belongs to Lutris, uses the game's Lutris
+prefix, starts it through Lutris and runs tools with the Wine version selected
+for it in Lutris. Tools need a Wine build for now; games set to Proton in Lutris
+can be deployed to and launched, but not run tools. Set `LUTRIS_BINARY` if
+`lutris` isn't on `PATH`.
+
+Bottles works the same way: set the game folder inside the bottle, or the folder
+of a program you added to a bottle. Vortex uses the bottle as the prefix, starts
+a program added in Bottles through `bottles-cli`, and runs tools with the
+bottle's runner. Bottles keeps bottles by name, so rename bottles that share a
+name. Flatpak Bottles only sees folders its sandbox allows. Set
+`BOTTLES_CLI_BINARY` if `bottles-cli` isn't on `PATH`. Both are new and lightly
+tested; please report what breaks.
 
 The separate prefix for Vortex’s own helper processes still defaults to
 `${XDG_DATA_HOME:-$HOME/.local/share}/vortex-linux/wineprefix`.

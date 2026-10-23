@@ -1,0 +1,946 @@
+diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
+--- a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
++++ b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
+@@ -27,6 +27,7 @@ import { ProcessCanceled, SetupError, UserCanceled } from "../../util/CustomErro
+ import EpicGamesLauncher from "../../util/EpicGamesLauncher";
+ import * as fs from "../../util/fs";
+ import { HeroicStore } from "../../util/Heroic";
++import { LutrisStore } from "../../util/Lutris";
+ import { activeProfile, discoveryByGame } from "../../util/selectors";
+ import Steam from "../../util/Steam";
+ import { normalizeStoreQuery } from "../../util/storeQuery";
+@@ -83,7 +84,9 @@ class GameModeManager {
+       OriginLauncher.create(),
+       UPlayLauncher.create(),
+       XboxLauncher.create(api),
+-      ...(process.platform === "linux" ? [new HeroicStore("gog"), new HeroicStore("amazon")] : []),
++      ...(process.platform === "linux"
++        ? [new HeroicStore("gog"), new HeroicStore("amazon"), new LutrisStore()]
++        : []),
+     ].filter(Boolean);
+     this.mActiveSearch = null;
+     this.mQuickDiscoveryAbort = null;
+diff --git a/src/renderer/src/util/Lutris.test.ts b/src/renderer/src/util/Lutris.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/Lutris.test.ts
+@@ -0,0 +1,400 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { DatabaseSync } from "node:sqlite";
++
++import { dump } from "js-yaml";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { resetCompatibilityPathCache, selectedGamePrefix } from "./compatibilityPaths";
++import { resolveGameTool } from "./linux/gameTools";
++import {
++  findLutrisLaunchGame,
++  lutrisLaunchCommand,
++  lutrisPrefix,
++  lutrisRoots,
++  readLutrisGames,
++} from "./linux/lutris";
++import { LutrisStore } from "./Lutris";
++
++vi.mock("node:os", async (original) => ({ ...(await original<typeof os>()), homedir: vi.fn() }));
++
++interface Row {
++  id: number;
++  name: string;
++  slug: string;
++  runner?: string;
++  installed?: number;
++  directory?: string;
++  configpath?: string;
++  service?: string;
++  service_id?: string;
++}
++
++describe.runIf(process.platform === "linux")("Lutris integration", () => {
++  let home: string;
++  let data: string;
++  let config: string;
++  let games: string;
++  function database(rows: Row[], dataPath = data): void {
++    fs.mkdirSync(dataPath, { recursive: true });
++    const db = new DatabaseSync(path.join(dataPath, "pga.db"));
++    db.exec(
++      "CREATE TABLE games (id INTEGER PRIMARY KEY, name TEXT, slug TEXT, runner TEXT, " +
++        "installed INTEGER, directory TEXT, configpath TEXT, service TEXT, service_id TEXT)",
++    );
++    const insert = db.prepare(
++      "INSERT INTO games (id, name, slug, runner, installed, directory, configpath, service, service_id) " +
++        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++    );
++    for (const row of rows)
++      insert.run(
++        row.id,
++        row.name,
++        row.slug,
++        row.runner ?? "wine",
++        row.installed ?? 1,
++        row.directory ?? null,
++        row.configpath ?? null,
++        row.service ?? null,
++        row.service_id ?? null,
++      );
++    db.close();
++  }
++  function yaml(file: string, value: unknown): void {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, typeof value === "string" ? value : dump(value));
++  }
++  function prefixAt(location: string): string {
++    fs.mkdirSync(path.join(location, "drive_c/users"), { recursive: true });
++    return location;
++  }
++  function program(name: string): string {
++    const binary = path.join(home, "bin", name);
++    fs.mkdirSync(path.dirname(binary), { recursive: true });
++    fs.writeFileSync(binary, "#!/bin/sh\n", { mode: 0o755 });
++    return binary;
++  }
++  function wineBuild(version: string, root = data): string {
++    const binary = path.join(root, "runners/wine", version, "bin/wine");
++    fs.mkdirSync(path.dirname(binary), { recursive: true });
++    fs.writeFileSync(binary, "#!/bin/sh\n", { mode: 0o755 });
++    return binary;
++  }
++  /** A GOG game installed by Lutris inside its own prefix. */
++  function gogGame(id = 3, slug = "example") {
++    const prefix = prefixAt(path.join(home, "Games", slug));
++    const gameRoot = path.join(prefix, "drive_c/GOG Games/Example Game");
++    fs.mkdirSync(path.join(gameRoot, "bin/x64"), { recursive: true });
++    fs.writeFileSync(path.join(gameRoot, "bin/x64/Example.exe"), "");
++    fs.writeFileSync(path.join(gameRoot, "goggame-1207658691.info"), "{}");
++    database([
++      {
++        id,
++        name: "Example Game",
++        slug,
++        directory: prefix,
++        configpath: `${slug}-1700000000`,
++        service: "gog",
++        service_id: "1207658691",
++      },
++    ]);
++    yaml(path.join(games, `${slug}-1700000000.yml`), {
++      game: { exe: "drive_c/GOG Games/Example Game/bin/x64/Example.exe", prefix },
++      system: { env: { DXVK_HUD: "compiler", GAME_VALUE: 1 } },
++      wine: { version: "wine-ge-8-26" },
++    });
++    return { prefix, gameRoot };
++  }
++
++  beforeEach(() => {
++    home = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-lutris-"));
++    vi.mocked(os.homedir).mockReturnValue(home);
++    vi.stubEnv("XDG_DATA_HOME", path.join(home, ".local/share"));
++    vi.stubEnv("XDG_CONFIG_HOME", path.join(home, ".config"));
++    vi.stubEnv("PATH", path.join(home, "bin"));
++    vi.stubEnv("LUTRIS_BINARY", "lutris");
++    [{ dataPath: data, configPath: config }] = lutrisRoots();
++    games = path.join(config, "games");
++    resetCompatibilityPathCache();
++  });
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    resetCompatibilityPathCache();
++    fs.rmSync(home, { recursive: true, force: true });
++  });
++
++  it("reads installed Wine games only and finds the GOG root of a nested executable", () => {
++    const { gameRoot } = gogGame();
++    const db = new DatabaseSync(path.join(data, "pga.db"));
++    const insert = db.prepare(
++      "INSERT INTO games (id, name, slug, runner, installed, directory, configpath) VALUES (?, ?, ?, ?, ?, ?, ?)",
++    );
++    // Lutris imports Steam games and runs native ones without a prefix.
++    insert.run(4, "Steam Game", "steam-game", "steam", 1, path.join(home, "steam"), "steam-game-1");
++    insert.run(5, "Native", "native", "linux", 1, path.join(home, "native"), "native-1");
++    insert.run(6, "Removed", "removed", "wine", 0, path.join(home, "removed"), "removed-1");
++    db.close();
++    expect(readLutrisGames()).toEqual([
++      expect.objectContaining({
++        appid: "1207658691",
++        id: 3,
++        name: "Example Game",
++        gameStoreId: "lutris",
++        gamePath: gameRoot,
++        wineVersion: "wine-ge-8-26",
++        env: { DXVK_HUD: "compiler", GAME_VALUE: "1" },
++      }),
++    ]);
++  });
++
++  it("never exposes Lutris' row ID as a store ID", () => {
++    const prefix = prefixAt(path.join(home, "Games/manual"));
++    database([
++      { id: 220, name: "Manual", slug: "manual", directory: prefix, configpath: "manual-1" },
++    ]);
++    yaml(path.join(games, "manual-1.yml"), {
++      game: { exe: path.join(prefix, "game.exe"), prefix },
++    });
++    expect(readLutrisGames().map((game) => game.appid)).toEqual(["lutris-manual"]);
++  });
++
++  it("reads PyYAML's folded long paths and configuration kept in the data directory", () => {
++    const prefix = prefixAt(path.join(home, "Games/long"));
++    const exe = path.join(
++      prefix,
++      "drive_c/Program Files/A Publisher With A Long Name/A Game Title That Is Long Enough To Wrap/game.exe",
++    );
++    fs.mkdirSync(path.dirname(exe), { recursive: true });
++    fs.writeFileSync(exe, "");
++    database([{ id: 1, name: "Long", slug: "long", directory: prefix, configpath: "long-1" }]);
++    const [head, tail] = [
++      exe.slice(0, exe.indexOf(" Long Enough")),
++      exe.slice(exe.indexOf(" Long Enough") + 1),
++    ];
++    yaml(
++      path.join(data, "games/long-1.yml"),
++      `game:\n  exe: ${head}\n    ${tail}\n  prefix: ${prefix}\nwine:\n  version: system\n`,
++    );
++    expect(readLutrisGames()[0]).toMatchObject({ exe, gamePath: path.dirname(exe) });
++  });
++
++  it("returns no games while the database cannot be read", () => {
++    fs.mkdirSync(data, { recursive: true });
++    fs.writeFileSync(path.join(data, "pga.db"), "not a database");
++    expect(readLutrisGames()).toEqual([]);
++  });
++
++  it("identifies a game folder inside the prefix and resolves its prefix", async () => {
++    const { prefix, gameRoot } = gogGame();
++    const store = new LutrisStore();
++    expect(await store.identifyGame(path.join(gameRoot, "Data"))).toBe(true);
++    expect(await store.identifyGame(path.join(home, "elsewhere"))).toBe(false);
++    expect(lutrisPrefix({ path: gameRoot, store: "lutris" })).toBe(prefix);
++    expect(selectedGamePrefix({ path: gameRoot, store: "lutris", executable: "Example.exe" })).toBe(
++      prefix,
++    );
++    expect((await store.findByAppId(["220", "1207658691"])).id).toBe(3);
++    expect((await store.findByName("example game")).id).toBe(3);
++  });
++
++  it("shares one prefix between a launcher and its games, but launches only an exact match", () => {
++    const prefix = prefixAt(path.join(home, "Games/battlenet"));
++    const launcher = path.join(prefix, "drive_c/Program Files (x86)/Battle.net");
++    const hots = path.join(prefix, "drive_c/Program Files (x86)/Heroes of the Storm");
++    fs.mkdirSync(launcher, { recursive: true });
++    fs.mkdirSync(hots, { recursive: true });
++    fs.writeFileSync(path.join(launcher, "Battle.net.exe"), "");
++    database([
++      {
++        id: 1,
++        name: "Battle.net",
++        slug: "battlenet",
++        directory: prefix,
++        configpath: "battlenet-1",
++      },
++      { id: 2, name: "Heroes of the Storm", slug: "hots", directory: prefix, configpath: "hots-1" },
++    ]);
++    for (const name of ["battlenet-1", "hots-1"])
++      yaml(path.join(games, `${name}.yml`), {
++        game: { exe: "drive_c/Program Files (x86)/Battle.net/Battle.net.exe", prefix },
++        wine: { version: "wine-staging-x86_64" },
++      });
++    expect(lutrisPrefix({ path: hots, store: "lutris" })).toBe(prefix);
++    // Both entries start the launcher: neither is the game itself, and for the
++    // launcher folder there is no single entry to pick.
++    expect(findLutrisLaunchGame({ path: hots, store: "lutris" })).toBeUndefined();
++    expect(findLutrisLaunchGame({ path: launcher, store: "lutris" })).toBeUndefined();
++    fs.writeFileSync(path.join(hots, "HeroesSwitcher.exe"), "");
++    yaml(path.join(games, "hots-1.yml"), {
++      game: { exe: "drive_c/Program Files (x86)/Heroes of the Storm/HeroesSwitcher.exe", prefix },
++    });
++    expect(findLutrisLaunchGame({ path: hots, store: "lutris" })?.id).toBe(2);
++  });
++
++  it("matches a game folder linked into the prefix from another disk", async () => {
++    const prefix = prefixAt(path.join(home, "Games/battlenet"));
++    const disk = path.join(home, "disk/Games/Heroes of the Storm");
++    fs.mkdirSync(disk, { recursive: true });
++    fs.writeFileSync(path.join(disk, "HeroesSwitcher.exe"), "");
++    const linked = path.join(prefix, "drive_c/Program Files (x86)/Heroes of the Storm");
++    fs.mkdirSync(path.dirname(linked), { recursive: true });
++    fs.symlinkSync(disk, linked);
++    database([
++      { id: 2, name: "Heroes of the Storm", slug: "hots", directory: prefix, configpath: "hots-1" },
++    ]);
++    yaml(path.join(games, "hots-1.yml"), {
++      game: { exe: "drive_c/Program Files (x86)/Heroes of the Storm/HeroesSwitcher.exe", prefix },
++    });
++    expect(await new LutrisStore().identifyGame(linked)).toBe(true);
++    expect(lutrisPrefix({ path: linked, store: "lutris" })).toBe(prefix);
++    expect(findLutrisLaunchGame({ path: linked, store: "lutris" })?.id).toBe(2);
++    // The resolved folder on the other disk is the same game.
++    expect(lutrisPrefix({ path: disk, store: "lutris" })).toBe(prefix);
++  });
++
++  it("refuses to choose between different prefixes and tolerates a prefix not created yet", () => {
++    const outer = prefixAt(path.join(home, "Games/outer"));
++    const inner = prefixAt(path.join(outer, "drive_c/inner"));
++    database([
++      { id: 1, name: "Outer", slug: "outer", directory: outer, configpath: "outer-1" },
++      { id: 2, name: "Inner", slug: "inner", directory: inner, configpath: "inner-1" },
++      { id: 3, name: "Fresh", slug: "fresh", directory: outer, configpath: "fresh-1" },
++    ]);
++    yaml(path.join(games, "outer-1.yml"), { game: { prefix: outer } });
++    yaml(path.join(games, "inner-1.yml"), { game: { prefix: inner } });
++    yaml(path.join(games, "fresh-1.yml"), { game: { prefix: path.join(home, "Games/fresh") } });
++    expect(() => lutrisPrefix({ path: path.join(inner, "drive_c/Game"), store: "lutris" })).toThrow(
++      /different prefixes/,
++    );
++    expect(lutrisPrefix({ path: path.join(outer, "drive_c/Other"), store: "lutris" })).toBe(outer);
++  });
++
++  it("uses a Proton-style pfx directory inside the configured prefix", () => {
++    const prefix = path.join(home, "Games/proton");
++    prefixAt(path.join(prefix, "pfx"));
++    database([
++      { id: 1, name: "Proton", slug: "proton", directory: prefix, configpath: "proton-1" },
++    ]);
++    yaml(path.join(games, "proton-1.yml"), { game: { prefix } });
++    expect(lutrisPrefix({ path: path.join(prefix, "pfx/drive_c/Game"), store: "lutris" })).toBe(
++      path.join(prefix, "pfx"),
++    );
++  });
++
++  it("launches through the native or Flatpak Lutris client", () => {
++    gogGame(7);
++    const lutris = program("lutris");
++    const [game] = readLutrisGames();
++    expect(lutrisLaunchCommand(game)).toEqual({
++      executable: lutris,
++      args: ["lutris:rungameid/7"],
++      options: { shell: false },
++    });
++
++    fs.rmSync(path.join(home, ".local"), { recursive: true });
++    const flatpak = program("flatpak");
++    const flatpakData = path.join(home, ".var/app/net.lutris.Lutris/data/lutris");
++    games = path.join(home, ".var/app/net.lutris.Lutris/config/lutris/games");
++    data = flatpakData;
++    gogGame(8);
++    const [flatpakGame] = readLutrisGames();
++    expect(flatpakGame.root.flatpak).toBe(true);
++    expect(lutrisLaunchCommand(flatpakGame)).toMatchObject({
++      executable: flatpak,
++      args: ["run", "net.lutris.Lutris", "lutris:rungameid/8"],
++    });
++  });
++
++  it("runs tools with the game's Wine build and environment", async () => {
++    const { prefix, gameRoot } = gogGame();
++    new LutrisStore();
++    const wine = wineBuild("wine-ge-8-26");
++    yaml(path.join(config, "system.yml"), { system: { env: { SHARED: "yes", DXVK_HUD: "0" } } });
++    const command = await resolveGameTool(
++      path.join(gameRoot, "Tools/Edit.exe"),
++      [path.join(gameRoot, "Data")],
++      { env: { EXTRA: "1" } },
++      { path: gameRoot, store: "lutris", executable: "bin/x64/Example.exe" },
++    );
++    expect(command.executable).toBe(wine);
++    expect(command.args[0]).toBe(path.join(gameRoot, "Tools/Edit.exe"));
++    expect(command.args[1]).toMatch(/^Z:\\/);
++    expect(command.options).toMatchObject({
++      shell: false,
++      env: {
++        WINEPREFIX: prefix,
++        EXTRA: "1",
++        SHARED: "yes",
++        DXVK_HUD: "compiler",
++        GAME_VALUE: "1",
++      },
++    });
++  });
++
++  it.each([
++    ["system", /^wine$/],
++    ["GE-Proton9-20", /Proton.*not supported/],
++    [undefined, /Select a Wine version/],
++    ["missing-build", /not installed/],
++  ])("resolves the %s Wine version", async (version, expected) => {
++    const { gameRoot } = gogGame();
++    new LutrisStore();
++    program("wine");
++    yaml(path.join(games, "example-1700000000.yml"), {
++      game: {
++        exe: "drive_c/GOG Games/Example Game/bin/x64/Example.exe",
++        prefix: path.join(home, "Games/example"),
++      },
++      ...(version === undefined ? {} : { wine: { version } }),
++    });
++    const run = resolveGameTool(
++      path.join(gameRoot, "Tool.exe"),
++      [],
++      {},
++      {
++        path: gameRoot,
++        store: "lutris",
++      },
++    );
++    if (expected.source === "^wine$") {
++      expect((await run).executable).toBe("wine");
++    } else {
++      await expect(run).rejects.toThrow(expected);
++    }
++  });
++
++  it("falls back to the runner's default Wine version and runs Flatpak tools inside Lutris", async () => {
++    vi.stubEnv("XDG_DATA_HOME", path.join(home, "unused"));
++    vi.stubEnv("XDG_CONFIG_HOME", path.join(home, "unused-config"));
++    data = path.join(home, ".var/app/net.lutris.Lutris/data/lutris");
++    config = path.join(home, ".var/app/net.lutris.Lutris/config/lutris");
++    games = path.join(config, "games");
++    const { prefix, gameRoot } = gogGame();
++    yaml(path.join(games, "example-1700000000.yml"), {
++      game: { exe: "drive_c/GOG Games/Example Game/bin/x64/Example.exe", prefix },
++    });
++    yaml(path.join(config, "runners/wine.yml"), { wine: { version: "lutris-7.2" } });
++    const wine = wineBuild("lutris-7.2", data);
++    const flatpak = program("flatpak");
++    new LutrisStore();
++    const command = await resolveGameTool(
++      path.join(gameRoot, "Tool.exe"),
++      ["-a"],
++      {},
++      {
++        path: gameRoot,
++        store: "lutris",
++      },
++    );
++    expect(command.executable).toBe(flatpak);
++    expect(command.args).toEqual([
++      "run",
++      `--command=${wine}`,
++      `--env=WINEPREFIX=${prefix}`,
++      "net.lutris.Lutris",
++      path.join(gameRoot, "Tool.exe"),
++      "-a",
++    ]);
++  });
++});
+diff --git a/src/renderer/src/util/Lutris.ts b/src/renderer/src/util/Lutris.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/Lutris.ts
+@@ -0,0 +1,112 @@
++import Bluebird from "bluebird";
++
++import type { IExtensionApi } from "../types/IExtensionContext";
++import {
++  GameEntryNotFound,
++  GameStoreNotFound,
++  type IGameStore,
++  type IGameStoreSnapshot,
++} from "../types/IGameStore";
++import { registerCompatibilityStore, resetCompatibilityPathCache } from "./compatibilityPaths";
++import { registerGameToolRunner } from "./linux/gameTools";
++import {
++  lutrisLaunchCommand,
++  lutrisLauncher,
++  lutrisPrefix,
++  lutrisRoots,
++  lutrisToolCommand,
++  matchLutrisGames,
++  readLutrisGames,
++  type LutrisGame,
++} from "./linux/lutris";
++
++/**
++ * Windows games installed through Lutris' Wine runner. Games added by hand are
++ * identified by their folder, so Vortex can use the game's own prefix and Wine.
++ */
++export class LutrisStore implements IGameStore {
++  public readonly id = "lutris";
++  public readonly name = "Lutris";
++  // After the native stores, so a game they know is not claimed by Lutris.
++  public readonly priority = 70;
++  private games: LutrisGame[] | undefined;
++  private installed = false;
++  public constructor() {
++    registerCompatibilityStore(this.id, lutrisPrefix);
++    registerGameToolRunner(this.id, lutrisToolCommand);
++  }
++  public allGames(): Bluebird<LutrisGame[]> {
++    return Bluebird.try(() => {
++      if (this.games === undefined) {
++        this.games = readLutrisGames();
++        this.installed = lutrisRoots().some((root) => lutrisLauncher(root.flatpak) !== undefined);
++      }
++      return this.games;
++    });
++  }
++  public snapshot(): IGameStoreSnapshot {
++    return { entries: this.games ?? [], isInstalled: this.installed };
++  }
++  public reloadGames(): Bluebird<void> {
++    this.games = undefined;
++    resetCompatibilityPathCache();
++    return this.allGames().then(() => undefined);
++  }
++  private find(predicate: (game: LutrisGame) => boolean, query: string): Bluebird<LutrisGame> {
++    return this.allGames().then((games) => {
++      const matches = games.filter(predicate);
++      if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
++      if (matches.length > 1)
++        throw new Error(
++          "Several Lutris games match this game. Select the game directory manually.",
++        );
++      return matches[0];
++    });
++  }
++  public findByAppId(id: string | string[]): Bluebird<LutrisGame> {
++    const ids = Array.isArray(id) ? id : [id];
++    return this.find((game) => ids.includes(game.appid), ids.join(", "));
++  }
++  public findByName(name: string): Bluebird<LutrisGame> {
++    return Bluebird.try(() => new RegExp(`^(?:${name})$`, "i")).then((pattern) =>
++      this.find((game) => pattern.test(game.name), name),
++    );
++  }
++  public identifyGame(gamePath: string): Bluebird<boolean> {
++    return Bluebird.try(() => matchLutrisGames(gamePath).length > 0).catch(() => false);
++  }
++  public getGameStorePath(): Bluebird<string | undefined> {
++    return Bluebird.resolve(
++      lutrisRoots()
++        .map((root) => lutrisLauncher(root.flatpak)?.executable)
++        .find(Boolean),
++    );
++  }
++  public isGameStoreInstalled(): Bluebird<boolean> {
++    return this.getGameStorePath().then(Boolean);
++  }
++  public isGameInstalled(name: string): Bluebird<boolean> {
++    return this.findByName(name)
++      .then(() => true)
++      .catch(GameEntryNotFound, () => false);
++  }
++  public launchGame(
++    appInfo: string | { appId: string; parameters?: string[] },
++    api?: IExtensionApi,
++  ): Bluebird<void> {
++    return this.isGameStoreInstalled()
++      .then((installed) => {
++        if (!installed) throw new GameStoreNotFound(this.name);
++        return this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
++      })
++      .then((game) => {
++        if (!api) throw new Error("Lutris launch requires the Vortex application API");
++        const command = lutrisLaunchCommand(game);
++        return api.runExecutable(command.executable, command.args, {
++          ...command.options,
++          cwd: game.gamePath,
++          suggestDeploy: true,
++        });
++      });
++  }
++}
+diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
+--- a/src/renderer/src/util/StarterInfo.ts
++++ b/src/renderer/src/util/StarterInfo.ts
+@@ -26,6 +26,7 @@ import {
+ import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
+ import getVortexPath from "./getVortexPath";
+ import { findHeroicGame, heroicLaunchCommand } from "./linux/heroic";
++import { findLutrisLaunchGame, lutrisLaunchCommand } from "./linux/lutris";
+ import { resolvePlatformPath } from "./nativeExecutable";
+ import type { Steam, ISteamEntry } from "./Steam";
+ import { getSafe } from "./storeHelper";
+@@ -278,6 +279,36 @@ class StarterInfo implements IStarterInfo {
+       }
+     }
+ 
++    // Lutris applies its own game settings. Extra launch parameters cannot be
++    // passed through its URI, so those launches go through Lutris' Wine instead.
++    if (
++      process.platform === "linux" &&
++      info.isGame &&
++      info.store === "lutris" &&
++      (info.commandLine ?? []).length === 0
++    ) {
++      try {
++        const discovery = api.store.getState().settings.gameMode.discovered[info.gameId];
++        const lutrisGame = findLutrisLaunchGame({ path: discovery?.path, store: info.store });
++        if (lutrisGame) {
++          const command = lutrisLaunchCommand(lutrisGame);
++          await api.runExecutable(command.executable, command.args, {
++            ...command.options,
++            cwd: lutrisGame.gamePath,
++            env: info.environment,
++            suggestDeploy: true,
++            detach: true,
++            // Lutris may keep running after the game exits.
++            onSpawned: spawned,
++          });
++          return;
++        }
++      } catch (err) {
++        onShowError("Failed to start game through Lutris", err, false);
++        return;
++      }
++    }
++
+     const steamGameEntry = info.isGame ? await findSteamEntry(info) : undefined;
+     if (steamGameEntry !== undefined) {
+       const steamStore = storeLookup.getGameStore(getGameStoresSafe(), "steam") as Steam;
+diff --git a/src/renderer/src/util/linux/lutris.ts b/src/renderer/src/util/linux/lutris.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/linux/lutris.ts
+@@ -0,0 +1,349 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { DatabaseSync } from "node:sqlite";
++
++import { load } from "js-yaml";
++
++import type { CompatibilityGame } from "../compatibilityPaths";
++import type { ToolCommand } from "./gameTools";
++import { findProgram } from "./heroic";
++import { canonicalPath } from "./steamLibraries";
++
++const FLATPAK_ID = "net.lutris.Lutris";
++
++export interface LutrisRoot {
++  dataPath: string;
++  configPath: string;
++  flatpak: boolean;
++}
++
++export interface LutrisGame {
++  /** Store-wide ID: the service's own ID (e.g. a GOG product ID), never Lutris' row ID. */
++  appid: string;
++  name: string;
++  /** The folder of the configured executable, or the game directory. */
++  gamePath: string;
++  gameStoreId: "lutris";
++  /** Lutris' database ID, used for lutris:rungameid. */
++  id: number;
++  slug: string;
++  directory?: string;
++  prefix?: string;
++  exe?: string;
++  /** Prefix and directory, as configured and resolved, for matching game folders. */
++  locations: string[];
++  /** The executable, as configured and resolved. */
++  exePaths: string[];
++  wineVersion?: string;
++  env: Record<string, string>;
++  root: LutrisRoot;
++}
++
++export function lutrisRoots(): LutrisRoot[] {
++  const home = os.homedir();
++  const flatpak = path.join(home, ".var/app", FLATPAK_ID);
++  return [
++    {
++      dataPath: path.join(process.env.XDG_DATA_HOME ?? path.join(home, ".local/share"), "lutris"),
++      configPath: path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, ".config"), "lutris"),
++      flatpak: false,
++    },
++    {
++      dataPath: path.join(flatpak, "data/lutris"),
++      configPath: path.join(flatpak, "config/lutris"),
++      flatpak: true,
++    },
++  ];
++}
++
++function readYaml(file: string): any {
++  try {
++    return load(fs.readFileSync(file, "utf8"));
++  } catch {
++    return undefined;
++  }
++}
++
++function absolute(value: unknown): string | undefined {
++  if (typeof value !== "string") return undefined;
++  const expanded = value.replace(/^~(?=\/|$)/, os.homedir());
++  return path.isAbsolute(expanded) ? path.normalize(expanded) : undefined;
++}
++
++function stringEnv(value: unknown): Record<string, string> {
++  if (value === null || typeof value !== "object") return {};
++  return Object.fromEntries(
++    Object.entries(value).flatMap(([key, entry]) =>
++      key && ["string", "number", "boolean"].includes(typeof entry) ? [[key, String(entry)]] : [],
++    ),
++  );
++}
++
++/** Lutris 0.5.17+ moved its configuration into the data directory; older setups keep it in ~/.config. */
++function configFile(root: LutrisRoot, ...parts: string[]): string | undefined {
++  return [root.configPath, root.dataPath]
++    .map((base) => path.join(base, ...parts))
++    .find((file) => fs.existsSync(file));
++}
++
++function isInside(root: string, candidate: string): boolean {
++  const relative = path.relative(root, candidate);
++  return (
++    relative === "" ||
++    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
++  );
++}
++
++/**
++ * A path as configured and with symlinks resolved. Game folders are often
++ * linked into a prefix from another disk, so either form may be the one that
++ * lies inside the prefix.
++ */
++function aliases(input: string): string[] {
++  const resolved = path.resolve(input);
++  const canonical = canonicalPath(input);
++  return resolved === canonical ? [resolved] : [resolved, canonical];
++}
++
++function insideAny(roots: string[], candidates: string[]): boolean {
++  return roots.some((root) => candidates.some((candidate) => isInside(root, candidate)));
++}
++
++interface LutrisRow {
++  id: number;
++  name: string | null;
++  slug: string | null;
++  directory: string | null;
++  configpath: string | null;
++  service: string | null;
++  service_id: string | null;
++}
++
++function readRows(database: string): LutrisRow[] {
++  let db: DatabaseSync | undefined;
++  try {
++    db = new DatabaseSync(database, { readOnly: true });
++    // Only Windows games installed through Lutris' Wine runner have a prefix.
++    // Steam games imported by Lutris and native games stay with their own stores.
++    return db
++      .prepare(
++        "SELECT id, name, slug, directory, configpath, service, service_id FROM games " +
++          "WHERE installed = 1 AND runner = 'wine'",
++      )
++      .all() as unknown as LutrisRow[];
++  } catch {
++    // Lutris may be writing to its database; the next scan tries again.
++    return [];
++  } finally {
++    db?.close();
++  }
++}
++
++function gameRoot(exe: string | undefined, directory: string | undefined, row: LutrisRow) {
++  if (exe === undefined) return directory;
++  // GOG and Epic installs mark their root folder; game extensions expect that one.
++  const markers =
++    row.service === "gog" && row.service_id
++      ? [`goggame-${row.service_id}.info`]
++      : row.service === "egs"
++        ? [".egstore"]
++        : [];
++  const stop = directory ?? path.parse(exe).root;
++  for (let current = path.dirname(exe); isInside(stop, current); current = path.dirname(current)) {
++    if (markers.some((marker) => fs.existsSync(path.join(current, marker)))) return current;
++    if (current === stop || current === path.dirname(current)) break;
++  }
++  return path.dirname(exe);
++}
++
++export function readLutrisGames(): LutrisGame[] {
++  const games: LutrisGame[] = [];
++  for (const root of lutrisRoots()) {
++    const database = path.join(root.dataPath, "pga.db");
++    if (!fs.existsSync(database)) continue;
++    const runnerConfig = readYaml(configFile(root, "runners/wine.yml") ?? "") ?? {};
++    const systemConfig = readYaml(configFile(root, "system.yml") ?? "") ?? {};
++    for (const row of readRows(database)) {
++      if (!row.configpath || /[\\/]/.test(row.configpath)) continue;
++      const config = readYaml(configFile(root, "games", `${row.configpath}.yml`) ?? "");
++      if (config === undefined || config === null || typeof config !== "object") continue;
++      const directory = absolute(row.directory);
++      const prefix = absolute(config.game?.prefix);
++      const configuredExe = typeof config.game?.exe === "string" ? config.game.exe : undefined;
++      const exe =
++        absolute(configuredExe) ??
++        (configuredExe === undefined
++          ? undefined
++          : [directory, prefix]
++              .filter((base): base is string => base !== undefined)
++              .map((base) => path.join(base, configuredExe))
++              .find((candidate) => fs.existsSync(candidate)));
++      const location = gameRoot(exe, directory, row) ?? prefix;
++      if (location === undefined) continue;
++      const serviceId =
++        typeof row.service === "string" && row.service && row.service_id
++          ? row.service_id
++          : undefined;
++      games.push({
++        appid: serviceId ?? `lutris-${row.slug ?? row.id}`,
++        name: row.name ?? config.name ?? row.slug ?? String(row.id),
++        gamePath: canonicalPath(location),
++        gameStoreId: "lutris",
++        id: row.id,
++        slug: row.slug ?? "",
++        directory: directory && canonicalPath(directory),
++        prefix: prefix && canonicalPath(prefix),
++        exe: exe && canonicalPath(exe),
++        locations: [prefix, directory]
++          .filter((entry): entry is string => entry !== undefined)
++          .flatMap(aliases),
++        exePaths: exe ? aliases(exe) : [],
++        wineVersion:
++          typeof config.wine?.version === "string"
++            ? config.wine.version
++            : typeof runnerConfig.wine?.version === "string"
++              ? runnerConfig.wine.version
++              : undefined,
++        env: { ...stringEnv(systemConfig.system?.env), ...stringEnv(config.system?.env) },
++        root,
++      });
++    }
++  }
++  return games;
++}
++
++/** Lutris games whose prefix or install directory contains the game folder, or that start an executable inside it. */
++export function matchLutrisGames(gamePath: string | undefined): LutrisGame[] {
++  if (!gamePath) return [];
++  const targets = aliases(gamePath);
++  return readLutrisGames().filter(
++    (entry) => insideAny(entry.locations, targets) || insideAny(targets, entry.exePaths),
++  );
++}
++
++export function lutrisPrefixOf(entry: LutrisGame): string | undefined {
++  if (!entry.prefix) return undefined;
++  const direct = fs.existsSync(path.join(entry.prefix, "drive_c"));
++  const nested = fs.existsSync(path.join(entry.prefix, "pfx/drive_c"));
++  if (
++    direct &&
++    nested &&
++    canonicalPath(entry.prefix) !== canonicalPath(path.join(entry.prefix, "pfx"))
++  )
++    throw new Error("The Lutris prefix contains two different Windows installations");
++  if (direct) return entry.prefix;
++  return nested ? path.join(entry.prefix, "pfx") : undefined;
++}
++
++/** The prefix shared by every Lutris game that contains the selected game folder. */
++export function lutrisPrefix(game: CompatibilityGame): string | undefined {
++  const matches = matchLutrisGames(game.path);
++  // A game that was never launched has no prefix yet; that is not a conflict.
++  const prefixes = [
++    ...new Set(
++      matches
++        .map((entry) => lutrisPrefixOf(entry))
++        .filter((prefix): prefix is string => prefix !== undefined)
++        .map(canonicalPath),
++    ),
++  ];
++  if (prefixes.length > 1)
++    throw new Error(
++      "Several Lutris games with different prefixes contain this game. Set WINEPREFIX for it explicitly.",
++    );
++  return prefixes[0];
++}
++
++/**
++ * The Lutris game to launch: the one whose executable lies inside the selected
++ * game folder. Several games can share a prefix (e.g. a launcher and its games),
++ * so without a unique executable match the caller should not launch through Lutris.
++ */
++export function findLutrisLaunchGame(game: CompatibilityGame): LutrisGame | undefined {
++  if (!game.path) return undefined;
++  const targets = aliases(game.path);
++  const candidates = matchLutrisGames(game.path).filter((entry) =>
++    insideAny(targets, entry.exePaths),
++  );
++  return candidates.length === 1 ? candidates[0] : undefined;
++}
++
++export function lutrisLauncher(
++  flatpak: boolean,
++): { executable: string; args: string[] } | undefined {
++  if (!lutrisRoots().some((root) => root.flatpak === flatpak && fs.existsSync(root.dataPath)))
++    return undefined;
++  const executable = flatpak
++    ? findProgram("flatpak")
++    : findProgram(process.env.LUTRIS_BINARY ?? "lutris");
++  return executable ? { executable, args: flatpak ? ["run", FLATPAK_ID] : [] } : undefined;
++}
++
++export function lutrisLaunchCommand(entry: LutrisGame): ToolCommand {
++  const launcher = lutrisLauncher(entry.root.flatpak);
++  if (!launcher)
++    throw new Error("Lutris was not found. Install Lutris or set LUTRIS_BINARY to its executable.");
++  return {
++    executable: launcher.executable,
++    args: [...launcher.args, `lutris:rungameid/${entry.id}`],
++    options: { shell: false },
++  };
++}
++
++function wineBinary(entry: LutrisGame): string {
++  const version = entry.wineVersion;
++  if (!version) throw new Error("Select a Wine version for this game in Lutris");
++  if (version === "system") return "wine";
++  const configured = absolute(version);
++  if (configured && fs.existsSync(configured)) return configured;
++  const build = path.join(entry.root.dataPath, "runners/wine", version);
++  for (const binary of ["bin/wine", "bin/wine64"]) {
++    if (fs.existsSync(path.join(build, binary))) return path.join(build, binary);
++  }
++  if (/proton/i.test(version) || fs.existsSync(path.join(build, "proton")))
++    throw new Error(
++      `Running tools with Lutris' Proton (${version}) is not supported yet. Select a Wine version for this game in Lutris.`,
++    );
++  throw new Error(`Lutris' Wine version ${version} is not installed`);
++}
++
++/** Run a Windows tool with the Wine build and environment Lutris uses for the selected game. */
++export async function lutrisToolCommand(
++  command: ToolCommand,
++  selected: CompatibilityGame,
++): Promise<ToolCommand> {
++  const matches = matchLutrisGames(selected.path);
++  if (matches.length === 0) throw new Error("The selected game is not registered in Lutris");
++  const prefix = command.options.env?.WINEPREFIX ?? lutrisPrefix(selected);
++  if (!prefix || !fs.existsSync(path.join(prefix, "drive_c")))
++    throw new Error("The Lutris Wine prefix is unavailable. Launch the game once in Lutris.");
++  // A launcher and its games may share one prefix with different settings.
++  const launch = findLutrisLaunchGame(selected);
++  const versions = [...new Set(matches.map((entry) => entry.wineVersion))];
++  const entry = launch ?? (versions.length === 1 ? matches[0] : undefined);
++  if (!entry)
++    throw new Error(
++      "Several Lutris games share this prefix with different Wine versions. Set WINEPREFIX for the tool explicitly.",
++    );
++  let executable = wineBinary(entry);
++  const env: Record<string, string> = {
++    ...entry.env,
++    ...command.options.env,
++    WINEPREFIX: prefix,
++  };
++  let args = [command.executable, ...command.args];
++  if (entry.root.flatpak) {
++    const flatpak = findProgram("flatpak");
++    if (!flatpak) throw new Error("Flatpak was not found");
++    args = [
++      "run",
++      `--command=${executable}`,
++      ...Object.entries(env).map(([key, value]) => `--env=${key}=${value}`),
++      FLATPAK_ID,
++      ...args,
++    ];
++    executable = flatpak;
++  } else if (!findProgram(executable)) throw new Error(`Lutris' Wine is missing: ${executable}`);
++  return { executable, args, options: { ...command.options, shell: false, env } };
++}
