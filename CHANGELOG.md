@@ -10,6 +10,11 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- A game added by hand, outside Steam and Heroic, runs in Wine's default
+  prefix (`$WINEPREFIX` or `~/.wine`) instead of failing with "The game's Wine
+  prefix is unavailable". The message now also says where to set a different
+  prefix: edit the game on the Dashboard, Environment Variables. (#22)
+
 ## 2.9.0-2 - 2026-10-22
 
 - Mods whose archives use Windows backslashes between folders install

@@ -1,0 +1,103 @@
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -85,9 +85,21 @@ function resolveGamePrefix(game: CompatibilityGame): string | null | undefined {
+       return installation.prefix;
+     }
+   }
++  if (!game.store) return defaultWinePrefix();
+   return undefined;
+ }
+ 
++/**
++ * A game added by hand has no store to ask, so it lives where plain Wine runs
++ * everything: $WINEPREFIX, or ~/.wine when that isn't set.
++ */
++function defaultWinePrefix(): string | undefined {
++  const prefix = path.resolve(
++    expandHome(process.env.WINEPREFIX || path.join(os.homedir(), ".wine")),
++  );
++  return fs.existsSync(path.join(prefix, "drive_c")) ? prefix : undefined;
++}
++
+ interface IUserPathMapping {
+   linuxRoot: string;
+   windowsRoot: string[];
+@@ -329,7 +341,7 @@ export function resolveExtensionUserPathSync(input: string): string {
+ function unavailablePrefix(): Error {
+   return Object.assign(
+     new Error(
+-      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or configure its WINEPREFIX.",
++      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or edit the game on the Dashboard and set WINEPREFIX under Environment Variables.",
+     ),
+     { code: "ENOENT" },
+   );
+diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer/src/util/compatibilitySelection.test.ts
+--- a/src/renderer/src/util/compatibilitySelection.test.ts
++++ b/src/renderer/src/util/compatibilitySelection.test.ts
+@@ -172,6 +172,30 @@ describe.runIf(process.platform === "linux")("selected compatibility prefix", ()
+     expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
+   });
+ 
++  it("uses Wine's default prefix for a game added by hand", () => {
++    vi.stubEnv("WINEPREFIX", "");
++    const wine = path.join(home, ".wine");
++    const user = path.join(wine, "drive_c/users", os.userInfo().username);
++    fs.mkdirSync(path.join(user, "Documents"), { recursive: true });
++    const game = { path: path.join(home, "Games/Example"), executable: "Example.exe" };
++    setCompatibilityGameProvider(() => game);
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(
++      path.join(user, "Documents", relative),
++    );
++
++    const exported = path.join(home, "exported-prefix");
++    fs.mkdirSync(path.join(exported, "drive_c/users/steamuser/Documents"), { recursive: true });
++    vi.stubEnv("WINEPREFIX", exported);
++    resetCompatibilityPathCache();
++    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(
++      path.join(exported, "drive_c/users/steamuser/Documents", relative),
++    );
++
++    // A store game that wasn't launched yet keeps asking for its own prefix.
++    setCompatibilityGameProvider(() => ({ ...game, store: "steam" }));
++    expect(() => resolveWindowsUserPathSync(path.join(documents, relative))).toThrow(/unavailable/);
++  });
++
+   it("keeps native game paths and Vortex state outside Proton", () => {
+     const gamePath = path.join(home, "native");
+     fs.mkdirSync(gamePath);
+diff --git a/src/renderer/src/util/linux/gameTools.test.ts b/src/renderer/src/util/linux/gameTools.test.ts
+--- a/src/renderer/src/util/linux/gameTools.test.ts
++++ b/src/renderer/src/util/linux/gameTools.test.ts
+@@ -171,6 +171,19 @@ describe.runIf(process.platform === "linux")("game tool runner", () => {
+       resolveGameTool("Tool.exe", [], { env: { WINEPREFIX: path.join(root, "missing") } }),
+     ).rejects.toThrow(/prefix is unavailable/);
+   });
++  it("runs a game added by hand in Wine's default prefix", async () => {
++    vi.stubEnv("WINEPREFIX", "");
++    const manual = { path: path.join(root, "Games/Example"), executable: "Example.exe" };
++    const game = path.join(manual.path, manual.executable);
++    write(game, "MZ");
++    await expect(resolveGameTool(game, [], {}, manual)).rejects.toThrow(/Environment Variables/);
++    fs.mkdirSync(path.join(root, ".wine/drive_c"), { recursive: true });
++    resetCompatibilityPathCache();
++    const command = await resolveGameTool(game, [], {}, manual);
++    expect(command.executable).toBe("wine");
++    expect(command.args).toEqual([game]);
++    expect(command.options.env.WINEPREFIX).toBe(path.join(root, ".wine"));
++  });
+   it("does not launch a Steam tool in a different Wine prefix", async () => {
+     proton("Proton 10.0");
+     const other = path.join(root, "other");
+diff --git a/src/renderer/src/util/linux/gameTools.ts b/src/renderer/src/util/linux/gameTools.ts
+--- a/src/renderer/src/util/linux/gameTools.ts
++++ b/src/renderer/src/util/linux/gameTools.ts
+@@ -47,7 +47,7 @@ export async function resolveGameTool(
+   const prefix = options.env?.WINEPREFIX ?? selectedGamePrefix(game);
+   if (!prefix || !fs.existsSync(path.join(prefix, "drive_c"))) {
+     throw new Error(
+-      "The game's Wine prefix is unavailable. Launch the game once or configure WINEPREFIX for this tool.",
++      "The game's Wine prefix is unavailable. Launch the game once, or edit the game or tool on the Dashboard and set WINEPREFIX under Environment Variables.",
+     );
+   }
+   if (game?.store === "steam") {
