@@ -10,6 +10,12 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Building the package, also with the 1.16.9 and 2.6.2 recipes, no longer
+  downloads QuickBMS from altervista.org: the server refuses the download and
+  on some networks the request hung until the build was interrupted. The
+  "Build a selected Vortex version" workflow works again on a fork; Git refused
+  to read the checkout inside the build container. (#24)
+
 - A game added by hand, outside Steam and Heroic, runs in Wine's default
   prefix (`$WINEPREFIX` or `~/.wine`) instead of failing with "The game's Wine
   prefix is unavailable". The message now also says where to set a different

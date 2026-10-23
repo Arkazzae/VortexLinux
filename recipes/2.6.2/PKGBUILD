@@ -223,6 +223,11 @@ prepare() {
     patch -Np1 -i "$srcdir/$compatibility_patch"
   done
 
+  # quickbms-support downloads QuickBMS from altervista.org while it builds. The
+  # server refuses the download anyway, and on some networks the request hangs
+  # until the build is interrupted. An existing dependencies folder skips it.
+  mkdir -p extensions/quickbms-support/dependencies
+
   node - "$pkgver" "$pkgver-$pkgrel" <<'NODE'
 const fs = require('node:fs');
 for (const file of ['src/main/package.json', 'packages/vortex-api/package.json']) {

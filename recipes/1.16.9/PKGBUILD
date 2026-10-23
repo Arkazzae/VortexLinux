@@ -153,6 +153,10 @@ prepare() {
   done
   printf 'export const LINUX_PACKAGE_VERSION: string = "%s-%s";\n' \
     "$pkgver" "$pkgrel" > src/extensions/updater/linuxBuild.ts
+  # quickbms-support downloads QuickBMS from altervista.org while it builds. The
+  # server refuses the download anyway, and on some networks the request hangs
+  # until the build is interrupted. An existing dependencies folder skips it.
+  mkdir -p extensions/quickbms-support/dependencies
   bash scripts/build-linux.sh prepare
 }
 
