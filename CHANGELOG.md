@@ -10,6 +10,10 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.9.1-1 - 2026-10-27
+
+Automatic update to Vortex 2.9.1, published after the usual checks passed. Upstream commit `c80326367cbe6d96621ad6cf4a5488ef49bac110`. The Linux patches and packaging are unchanged since 2.9.0-5.
+
 ## 2.9.0-5 - 2026-10-23
 
 - Plugin management writes `plugins.txt` and `loadorder.txt` into the game's

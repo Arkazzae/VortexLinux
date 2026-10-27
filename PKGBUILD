@@ -1,8 +1,8 @@
 # Maintainer: Arkazzae <https://github.com/Arkazzae>
 
 pkgname=vortex-linux
-pkgver=2.9.0
-pkgrel=5
+pkgver=2.9.1
+pkgrel=1
 pkgdesc="Community build of Vortex with generic Linux compatibility patches"
 arch=('x86_64')
 url="https://github.com/Arkazzae/VortexLinux"
@@ -96,7 +96,7 @@ conflicts=('vortex' 'vortex-bin' 'vortex-git')
 options=('!debug' '!strip')
 install=vortex.install
 
-_upstream_commit='e04093000d0f6ccf78994670599f7a42b361a038'
+_upstream_commit='c80326367cbe6d96621ad6cf4a5488ef49bac110'
 _pnpm='11.10.0'
 _dotnet6='6.0.36'
 _dotnet8='8.0.29'
