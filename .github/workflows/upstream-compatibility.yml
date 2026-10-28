@@ -180,6 +180,8 @@ jobs:
                 "Vortex-${package_version}-x86_64.AppImage"
                 "Vortex-${package_version}-x86_64.AppImage.sha256"
                 "Vortex-${package_version}-x86_64.AppImage.zsync"
+                "vortex-linux_${package_version}_amd64.deb"
+                "vortex-linux_${package_version}_amd64.deb.sha256"
               )
               release_needed=false
               for required_asset in "${required_assets[@]}"; do
@@ -283,6 +285,8 @@ jobs:
       appimage_archive: ${{ steps.appimage.outputs.appimage_archive }}
       appimage_checksum: ${{ steps.appimage.outputs.appimage_checksum }}
       appimage_zsync: ${{ steps.appimage.outputs.appimage_zsync }}
+      deb_archive: ${{ steps.deb.outputs.deb_archive }}
+      deb_checksum: ${{ steps.deb.outputs.deb_checksum }}
     steps:
       - name: Check out packaging repository
         uses: actions/checkout@v6
@@ -308,9 +312,10 @@ jobs:
           fi
 
           pacman -Syu --needed --noconfirm "${build_dependencies[@]}"
-          # build-appimage.sh validates the AppStream metadata when appstreamcli
-          # is available; the package itself does not need it.
-          pacman -S --needed --noconfirm appstream
+          # build-appimage.sh and build-deb-package.sh validate the AppStream
+          # metadata when appstreamcli is available, and the Debian package is
+          # built with dpkg-deb. The Arch package needs neither.
+          pacman -S --needed --noconfirm appstream dpkg
           useradd --create-home --shell /bin/bash builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           df -h "$GITHUB_WORKSPACE"
@@ -335,6 +340,16 @@ jobs:
             scripts/build-appimage.sh \
               "dist/${{ steps.package.outputs.package_archive }}"
 
+      - name: Build Debian package
+        id: deb
+        run: |
+          chown builder:builder "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
+          runuser --user builder -- env \
+            HOME=/home/builder \
+            XDG_CACHE_HOME=/home/builder/.cache \
+            scripts/build-deb-package.sh \
+              "dist/${{ steps.package.outputs.package_archive }}"
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -345,6 +360,8 @@ jobs:
             dist/${{ steps.appimage.outputs.appimage_archive }}
             dist/${{ steps.appimage.outputs.appimage_checksum }}
             dist/${{ steps.appimage.outputs.appimage_zsync }}
+            dist/${{ steps.deb.outputs.deb_archive }}
+            dist/${{ steps.deb.outputs.deb_checksum }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -373,6 +390,39 @@ jobs:
           )
           scripts/test-appimage.sh "dist/${{ needs.build-package.outputs.appimage_archive }}"
 
+  test-deb-package:
+    name: Test Debian package on ${{ matrix.image }}
+    needs: build-package
+    if: ${{ needs.build-package.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:24.04
+          - ubuntu:26.04
+          - debian:13
+    steps:
+      - name: Check out packaging repository
+        uses: actions/checkout@v6
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: vortex-linux-${{ needs.build-package.outputs.package_version }}
+          path: dist
+
+      - name: Verify and install the package in a clean container
+        run: |
+          (
+            cd dist || exit 1
+            sha256sum --check "${{ needs.build-package.outputs.deb_checksum }}"
+          )
+          scripts/test-deb-package.sh \
+            "dist/${{ needs.build-package.outputs.deb_archive }}" \
+            "${{ matrix.image }}"
+
   finalize-source:
     name: Record tested upstream release
     needs:
@@ -380,9 +430,11 @@ jobs:
       - prepare-release
       - build-package
       - test-appimage
+      - test-deb-package
     if: >-
       ${{
         needs.test-appimage.result == 'success' &&
+        needs.test-deb-package.result == 'success' &&
         github.ref == 'refs/heads/master' &&
         needs.prepare-release.outputs.release_needed == 'true'
       }}
@@ -461,6 +513,7 @@ jobs:
       - prepare-release
       - build-package
       - test-appimage
+      - test-deb-package
       - finalize-source
     if: >-
       ${{
@@ -479,6 +532,8 @@ jobs:
       APPIMAGE_ARCHIVE: ${{ needs.build-package.outputs.appimage_archive }}
       APPIMAGE_CHECKSUM: ${{ needs.build-package.outputs.appimage_checksum }}
       APPIMAGE_ZSYNC: ${{ needs.build-package.outputs.appimage_zsync }}
+      DEB_ARCHIVE: ${{ needs.build-package.outputs.deb_archive }}
+      DEB_CHECKSUM: ${{ needs.build-package.outputs.deb_checksum }}
       UPSTREAM_COMMIT: ${{ needs.compatibility.outputs.upstream_commit }}
       SOURCE_COMMIT: ${{ needs.finalize-source.outputs.source_commit }}
     steps:
@@ -490,7 +545,7 @@ jobs:
 
       - name: Verify downloaded artifacts
         working-directory: dist
-        run: sha256sum --check "$CHECKSUM_FILE" "$APPIMAGE_CHECKSUM"
+        run: sha256sum --check "$CHECKSUM_FILE" "$APPIMAGE_CHECKSUM" "$DEB_CHECKSUM"
 
       - name: Download release notes
         uses: actions/download-artifact@v5
@@ -521,6 +576,15 @@ jobs:
           \`\`\`sh
           sha256sum --check ${CHECKSUM_FILE}
           sudo pacman -U ./${PACKAGE_ARCHIVE}
+          \`\`\`
+
+          ## Debian and Ubuntu
+
+          For Ubuntu 24.04 or newer and Debian 13 or newer:
+
+          \`\`\`sh
+          sha256sum --check ${DEB_CHECKSUM}
+          sudo apt install ./${DEB_ARCHIVE}
           \`\`\`
 
           ## Other x86_64 Linux distributions
@@ -566,6 +630,8 @@ jobs:
               "dist/$CHECKSUM_FILE" \
               "dist/$APPIMAGE_ARCHIVE" \
               "dist/$APPIMAGE_CHECKSUM" \
+              "dist/$DEB_ARCHIVE" \
+              "dist/$DEB_CHECKSUM" \
               "dist/$APPIMAGE_ZSYNC" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
@@ -580,6 +646,8 @@ jobs:
               "dist/$CHECKSUM_FILE" \
               "dist/$APPIMAGE_ARCHIVE" \
               "dist/$APPIMAGE_CHECKSUM" \
+              "dist/$DEB_ARCHIVE" \
+              "dist/$DEB_CHECKSUM" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "Vortex for Linux ${PACKAGE_REVISION}" \
@@ -591,6 +659,8 @@ jobs:
               "dist/$CHECKSUM_FILE" \
               "dist/$APPIMAGE_ARCHIVE" \
               "dist/$APPIMAGE_CHECKSUM" \
+              "dist/$DEB_ARCHIVE" \
+              "dist/$DEB_CHECKSUM" \
               "dist/$APPIMAGE_ZSYNC" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_COMMIT" \
@@ -614,6 +684,7 @@ jobs:
       - prepare-release
       - build-package
       - test-appimage
+      - test-deb-package
       - finalize-source
       - publish-package
     if: ${{ always() && github.event_name == 'schedule' }}
@@ -633,6 +704,7 @@ jobs:
       PREPARE_STATUS: ${{ needs.prepare-release.result }}
       BUILD_STATUS: ${{ needs.build-package.result }}
       APPIMAGE_STATUS: ${{ needs.test-appimage.result }}
+      DEB_STATUS: ${{ needs.test-deb-package.result }}
       FINALIZE_STATUS: ${{ needs.finalize-source.result }}
       PUBLISH_STATUS: ${{ needs.publish-package.result }}
       RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -651,6 +723,7 @@ jobs:
             "$PREPARE_STATUS"
             "$BUILD_STATUS"
             "$APPIMAGE_STATUS"
+            "$DEB_STATUS"
             "$FINALIZE_STATUS"
             "$PUBLISH_STATUS"
           )
@@ -667,6 +740,7 @@ jobs:
                 required_statuses=(
                   "$BUILD_STATUS"
                   "$APPIMAGE_STATUS"
+                  "$DEB_STATUS"
                   "$FINALIZE_STATUS"
                   "$PUBLISH_STATUS"
                 )
@@ -698,6 +772,7 @@ jobs:
               "- Metadata: \`${PREPARE_STATUS}\`" \
               "- Package build: \`${BUILD_STATUS}\`" \
               "- AppImage smoke test: \`${APPIMAGE_STATUS}\`" \
+              "- Debian package smoke test: \`${DEB_STATUS}\`" \
               "- Source update: \`${FINALIZE_STATUS}\`" \
               "- Release publish: \`${PUBLISH_STATUS}\`" \
               "- Workflow run: ${RUN_URL}" \
