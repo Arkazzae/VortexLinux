@@ -75,6 +75,18 @@ apt pulls in Wine and the libraries Vortex needs, and Vortex shows up in your ap
 
 Debian 12 and Ubuntu 22.04 are too old: the FOMOD installer Vortex ships needs glibc 2.38, so apt refuses the package there. The AppImage needs the same.
 
+### Fedora and openSUSE
+
+For Fedora 43 or newer, openSUSE Leap 16 and Tumbleweed:
+
+```sh
+sha256sum --check vortex-linux-*-x86_64.rpm.sha256
+sudo dnf install ./vortex-linux-*-x86_64.rpm                          # Fedora
+sudo zypper install --allow-unsigned-rpm ./vortex-linux-*-x86_64.rpm  # openSUSE
+```
+
+The package works like the Debian one: the package manager pulls in Wine and the libraries, and the .NET runtimes come with it. It isn't signed, which is why zypper needs `--allow-unsigned-rpm`; the checksum is how you verify the download.
+
 ### Everything else (AppImage)
 
 Install Wine from your package manager first, then:
@@ -178,8 +190,8 @@ Every change goes through the same pipeline before it can become a release:
 
 1. **The patches apply.** CI checks out the pinned Vortex commit and applies every patch in order.
 2. **The tests pass.** It runs the tests that ship with the patches, typechecks the renderer, and builds and tests the native LOOT binding.
-3. **Both packages build.** The Arch package is built in a clean Arch container, and the AppImage is built from that package.
-4. **The AppImage starts.** In a clean Ubuntu 24.04 container with Wine but no system .NET, it runs the bundled checks (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), then boots Vortex under Xvfb and waits for the main page to render.
+3. **Every package builds.** The Arch package is built in a clean Arch container, and the AppImage, `.deb` and `.rpm` are built from that package.
+4. **Every package starts.** The AppImage in a clean Ubuntu 24.04 container, the `.deb` on Ubuntu 24.04, Ubuntu 26.04 and Debian 13, the `.rpm` on Fedora 43 and 44, openSUSE Leap 16 and Tumbleweed. Each container has no system .NET; the packages are installed with only their own dependencies, and their libraries are checked against the distribution. Then the bundled checks run (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), Vortex boots under Xvfb, the main page has to render and Vortex has to find .NET from inside the app. The packages must also uninstall cleanly.
 
 Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md): describe changes under *Unreleased*, and when `pkgrel` is bumped the release job files them under that revision and commits the result.
 
@@ -190,7 +202,8 @@ What this does not cover: launching a real game, Steam login, Flatpak permission
 ### Run it yourself
 
 ```sh
-scripts/test-appimage.sh dist/Vortex-*.AppImage             # the AppImage check
+scripts/test-package.sh dist/Vortex-*.AppImage              # the AppImage check
+scripts/test-package.sh dist/vortex-linux-*.rpm fedora:44    # a package on one distribution
 scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against the newest Vortex
 scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite
 ```

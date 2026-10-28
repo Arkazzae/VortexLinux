@@ -10,11 +10,12 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
-- Debian and Ubuntu package: releases now include
-  `vortex-linux_<version>_amd64.deb` for Ubuntu 24.04 or newer and Debian 13 or
-  newer. `sudo apt install ./vortex-linux_*_amd64.deb` installs Vortex with its
-  dependencies and an app menu entry. Like the AppImage, it brings its own .NET
-  runtimes.
+- Native packages for Debian, Ubuntu, Fedora and openSUSE: releases now
+  include `vortex-linux_<version>_amd64.deb` for Ubuntu 24.04 or newer and
+  Debian 13 or newer, and `vortex-linux-<version>-x86_64.rpm` for Fedora 43 or
+  newer, openSUSE Leap 16 and Tumbleweed. apt, dnf or zypper install Vortex with
+  its dependencies and an app menu entry. Like the AppImage, the packages bring
+  their own .NET runtimes.
 
 ## 2.9.1-1 - 2026-10-27
 
