@@ -62,6 +62,19 @@ sha256sum --check vortex-linux-*.pkg.tar.zst.sha256
 sudo pacman -U ./vortex-linux-*.pkg.tar.zst
 ```
 
+### Debian and Ubuntu
+
+For Ubuntu 24.04 or newer and Debian 13 or newer:
+
+```sh
+sha256sum --check vortex-linux_*_amd64.deb.sha256
+sudo apt install ./vortex-linux_*_amd64.deb
+```
+
+apt pulls in Wine and the libraries Vortex needs, and Vortex shows up in your app menu. Like the AppImage, the package brings its own Linux .NET runtime and the Windows .NET runtimes modding tools need. To update, install the newer `.deb` the same way.
+
+Debian 12 and Ubuntu 22.04 are too old: the FOMOD installer Vortex ships needs glibc 2.38, so apt refuses the package there. The AppImage needs the same.
+
 ### Everything else (AppImage)
 
 Install Wine from your package manager first, then:
