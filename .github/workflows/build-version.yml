@@ -81,11 +81,13 @@ jobs:
         env:
           SOURCE_DIRECTORY: ${{ steps.prepare.outputs.source_directory }}
         run: |
-          if [[ -f "$SOURCE_DIRECTORY/scripts/test-appimage.sh" ]]; then
+          # Older recipes ship test-appimage.sh instead of test-package.sh.
+          if [[ -f "$SOURCE_DIRECTORY/scripts/test-package.sh" || \
+                -f "$SOURCE_DIRECTORY/scripts/test-appimage.sh" ]]; then
             echo 'supported=true' >> "$GITHUB_OUTPUT"
           else
             echo 'supported=false' >> "$GITHUB_OUTPUT"
-            echo 'AppImage runtime check skipped: the selected historical recipe does not provide scripts/test-appimage.sh.' \
+            echo 'AppImage runtime check skipped: the selected historical recipe provides neither scripts/test-package.sh nor scripts/test-appimage.sh.' \
               >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -198,5 +200,8 @@ jobs:
         run: |
           cd "$ARTIFACT_DIRECTORY"
           sha256sum --check "$APPIMAGE_ARCHIVE.sha256"
-          bash "$GITHUB_WORKSPACE/$RECIPE_PATH/scripts/test-appimage.sh" \
-            "$ARTIFACT_DIRECTORY/$APPIMAGE_ARCHIVE"
+          test_script="$GITHUB_WORKSPACE/$RECIPE_PATH/scripts/test-package.sh"
+          if [[ ! -f "$test_script" ]]; then
+            test_script="$GITHUB_WORKSPACE/$RECIPE_PATH/scripts/test-appimage.sh"
+          fi
+          bash "$test_script" "$ARTIFACT_DIRECTORY/$APPIMAGE_ARCHIVE"
