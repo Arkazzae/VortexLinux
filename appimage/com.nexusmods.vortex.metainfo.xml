@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  AppStream metadata for the AppImage and the Debian package. build-appimage.sh
-  and build-deb-package.sh replace the @PACKAGE_REVISION@ and @RELEASE_DATE@
+  AppStream metadata for the AppImage and the Debian and RPM packages.
+  package-common.sh replaces the @PACKAGE_REVISION@ and @RELEASE_DATE@
   placeholders with the packaged release.
 -->
 <component type="desktop-application">

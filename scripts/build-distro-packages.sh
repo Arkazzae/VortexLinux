@@ -7,9 +7,8 @@ REPOSITORY_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPOSITORY_ROOT
 readonly PACKAGE_PATH="${1:?usage: build-distro-packages.sh PACKAGE [OUTPUT_DIRECTORY]}"
 readonly OUTPUT_DIRECTORY="${2:-${REPOSITORY_ROOT}/dist}"
-readonly METAINFO_NAME='com.nexusmods.vortex.metainfo.xml'
-# shellcheck source=scripts/dotnet-runtime.sh
-source "$REPOSITORY_ROOT/scripts/dotnet-runtime.sh"
+# shellcheck source=scripts/package-common.sh
+source "$REPOSITORY_ROOT/scripts/package-common.sh"
 
 # .NET loads whichever ICU it finds.
 readonly ICU_VERSIONS=(74 75 76 77 78 79 80)
@@ -88,31 +87,13 @@ for command_name in bsdtar cp curl dpkg-deb file install objdump rpm rpmbuild sh
   fi
 done
 
-if [[ ! -f "$PACKAGE_PATH" ]]; then
-  printf 'Arch package was not found: %s\n' "$PACKAGE_PATH" >&2
-  exit 2
-fi
-
-package_info="$(bsdtar -xOf "$PACKAGE_PATH" .PKGINFO)"
-package_name="$(sed -n 's/^pkgname = //p' <<< "$package_info")"
-package_revision="$(sed -n 's/^pkgver = //p' <<< "$package_info")"
-package_arch="$(sed -n 's/^arch = //p' <<< "$package_info")"
-package_description="$(sed -n 's/^pkgdesc = //p' <<< "$package_info")"
-package_url="$(sed -n 's/^url = //p' <<< "$package_info")"
-package_license="$(sed -n 's/^license = //p' <<< "$package_info")"
-release_version="$(sed -n 's/^\tpkgver = //p' "$REPOSITORY_ROOT/.SRCINFO" | head -n 1)"
-maintainer="$(sed -n 's/^# Maintainer: //p' "$REPOSITORY_ROOT/PKGBUILD")"
-
-if [[ "$package_name" != vortex-linux || -z "$package_revision" || \
-    -z "$release_version" || "$package_revision" != "${release_version}-"* || \
-    "$package_arch" != x86_64 || -z "$package_description" || \
-    -z "$package_url" || -z "$package_license" || -z "$maintainer" ]]; then
-  printf 'Unsupported package metadata: %s %s %s\n' \
-    "$package_name" "$package_revision" "$package_arch" >&2
-  exit 2
-fi
+read_package_metadata "$PACKAGE_PATH"
 package_release="${package_revision#"${release_version}-"}"
-release_date="$(date -u +%Y-%m-%d)"
+maintainer="$(sed -n 's/^# Maintainer: //p' "$REPOSITORY_ROOT/PKGBUILD")"
+if [[ -z "$maintainer" ]]; then
+  printf 'PKGBUILD names no maintainer\n' >&2
+  exit 2
+fi
 
 work_directory="$(mktemp -d "${TMPDIR:-/tmp}/vortex-distro.XXXXXX")"
 cleanup() {
@@ -139,21 +120,7 @@ install_dotnet_runtime "$stage/opt/Vortex/dotnet-linux-x64" \
   "$work_directory/dotnet-runtime-linux-x64.tar.gz"
 install -Dm755 "$REPOSITORY_ROOT/vortex.sh" "$stage/usr/bin/vortex"
 
-metainfo_path="$stage/usr/share/metainfo/$METAINFO_NAME"
-install -dm755 "$(dirname "$metainfo_path")"
-sed \
-  -e "s/@PACKAGE_REVISION@/${package_revision}/g" \
-  -e "s/@RELEASE_DATE@/${release_date}/g" \
-  "$REPOSITORY_ROOT/appimage/$METAINFO_NAME" > "$metainfo_path"
-if grep -q '@[A-Z_]*@' "$metainfo_path"; then
-  printf 'The AppStream metadata still contains placeholders\n' >&2
-  exit 1
-fi
-if command -v appstreamcli >/dev/null; then
-  appstreamcli validate --no-net "$metainfo_path"
-else
-  printf 'appstreamcli is not installed; skipping AppStream validation\n' >&2
-fi
+install_metainfo "$stage/usr/share/metainfo/$METAINFO_NAME"
 
 install -dm755 "$OUTPUT_DIRECTORY"
 
