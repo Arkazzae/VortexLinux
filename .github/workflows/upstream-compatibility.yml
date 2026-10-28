@@ -182,6 +182,8 @@ jobs:
                 "Vortex-${package_version}-x86_64.AppImage.zsync"
                 "vortex-linux_${package_version}_amd64.deb"
                 "vortex-linux_${package_version}_amd64.deb.sha256"
+                "vortex-linux-${package_version}-x86_64.rpm"
+                "vortex-linux-${package_version}-x86_64.rpm.sha256"
               )
               release_needed=false
               for required_asset in "${required_assets[@]}"; do
@@ -285,8 +287,10 @@ jobs:
       appimage_archive: ${{ steps.appimage.outputs.appimage_archive }}
       appimage_checksum: ${{ steps.appimage.outputs.appimage_checksum }}
       appimage_zsync: ${{ steps.appimage.outputs.appimage_zsync }}
-      deb_archive: ${{ steps.deb.outputs.deb_archive }}
-      deb_checksum: ${{ steps.deb.outputs.deb_checksum }}
+      deb_archive: ${{ steps.distro.outputs.deb_archive }}
+      deb_checksum: ${{ steps.distro.outputs.deb_checksum }}
+      rpm_archive: ${{ steps.distro.outputs.rpm_archive }}
+      rpm_checksum: ${{ steps.distro.outputs.rpm_checksum }}
     steps:
       - name: Check out packaging repository
         uses: actions/checkout@v6
@@ -312,10 +316,11 @@ jobs:
           fi
 
           pacman -Syu --needed --noconfirm "${build_dependencies[@]}"
-          # build-appimage.sh and build-deb-package.sh validate the AppStream
-          # metadata when appstreamcli is available, and the Debian package is
-          # built with dpkg-deb. The Arch package needs neither.
-          pacman -S --needed --noconfirm appstream dpkg
+          # build-appimage.sh and build-distro-packages.sh validate the
+          # AppStream metadata when appstreamcli is available, and build the
+          # Debian and RPM packages with dpkg-deb and rpmbuild. The Arch package
+          # needs none of them.
+          pacman -S --needed --noconfirm appstream dpkg rpm-tools
           useradd --create-home --shell /bin/bash builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           df -h "$GITHUB_WORKSPACE"
@@ -340,14 +345,14 @@ jobs:
             scripts/build-appimage.sh \
               "dist/${{ steps.package.outputs.package_archive }}"
 
-      - name: Build Debian package
-        id: deb
+      - name: Build Debian and RPM packages
+        id: distro
         run: |
           chown builder:builder "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
           runuser --user builder -- env \
             HOME=/home/builder \
             XDG_CACHE_HOME=/home/builder/.cache \
-            scripts/build-deb-package.sh \
+            scripts/build-distro-packages.sh \
               "dist/${{ steps.package.outputs.package_archive }}"
 
       - name: Upload release artifacts
@@ -360,49 +365,35 @@ jobs:
             dist/${{ steps.appimage.outputs.appimage_archive }}
             dist/${{ steps.appimage.outputs.appimage_checksum }}
             dist/${{ steps.appimage.outputs.appimage_zsync }}
-            dist/${{ steps.deb.outputs.deb_archive }}
-            dist/${{ steps.deb.outputs.deb_checksum }}
+            dist/${{ steps.distro.outputs.deb_archive }}
+            dist/${{ steps.distro.outputs.deb_checksum }}
+            dist/${{ steps.distro.outputs.rpm_archive }}
+            dist/${{ steps.distro.outputs.rpm_checksum }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-  test-appimage:
-    name: Test AppImage on clean Ubuntu
+  test-packages:
+    name: Test ${{ matrix.kind }} on ${{ matrix.image }}
     needs: build-package
     if: ${{ needs.build-package.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out packaging repository
-        uses: actions/checkout@v6
-
-      - name: Download release artifacts
-        uses: actions/download-artifact@v5
-        with:
-          name: vortex-linux-${{ needs.build-package.outputs.package_version }}
-          path: dist
-
-      - name: Verify and start AppImage in a clean container
-        run: |
-          (
-            cd dist || exit 1
-            sha256sum --check "${{ needs.build-package.outputs.appimage_checksum }}"
-          )
-          scripts/test-appimage.sh "dist/${{ needs.build-package.outputs.appimage_archive }}"
-
-  test-deb-package:
-    name: Test Debian package on ${{ matrix.image }}
-    needs: build-package
-    if: ${{ needs.build-package.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - ubuntu:24.04
-          - ubuntu:26.04
-          - debian:13
+        include:
+          - { kind: appimage, image: "ubuntu:24.04" }
+          - { kind: deb, image: "ubuntu:24.04" }
+          - { kind: deb, image: "ubuntu:26.04" }
+          - { kind: deb, image: "debian:13" }
+          - { kind: rpm, image: "fedora:43" }
+          - { kind: rpm, image: "fedora:44" }
+          - { kind: rpm, image: "opensuse/leap:16.0" }
+          - { kind: rpm, image: "opensuse/tumbleweed" }
+    env:
+      ARTIFACT: ${{ needs.build-package.outputs[format('{0}_archive', matrix.kind)] }}
+      CHECKSUM: ${{ needs.build-package.outputs[format('{0}_checksum', matrix.kind)] }}
     steps:
       - name: Check out packaging repository
         uses: actions/checkout@v6
@@ -413,15 +404,13 @@ jobs:
           name: vortex-linux-${{ needs.build-package.outputs.package_version }}
           path: dist
 
-      - name: Verify and install the package in a clean container
+      - name: Verify and test the artifact in a clean container
         run: |
           (
             cd dist || exit 1
-            sha256sum --check "${{ needs.build-package.outputs.deb_checksum }}"
+            sha256sum --check "$CHECKSUM"
           )
-          scripts/test-deb-package.sh \
-            "dist/${{ needs.build-package.outputs.deb_archive }}" \
-            "${{ matrix.image }}"
+          scripts/test-package.sh "dist/$ARTIFACT" "${{ matrix.image }}"
 
   finalize-source:
     name: Record tested upstream release
@@ -429,12 +418,10 @@ jobs:
       - compatibility
       - prepare-release
       - build-package
-      - test-appimage
-      - test-deb-package
+      - test-packages
     if: >-
       ${{
-        needs.test-appimage.result == 'success' &&
-        needs.test-deb-package.result == 'success' &&
+        needs.test-packages.result == 'success' &&
         github.ref == 'refs/heads/master' &&
         needs.prepare-release.outputs.release_needed == 'true'
       }}
@@ -512,8 +499,7 @@ jobs:
       - compatibility
       - prepare-release
       - build-package
-      - test-appimage
-      - test-deb-package
+      - test-packages
       - finalize-source
     if: >-
       ${{
@@ -534,6 +520,8 @@ jobs:
       APPIMAGE_ZSYNC: ${{ needs.build-package.outputs.appimage_zsync }}
       DEB_ARCHIVE: ${{ needs.build-package.outputs.deb_archive }}
       DEB_CHECKSUM: ${{ needs.build-package.outputs.deb_checksum }}
+      RPM_ARCHIVE: ${{ needs.build-package.outputs.rpm_archive }}
+      RPM_CHECKSUM: ${{ needs.build-package.outputs.rpm_checksum }}
       UPSTREAM_COMMIT: ${{ needs.compatibility.outputs.upstream_commit }}
       SOURCE_COMMIT: ${{ needs.finalize-source.outputs.source_commit }}
     steps:
@@ -545,7 +533,7 @@ jobs:
 
       - name: Verify downloaded artifacts
         working-directory: dist
-        run: sha256sum --check "$CHECKSUM_FILE" "$APPIMAGE_CHECKSUM" "$DEB_CHECKSUM"
+        run: sha256sum --check -- *.sha256
 
       - name: Download release notes
         uses: actions/download-artifact@v5
@@ -587,6 +575,18 @@ jobs:
           sudo apt install ./${DEB_ARCHIVE}
           \`\`\`
 
+          ## Fedora and openSUSE
+
+          For Fedora 43 or newer, openSUSE Leap 16 and Tumbleweed:
+
+          \`\`\`sh
+          sha256sum --check ${RPM_CHECKSUM}
+          sudo dnf install ./${RPM_ARCHIVE}
+          \`\`\`
+
+          The package is not signed, so on openSUSE install it with
+          \`sudo zypper install --allow-unsigned-rpm ./${RPM_ARCHIVE}\`.
+
           ## Other x86_64 Linux distributions
 
           Install Wine with your distribution's package manager, then:
@@ -624,15 +624,10 @@ jobs:
             exit 1
           fi
 
+          # The downloaded artifact holds exactly the release files.
+          assets=(dist/*)
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" \
-              "dist/$PACKAGE_ARCHIVE" \
-              "dist/$CHECKSUM_FILE" \
-              "dist/$APPIMAGE_ARCHIVE" \
-              "dist/$APPIMAGE_CHECKSUM" \
-              "dist/$DEB_ARCHIVE" \
-              "dist/$DEB_CHECKSUM" \
-              "dist/$APPIMAGE_ZSYNC" \
+            gh release upload "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release edit "$RELEASE_TAG" \
@@ -641,27 +636,14 @@ jobs:
               --notes-file release-notes.md \
               --latest
           elif [[ -n "$target_tag_sha" ]]; then
-            gh release create "$RELEASE_TAG" \
-              "dist/$PACKAGE_ARCHIVE" \
-              "dist/$CHECKSUM_FILE" \
-              "dist/$APPIMAGE_ARCHIVE" \
-              "dist/$APPIMAGE_CHECKSUM" \
-              "dist/$DEB_ARCHIVE" \
-              "dist/$DEB_CHECKSUM" \
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "Vortex for Linux ${PACKAGE_REVISION}" \
               --notes-file release-notes.md \
               --latest
           else
-            gh release create "$RELEASE_TAG" \
-              "dist/$PACKAGE_ARCHIVE" \
-              "dist/$CHECKSUM_FILE" \
-              "dist/$APPIMAGE_ARCHIVE" \
-              "dist/$APPIMAGE_CHECKSUM" \
-              "dist/$DEB_ARCHIVE" \
-              "dist/$DEB_CHECKSUM" \
-              "dist/$APPIMAGE_ZSYNC" \
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_COMMIT" \
               --title "Vortex for Linux ${PACKAGE_REVISION}" \
@@ -683,8 +665,7 @@ jobs:
       - compatibility
       - prepare-release
       - build-package
-      - test-appimage
-      - test-deb-package
+      - test-packages
       - finalize-source
       - publish-package
     if: ${{ always() && github.event_name == 'schedule' }}
@@ -703,8 +684,7 @@ jobs:
       COMPATIBILITY_STATUS: ${{ needs.compatibility.result }}
       PREPARE_STATUS: ${{ needs.prepare-release.result }}
       BUILD_STATUS: ${{ needs.build-package.result }}
-      APPIMAGE_STATUS: ${{ needs.test-appimage.result }}
-      DEB_STATUS: ${{ needs.test-deb-package.result }}
+      TEST_STATUS: ${{ needs.test-packages.result }}
       FINALIZE_STATUS: ${{ needs.finalize-source.result }}
       PUBLISH_STATUS: ${{ needs.publish-package.result }}
       RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -722,8 +702,7 @@ jobs:
             "$COMPATIBILITY_STATUS"
             "$PREPARE_STATUS"
             "$BUILD_STATUS"
-            "$APPIMAGE_STATUS"
-            "$DEB_STATUS"
+            "$TEST_STATUS"
             "$FINALIZE_STATUS"
             "$PUBLISH_STATUS"
           )
@@ -739,8 +718,7 @@ jobs:
               true)
                 required_statuses=(
                   "$BUILD_STATUS"
-                  "$APPIMAGE_STATUS"
-                  "$DEB_STATUS"
+                  "$TEST_STATUS"
                   "$FINALIZE_STATUS"
                   "$PUBLISH_STATUS"
                 )
@@ -771,8 +749,7 @@ jobs:
               "- Patch tests: \`${COMPATIBILITY_STATUS}\`" \
               "- Metadata: \`${PREPARE_STATUS}\`" \
               "- Package build: \`${BUILD_STATUS}\`" \
-              "- AppImage smoke test: \`${APPIMAGE_STATUS}\`" \
-              "- Debian package smoke test: \`${DEB_STATUS}\`" \
+              "- Package smoke tests: \`${TEST_STATUS}\`" \
               "- Source update: \`${FINALIZE_STATUS}\`" \
               "- Release publish: \`${PUBLISH_STATUS}\`" \
               "- Workflow run: ${RUN_URL}" \
