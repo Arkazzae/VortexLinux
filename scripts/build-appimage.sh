@@ -8,13 +8,12 @@ readonly PACKAGE_PATH="${1:?usage: build-appimage.sh PACKAGE [OUTPUT_DIRECTORY]}
 readonly OUTPUT_DIRECTORY="${2:-${REPOSITORY_ROOT}/dist}"
 readonly APPIMAGETOOL_URL='https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage'
 readonly APPIMAGETOOL_SHA256='b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2'
-readonly DOTNET_RUNTIME_VERSION='9.0.18'
-readonly DOTNET_RUNTIME_URL="https://builds.dotnet.microsoft.com/dotnet/Runtime/${DOTNET_RUNTIME_VERSION}/dotnet-runtime-${DOTNET_RUNTIME_VERSION}-linux-x64.tar.gz"
-readonly DOTNET_RUNTIME_SHA512='97eb89a5a3781b9761e2a850996912ae81b96996089c78abcebbc441113457088bfcbd7cf1fa97d3036f7ac8fe22c7d30e043e93ecafc910f07b73317c73bad5'
 # GitHub repository whose latest release AppImageUpdate-style tools (Gear Lever,
 # AppImageLauncher, appimageupdatetool) check for a newer AppImage.
 readonly RELEASE_REPOSITORY="${VORTEX_RELEASE_REPOSITORY:-${GITHUB_REPOSITORY:-Arkazzae/VortexLinux}}"
 readonly METAINFO_NAME='com.nexusmods.vortex.metainfo.xml'
+# shellcheck source=scripts/dotnet-runtime.sh
+source "$REPOSITORY_ROOT/scripts/dotnet-runtime.sh"
 
 for command_name in bsdtar curl file install ldd patchelf readelf sha256sum sha512sum; do
   if ! command -v "$command_name" >/dev/null; then
@@ -94,21 +93,7 @@ if grep -Fq 'not found' <<< "$fomod_dependencies"; then
   exit 1
 fi
 
-# Vortex's native dotnetprobe is a framework-dependent net9.0 executable. The
-# Arch package gets a host runtime through pacman, but an AppImage must carry it
-# itself so the startup check also works on a clean distribution.
-curl --fail --location --silent --show-error \
-  "$DOTNET_RUNTIME_URL" --output "$dotnet_runtime_path"
-printf '%s  %s\n' "$DOTNET_RUNTIME_SHA512" "$dotnet_runtime_path" \
-  | sha512sum --check --status
-install -dm755 "$app_directory/usr/lib/dotnet"
-bsdtar -xf "$dotnet_runtime_path" -C "$app_directory/usr/lib/dotnet"
-
-if ! "$app_directory/usr/lib/dotnet/dotnet" --list-runtimes \
-    | grep -Fqx "Microsoft.NETCore.App ${DOTNET_RUNTIME_VERSION} [$app_directory/usr/lib/dotnet/shared/Microsoft.NETCore.App]"; then
-  printf 'The bundled .NET %s runtime is incomplete\n' "$DOTNET_RUNTIME_VERSION" >&2
-  exit 1
-fi
+install_dotnet_runtime "$app_directory/usr/lib/dotnet" "$dotnet_runtime_path"
 
 install -m755 "$REPOSITORY_ROOT/appimage/AppRun" "$app_directory/AppRun"
 install -Dm644 "$REPOSITORY_ROOT/scripts/test-runtime.cjs" "$app_directory/usr/share/vortex-linux/test-runtime.cjs"
