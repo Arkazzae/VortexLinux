@@ -69,6 +69,9 @@ readonly RPM_REQUIRES=(
   'libnotify.so.4()(64bit)'
   'libsecret-1.so.0()(64bit)'
   "(${rpm_icu% or })"
+  # The interface stays blank without any font, and a minimal openSUSE has
+  # none. Debian's fontconfig already pulls one in.
+  'liberation-fonts'
 )
 readonly RPM_RECOMMENDS=(
   'libayatana-appindicator3.so.1()(64bit)'
