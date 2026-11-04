@@ -38,9 +38,9 @@ These are general Linux fixes, not per-game hacks. Game-specific Vortex extensio
 
 Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension API's `util.epicGamesLauncher` is a shim over `GameStoreHelper` instead of `undefined` everywhere except Windows, so our Epic API fallback patch is gone 🎊.
 
-2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder 🎉. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
+2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
 
-2.10.0 brings three Linux fixes of its own 🎉: Vortex finds the drive a folder sits on, so moving the staging folder and the folder it suggests work across mounted drives ([#24375](https://github.com/Nexus-Mods/Vortex/pull/24375)), it accepts installer instructions that separate folders with backslashes ([#24378](https://github.com/Nexus-Mods/Vortex/pull/24378)), and the "Handle Mod Manager Download buttons" setting (`nxm://` links) is no longer greyed out on Linux ([#24387](https://github.com/Nexus-Mods/Vortex/pull/24387)). The first one made two of our patches smaller.
+2.10.0 brings three Linux fixes of its own: Vortex finds the drive a folder sits on, so moving the staging folder and the folder it suggests work across mounted drives ([#24375](https://github.com/Nexus-Mods/Vortex/pull/24375)), it accepts installer instructions that separate folders with backslashes ([#24378](https://github.com/Nexus-Mods/Vortex/pull/24378)), and the "Handle Mod Manager Download buttons" setting (`nxm://` links) is no longer greyed out on Linux ([#24387](https://github.com/Nexus-Mods/Vortex/pull/24387)). The first one made two of our patches smaller.
 
 Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
 
@@ -123,7 +123,7 @@ If Heroic is an AppImage outside `PATH`, set `HEROIC_BINARY` to its executable.
 Launch it once before scanning for games. Linux-native Heroic games keep their
 native configuration paths.
 
-**Lutris and Bottles (experimental).** Games that use Lutris' Wine runner work
+**Lutris and Bottles.** Games that use Lutris' Wine runner work
 too. If Vortex doesn't find the game by itself, set its folder manually, as it
 appears inside the Lutris prefix (also when that folder is a symlink to another
 disk). Vortex recognises that it belongs to Lutris, uses the game's Lutris
@@ -155,12 +155,6 @@ makepkg -si
 
 The build pins Vortex to an exact upstream commit and downloads the source, Node dependencies, Electron and the Microsoft runtime files. First build is a big one.
 
-Patches live in `patches/`, in the order listed by `_patches` in `PKGBUILD`.
-`prepare-arch-build.sh` copies the packaging files and patches into
-`dist/arch-build`, where makepkg keeps its sources and build output. Run it again
-after changing patches or package metadata. `scripts/build-arch-package.sh`
-prepares this directory automatically.
-
 ### Older Vortex versions
 
 We support **1.16.9** and **2.6.2** for collections that need an older Vortex,
@@ -169,7 +163,7 @@ Need another version? [Open an issue](https://github.com/Arkazzae/VortexLinux/is
 and tell us which version your collection needs.
 
 To build one, fork this repo and run **Actions → Build a selected Vortex version**,
-then download the files from the completed run. Or build locally on Arch:
+then download the files from the completed run. Or build locally:
 
 ```sh
 python3 scripts/build-version.py --version 2.6.2
@@ -185,12 +179,6 @@ Every change goes through the same pipeline before it can become a release:
 2. **The tests pass.** It runs the tests that ship with the patches, typechecks the renderer, and builds and tests the native LOOT binding.
 3. **Every package builds.** The Arch package is built in a clean Arch container, and the AppImage, `.deb` and `.rpm` are built from that package.
 4. **Every package starts.** The AppImage in a clean Ubuntu 24.04 container, the `.deb` on Ubuntu 24.04, Ubuntu 26.04 and Debian 13, the `.rpm` on Fedora 43 and 44, openSUSE Leap 16 and Tumbleweed. Each container has no system .NET; the packages are installed with only their own dependencies, and their libraries are checked against the distribution. Then the bundled checks run (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), Vortex boots under Xvfb, the main page has to render and Vortex has to find .NET from inside the app. The packages must also uninstall cleanly.
-
-Only when all of that passes does a push to `master` publish a release, and only if that package revision has no complete release yet. The release notes come from [CHANGELOG.md](CHANGELOG.md): describe changes under *Unreleased*, and when `pkgrel` is bumped the release job files them under that revision and commits the result.
-
-Every six hours a bot also looks for a new stable Vortex. If there is one, it runs the same pipeline against it. If everything passes, the bot bumps `PKGBUILD`, adds a changelog entry marked as an automatic update and publishes the release. If anything fails, nothing changes, and the bot opens or updates an issue naming the broken stage.
-
-What this does not cover: launching a real game, Steam login, Flatpak permissions, every FOMOD dialog, or installing a whole collection. The game list above is what people reported working, not a test matrix.
 
 ### Run it yourself
 
