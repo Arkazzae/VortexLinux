@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  AppStream metadata for the AppImage. build-appimage.sh replaces the
-  @PACKAGE_REVISION@ and @RELEASE_DATE@ placeholders with the packaged release.
+  AppStream metadata for the AppImage and the Debian and RPM packages.
+  package-common.sh replaces the @PACKAGE_REVISION@ and @RELEASE_DATE@
+  placeholders with the packaged release.
 -->
 <component type="desktop-application">
   <id>com.nexusmods.vortex</id>

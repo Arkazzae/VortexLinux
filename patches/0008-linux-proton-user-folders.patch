@@ -1,8 +1,8 @@
 diff --git a/src/main/src/main.ts b/src/main/src/main.ts
-index 612592a11..2bc1ff49f 100644
+index 30bb5efb0..b403f9be0 100644
 --- a/src/main/src/main.ts
 +++ b/src/main/src/main.ts
-@@ -116,6 +116,15 @@ function setEnv(key: string, value: string, force?: boolean) {
+@@ -127,6 +127,15 @@ function setEnv(key: string, value: string, force?: boolean) {
    }
  }
  
@@ -269,7 +269,7 @@ index 000000000..def35913e
 +  }
 +});
 diff --git a/src/renderer/src/util/fs.ts b/src/renderer/src/util/fs.ts
-index ad20c1d2a..88b78322e 100644
+index 8f48e50e3..e0742482a 100644
 --- a/src/renderer/src/util/fs.ts
 +++ b/src/renderer/src/util/fs.ts
 @@ -29,6 +29,7 @@ import * as fs from "fs-extra";
@@ -370,7 +370,7 @@ index ad20c1d2a..88b78322e 100644
  
  export interface ILinkFileOptions {
    // Used to dictate whether error dialogs should
-@@ -511,9 +526,14 @@ function errorHandler(
+@@ -509,9 +524,14 @@ function errorHandler(
      .catch((err) => PromiseBB.reject(restackErr(err, stackErr)));
  }
  
@@ -387,7 +387,7 @@ index ad20c1d2a..88b78322e 100644
        errorHandler(err, stackErr, tries).then(() => wrapper(stackErr, tries - 1, ...args)),
      );
  
-@@ -526,25 +546,26 @@ export function genFSWrapperAsync<T extends (...args) => any>(func: T) {
+@@ -524,25 +544,26 @@ export function genFSWrapperAsync<T extends (...args) => any>(func: T) {
  // tslint:disable:max-line-length
  const chmodAsync: (path: string, mode: string | number) => PromiseBB<void> = genFSWrapperAsync(
    fs.chmod,
@@ -425,7 +425,7 @@ index ad20c1d2a..88b78322e 100644
  // fs.write and fs.read don't promisify correctly because it has two return values. fs-extra already works around this in their
  // promisified api so no reason to reinvent the wheel (also we want the api to be compatible)
  const writeAsync: <BufferT>(
-@@ -553,9 +574,9 @@ const writeAsync: <BufferT>(
+@@ -551,9 +572,9 @@ const writeAsync: <BufferT>(
  const readAsync: <BufferT>(...args: any[]) => PromiseBB<{ bytesRead: number; buffer: BufferT }> =
    genFSWrapperAsync(fs.read) as any;
  const writeFileAsync: (file: string, data: any, options?: fs.WriteFileOptions) => PromiseBB<void> =
@@ -437,7 +437,7 @@ index ad20c1d2a..88b78322e 100644
  // tslint:enable:max-line-length
  
  export {
-@@ -599,13 +620,15 @@ export {
+@@ -597,13 +618,15 @@ export {
  
  /** @deprecated use node:fs directly */
  export function isDirectoryAsync(dirPath: string): PromiseBB<boolean> {
@@ -455,7 +455,7 @@ index ad20c1d2a..88b78322e 100644
    } catch (err) {
      throw restackErr(err, new Error());
    }
-@@ -614,7 +637,7 @@ export function ensureDirSync(dirPath: string) {
+@@ -612,7 +635,7 @@ export function ensureDirSync(dirPath: string) {
  /** @deprecated use node:fs directly */
  export function ensureFileAsync(filePath: string): PromiseBB<void> {
    const stackErr = new Error();
@@ -464,7 +464,7 @@ index ad20c1d2a..88b78322e 100644
      throw restackErr(err, stackErr);
    });
  }
-@@ -624,6 +647,7 @@ export function ensureDirAsync(
+@@ -622,6 +645,7 @@ export function ensureDirAsync(
    dirPath: string,
    onDirCreatedCB?: (created: string) => PromiseLike<void>,
  ): PromiseBB<void> {
@@ -472,7 +472,7 @@ index ad20c1d2a..88b78322e 100644
    const stackErr = new Error();
    // If a onDirCreated callback is provided, we can't use fs-extra's
    //  implementation directly as there's no way for us to reliably determine
-@@ -734,6 +758,8 @@ export function copyAsync(
+@@ -732,6 +756,8 @@ export function copyAsync(
      showDialogCallback?: () => boolean;
    },
  ): PromiseBB<void> {
@@ -481,7 +481,7 @@ index ad20c1d2a..88b78322e 100644
    const stackErr = new Error();
    // fs.copy in fs-extra has a bug where it doesn't correctly avoid copying files onto themselves
    const check = options?.noSelfCopy ? PromiseBB.resolve() : selfCopyCheck(src, dest);
-@@ -764,6 +790,8 @@ function copyInt(
+@@ -762,6 +788,8 @@ function copyInt(
  
  /** @deprecated use node:fs directly */
  export function linkAsync(src: string, dest: string, options?: ILinkFileOptions): PromiseBB<void> {
@@ -490,7 +490,7 @@ index ad20c1d2a..88b78322e 100644
    const stackErr = new Error();
    return linkInt(src, dest, stackErr, NUM_RETRIES, options).catch((err) =>
      PromiseBB.reject(restackErr(err, stackErr)),
-@@ -788,10 +816,11 @@ function linkInt(
+@@ -786,10 +814,11 @@ function linkInt(
  }
  
  export function removeSync(dirPath: string) {
@@ -503,7 +503,7 @@ index ad20c1d2a..88b78322e 100644
    return unlinkInt(filePath, new Error(), NUM_RETRIES, options || {});
  }
  
-@@ -833,6 +862,8 @@ function unlinkInt(
+@@ -831,6 +860,8 @@ function unlinkInt(
  
  /** @deprecated use node:fs directly */
  export function renameAsync(sourcePath: string, destinationPath: string): PromiseBB<void> {
@@ -512,7 +512,7 @@ index ad20c1d2a..88b78322e 100644
    return renameInt(sourcePath, destinationPath, new Error(), NUM_RETRIES);
  }
  
-@@ -867,6 +898,7 @@ function renameInt(
+@@ -865,6 +896,7 @@ function renameInt(
  }
  
  export function rmdirAsync(dirPath: string): PromiseBB<void> {
@@ -520,7 +520,7 @@ index ad20c1d2a..88b78322e 100644
    return rmdirInt(dirPath, new Error(), NUM_RETRIES);
  }
  
-@@ -884,6 +916,7 @@ function rmdirInt(dirPath: string, stackErr: Error, tries: number): PromiseBB<vo
+@@ -882,6 +914,7 @@ function rmdirInt(dirPath: string, stackErr: Error, tries: number): PromiseBB<vo
  
  /** @deprecated use node:fs directly */
  export function removeAsync(remPath: string, options?: IRemoveFileOptions): PromiseBB<void> {
@@ -528,7 +528,7 @@ index ad20c1d2a..88b78322e 100644
    const stackErr = new Error();
    return removeInt(remPath, stackErr, NUM_RETRIES, options || {});
  }
-@@ -923,6 +956,7 @@ function rimrafAsync(remPath: string): PromiseBB<void> {
+@@ -921,6 +954,7 @@ function rimrafAsync(remPath: string): PromiseBB<void> {
  
  /** @deprecated use node:fs directly */
  export function readlinkAsync(linkPath: string): PromiseBB<string> {
@@ -536,11 +536,36 @@ index ad20c1d2a..88b78322e 100644
    const stackErr = new Error();
    return readlinkInt(linkPath, stackErr, NUM_RETRIES);
  }
+diff --git a/src/renderer/src/util/linuxCompatibility.test.ts b/src/renderer/src/util/linuxCompatibility.test.ts
+index c2637d3ec..2487d412b 100644
+--- a/src/renderer/src/util/linuxCompatibility.test.ts
++++ b/src/renderer/src/util/linuxCompatibility.test.ts
+@@ -89,6 +89,20 @@ describe.runIf(process.platform === "linux")("linuxCompatibility", () => {
+     expect(result.translated).toBe(true);
+   });
+ 
++  it("keeps the launcher's Linux .NET location out of Windows processes", () => {
++    vi.stubEnv("DOTNET_ROOT", "/opt/Vortex/dotnet-linux-x64");
++    vi.stubEnv("DOTNET_ROOT_X64", "/opt/Vortex/dotnet-linux-x64");
++    const helper = path.join(tempDir, "Tool.exe");
++    fs.writeFileSync(helper, "");
++
++    const inherited = prepareWindowsProcess(helper, [], { env: { ...process.env } });
++    expect(inherited.options.env?.DOTNET_ROOT).toBeUndefined();
++    expect(inherited.options.env?.DOTNET_ROOT_X64).toBeUndefined();
++
++    const chosen = prepareWindowsProcess(helper, [], { env: { DOTNET_ROOT: "C:\\dotnet" } });
++    expect(chosen.options.env?.DOTNET_ROOT).toBe("C:\\dotnet");
++  });
++
+   it("rewrites a shell invocation without knowing the helper or game", () => {
+     const helper = path.join(tempDir, "Generic Tool.exe");
+     const input = path.join(tempDir, "Data", "input.bin");
 diff --git a/src/renderer/src/util/linuxCompatibility.ts b/src/renderer/src/util/linuxCompatibility.ts
-index b52bb76ff..6d82ea0a8 100644
+index b52bb76ff..107376d05 100644
 --- a/src/renderer/src/util/linuxCompatibility.ts
 +++ b/src/renderer/src/util/linuxCompatibility.ts
-@@ -62,12 +62,19 @@ function wineExecutable(): string {
+@@ -62,12 +62,28 @@ function wineExecutable(): string {
  }
  
  function wineEnvironment(input: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
@@ -557,6 +582,15 @@ index b52bb76ff..6d82ea0a8 100644
 +  delete result.APPDATA;
 +  delete result.LOCALAPPDATA;
 +  delete result.USERPROFILE;
++
++  // The launcher points these at the Linux .NET runtime, where a Windows .NET
++  // program would look for hostfxr.dll and give up. Drop the inherited values;
++  // a different one the caller sets for this process stays.
++  for (const name of ["DOTNET_ROOT", "DOTNET_ROOT_X64"]) {
++    if (result[name] !== undefined && result[name] === process.env[name]) {
++      delete result[name];
++    }
++  }
 +  return result;
  }
  

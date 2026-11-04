@@ -10,6 +10,26 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Vortex 2.10.0. Some of our Linux fixes are part of Vortex itself now
+  (finding the drive a folder is on, suggesting a staging folder on a mounted
+  drive), so the patches that carried them got smaller.
+- Choosing "import" for a file changed outside Vortex no longer leaves a
+  `.vortex-import` folder in the staging folder, which Vortex then offered to
+  add as a mod.
+- Windows .NET programs started through Wine no longer inherit the location of
+  the Linux .NET runtime that the AppImage and the packages bring, which could
+  keep them from finding their own runtime.
+- Game extensions that use Node's `fs` directly now find files in Documents
+  and `%APPDATA%` where Vortex's own file functions put them: in the game's
+  Proton prefix when the prefix has that folder. The Witcher 3 could not save
+  its load order (`mods.settings`) because of this.
+- Native packages for Debian, Ubuntu, Fedora and openSUSE: releases now
+  include `vortex-linux_<version>_amd64.deb` for Ubuntu 24.04 or newer and
+  Debian 13 or newer, and `vortex-linux-<version>-x86_64.rpm` for Fedora 43 or
+  newer, openSUSE Leap 16 and Tumbleweed. apt, dnf or zypper install Vortex with
+  its dependencies and an app menu entry. Like the AppImage, the packages bring
+  their own .NET runtimes.
+
 ## 2.9.1-1 - 2026-10-27
 
 Automatic update to Vortex 2.9.1, published after the usual checks passed. Upstream commit `c80326367cbe6d96621ad6cf4a5488ef49bac110`. The Linux patches and packaging are unchanged since 2.9.0-5.

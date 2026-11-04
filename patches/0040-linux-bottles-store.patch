@@ -1,7 +1,7 @@
 diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
 --- a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
 +++ b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
-@@ -23,6 +23,7 @@ import { XboxLauncher } from "@/util/xbox/XboxLauncher";
+@@ -24,6 +24,7 @@ import { XboxLauncher } from "@/util/xbox/XboxLauncher";
  
  import { setNextProfile } from "../../actions";
  import { getNormalizeFunc } from "../../util/api";
@@ -9,7 +9,7 @@ diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts 
  import { ProcessCanceled, SetupError, UserCanceled } from "../../util/CustomErrors";
  import EpicGamesLauncher from "../../util/EpicGamesLauncher";
  import * as fs from "../../util/fs";
-@@ -85,7 +86,7 @@ class GameModeManager {
+@@ -87,7 +88,7 @@ export class GameModeManager {
        UPlayLauncher.create(),
        XboxLauncher.create(api),
        ...(process.platform === "linux"
@@ -311,8 +311,6 @@ new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/util/Bottles.ts
 @@ -0,0 +1,117 @@
-+import Bluebird from "bluebird";
-+
 +import type { IExtensionApi } from "../types/IExtensionContext";
 +import {
 +  GameEntryNotFound,
@@ -348,90 +346,92 @@ new file mode 100644
 +    registerCompatibilityStore(this.id, bottlesPrefix);
 +    registerGameToolRunner(this.id, bottlesToolCommand);
 +  }
-+  public allGames(): Bluebird<BottlesGame[]> {
-+    return Bluebird.try(() => {
-+      if (this.games === undefined) {
-+        this.games = readBottlesGames();
-+        this.installed = bottlesRoots().some((root) => bottlesCli(root.flatpak) !== undefined);
-+      }
-+      return this.games;
-+    });
++  public async allGames(): Promise<BottlesGame[]> {
++    if (this.games === undefined) {
++      this.games = readBottlesGames();
++      this.installed = bottlesRoots().some((root) => bottlesCli(root.flatpak) !== undefined);
++    }
++    return this.games;
 +  }
 +  public snapshot(): IGameStoreSnapshot {
 +    return { entries: this.games ?? [], isInstalled: this.installed };
 +  }
-+  public reloadGames(): Bluebird<void> {
++  public async reloadGames(): Promise<void> {
 +    this.games = undefined;
 +    resetCompatibilityPathCache();
-+    return this.allGames().then(() => undefined);
++    await this.allGames();
 +  }
-+  private find(predicate: (game: BottlesGame) => boolean, query: string): Bluebird<BottlesGame> {
-+    return this.allGames().then((games) => {
-+      const matches = games.filter(predicate);
-+      if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
-+      if (matches.length > 1)
-+        throw new Error(
-+          "Several Bottles programs match this game. Select the game directory manually.",
-+        );
-+      return matches[0];
-+    });
++  private async find(
++    predicate: (game: BottlesGame) => boolean,
++    query: string,
++  ): Promise<BottlesGame> {
++    const games = await this.allGames();
++    const matches = games.filter(predicate);
++    if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
++    if (matches.length > 1)
++      throw new Error(
++        "Several Bottles programs match this game. Select the game directory manually.",
++      );
++    return matches[0];
 +  }
-+  public findByAppId(id: string | string[]): Bluebird<BottlesGame> {
++  public findByAppId(id: string | string[]): Promise<BottlesGame> {
 +    const ids = Array.isArray(id) ? id : [id];
 +    return this.find((game) => ids.includes(game.appid), ids.join(", "));
 +  }
-+  public findByName(name: string): Bluebird<BottlesGame> {
-+    return Bluebird.try(() => new RegExp(`^(?:${name})$`, "i")).then((pattern) =>
-+      this.find((game) => pattern.test(game.name), name),
-+    );
++  public async findByName(name: string): Promise<BottlesGame> {
++    const pattern = new RegExp(`^(?:${name})$`, "i");
++    return this.find((game) => pattern.test(game.name), name);
 +  }
-+  public identifyGame(gamePath: string): Bluebird<boolean> {
-+    return Bluebird.try(() => matchBottles(gamePath).length > 0).catch(() => false);
++  public async identifyGame(gamePath: string): Promise<boolean> {
++    try {
++      return matchBottles(gamePath).length > 0;
++    } catch {
++      return false;
++    }
 +  }
-+  public getGameStorePath(): Bluebird<string | undefined> {
-+    return Bluebird.resolve(
-+      bottlesRoots()
-+        .map((root) => bottlesCli(root.flatpak)?.executable)
-+        .find(Boolean),
-+    );
++  public async getGameStorePath(): Promise<string | undefined> {
++    return bottlesRoots()
++      .map((root) => bottlesCli(root.flatpak)?.executable)
++      .find(Boolean);
 +  }
-+  public isGameStoreInstalled(): Bluebird<boolean> {
-+    return this.getGameStorePath().then(Boolean);
++  public async isGameStoreInstalled(): Promise<boolean> {
++    return Boolean(await this.getGameStorePath());
 +  }
-+  public isGameInstalled(name: string): Bluebird<boolean> {
-+    return this.findByName(name)
-+      .then(() => true)
-+      .catch(GameEntryNotFound, () => false);
++  public async isGameInstalled(name: string): Promise<boolean> {
++    try {
++      await this.findByName(name);
++      return true;
++    } catch (err) {
++      if (err instanceof GameEntryNotFound) {
++        return false;
++      }
++      throw err;
++    }
 +  }
-+  public launchGame(
++  public async launchGame(
 +    appInfo: string | { appId: string; parameters?: string[] },
 +    api?: IExtensionApi,
-+  ): Bluebird<void> {
-+    return this.isGameStoreInstalled()
-+      .then((installed) => {
-+        if (!installed) throw new GameStoreNotFound(this.name);
-+        return this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
-+      })
-+      .then((game) => {
-+        if (!api) throw new Error("Bottles launch requires the Vortex application API");
-+        const command = bottlesLaunchCommand(
-+          game.bottle,
-+          game.program,
-+          typeof appInfo === "string" ? [] : appInfo.parameters,
-+        );
-+        return api.runExecutable(command.executable, command.args, {
-+          ...command.options,
-+          cwd: game.gamePath,
-+          suggestDeploy: true,
-+          detach: true,
-+        });
-+      });
++  ): Promise<void> {
++    if (!(await this.isGameStoreInstalled())) throw new GameStoreNotFound(this.name);
++    const game = await this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
++    if (!api) throw new Error("Bottles launch requires the Vortex application API");
++    const command = bottlesLaunchCommand(
++      game.bottle,
++      game.program,
++      typeof appInfo === "string" ? [] : appInfo.parameters,
++    );
++    await api.runExecutable(command.executable, command.args, {
++      ...command.options,
++      cwd: game.gamePath,
++      suggestDeploy: true,
++      detach: true,
++    });
 +  }
 +}
 diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
 --- a/src/renderer/src/util/StarterInfo.ts
 +++ b/src/renderer/src/util/StarterInfo.ts
-@@ -25,6 +25,7 @@ import {
+@@ -24,6 +24,7 @@ import {
  } from "./CustomErrors";
  import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
  import getVortexPath from "./getVortexPath";
@@ -439,7 +439,7 @@ diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/Starte
  import { findHeroicGame, heroicLaunchCommand } from "./linux/heroic";
  import { findLutrisLaunchGame, lutrisLaunchCommand } from "./linux/lutris";
  import { resolvePlatformPath } from "./nativeExecutable";
-@@ -309,6 +310,31 @@ class StarterInfo implements IStarterInfo {
+@@ -341,6 +342,31 @@ class StarterInfo implements IStarterInfo {
        }
      }
  

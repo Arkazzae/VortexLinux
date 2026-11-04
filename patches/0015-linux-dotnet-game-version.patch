@@ -104,7 +104,7 @@ index 0000000..e31cf64
 +  });
 +});
 diff --git a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
-index eb8c9f0..ce04f45 100644
+index d797474..cb0965c 100644
 --- a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
 +++ b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
 @@ -1,4 +1,5 @@
@@ -114,12 +114,10 @@ index eb8c9f0..ce04f45 100644
  
  import { getErrorMessageOrDefault } from "@vortex/shared";
  import { ProcessCanceled } from "@vortex/shared/errors";
-@@ -11,6 +12,103 @@ import { resolvePlatformPath } from "../../../util/nativeExecutable";
+@@ -11,6 +12,102 @@ import { resolvePlatformPath } from "../../../util/nativeExecutable";
  import type { IGame } from "../../../types/IGame";
  import type { IDiscoveryResult } from "../types/IDiscoveryResult";
  
-+const UNKNOWN_VERSION = "0.0.0";
-+
 +function normalizedApplicationName(input: string): string {
 +  return input.toLowerCase().replace(/[\s._-]/g, "");
 +}
@@ -206,33 +204,42 @@ index eb8c9f0..ce04f45 100644
 +  return bestMatch?.version;
 +}
 +
-+function executableVersion(executablePath: string): string {
++/** The version resource; on Linux null for a placeholder, so the deps manifest can answer. */
++function executableVersion(executablePath: string): string | null {
 +  try {
 +    const version = exeVersion(executablePath);
-+    return knownVersion(version) ? version : UNKNOWN_VERSION;
++    return process.platform !== "linux" || knownVersion(version) ? version : null;
 +  } catch {
-+    return UNKNOWN_VERSION;
++    return null;
 +  }
 +}
 +
  export type GameVersionResolver = (game: IGame, discovery: IDiscoveryResult) => Promise<string>;
  
- async function fromExtension(game: IGame, discovery: IDiscoveryResult): Promise<string> {
-@@ -22,10 +120,15 @@ async function fromExecutable(game: IGame, discovery: IDiscoveryResult): Promise
+ /** The version the game extension reports through getGameVersion; null when the
+@@ -41,16 +138,23 @@ async function fromExtension(game: IGame, discovery: IDiscoveryResult): Promise<
+   return null;
+ }
+ 
+-/** The version attribute of the discovered executable; null when it can't be read. */
++/** The version attribute of the discovered executable; null when it can't be read.
++    Native Linux .NET launchers have no version resource, so their deps manifest is
++    read instead. */
+ async function fromExecutable(game: IGame, discovery: IDiscoveryResult): Promise<string | null> {
+   const exePath = resolvePlatformPath(discovery.path, discovery.executable || game.executable());
  
    try {
      await stat(exePath);
 -    return exeVersion(exePath);
    } catch {
--    return "0.0.0";
-+    return UNKNOWN_VERSION;
-+  }
+     return null;
+   }
 +
 +  const version = executableVersion(exePath);
-+  if (version !== UNKNOWN_VERSION || process.platform !== "linux") {
++  if (version !== null || process.platform !== "linux") {
 +    return version;
-   }
-+  return (await getDotNetGameVersion(discovery.path, exePath)) ?? UNKNOWN_VERSION;
++  }
++  return (await getDotNetGameVersion(discovery.path, exePath)) ?? null;
  }
  
- export const resolveGameVersion: GameVersionResolver = async (game, discovery) => {
+ function assertDiscovered(game: IGame, discovery: IDiscoveryResult): void {

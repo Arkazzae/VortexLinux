@@ -1,7 +1,7 @@
 diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
 --- a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
 +++ b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
-@@ -27,6 +27,7 @@ import { ProcessCanceled, SetupError, UserCanceled } from "../../util/CustomErro
+@@ -28,6 +28,7 @@ import { ProcessCanceled, SetupError, UserCanceled } from "../../util/CustomErro
  import EpicGamesLauncher from "../../util/EpicGamesLauncher";
  import * as fs from "../../util/fs";
  import { HeroicStore } from "../../util/Heroic";
@@ -9,7 +9,7 @@ diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts 
  import { activeProfile, discoveryByGame } from "../../util/selectors";
  import Steam from "../../util/Steam";
  import { normalizeStoreQuery } from "../../util/storeQuery";
-@@ -83,7 +84,9 @@ class GameModeManager {
+@@ -85,7 +86,9 @@ export class GameModeManager {
        OriginLauncher.create(),
        UPlayLauncher.create(),
        XboxLauncher.create(api),
@@ -430,8 +430,6 @@ new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/util/Lutris.ts
 @@ -0,0 +1,112 @@
-+import Bluebird from "bluebird";
-+
 +import type { IExtensionApi } from "../types/IExtensionContext";
 +import {
 +  GameEntryNotFound,
@@ -467,85 +465,87 @@ new file mode 100644
 +    registerCompatibilityStore(this.id, lutrisPrefix);
 +    registerGameToolRunner(this.id, lutrisToolCommand);
 +  }
-+  public allGames(): Bluebird<LutrisGame[]> {
-+    return Bluebird.try(() => {
-+      if (this.games === undefined) {
-+        this.games = readLutrisGames();
-+        this.installed = lutrisRoots().some((root) => lutrisLauncher(root.flatpak) !== undefined);
-+      }
-+      return this.games;
-+    });
++  public async allGames(): Promise<LutrisGame[]> {
++    if (this.games === undefined) {
++      this.games = readLutrisGames();
++      this.installed = lutrisRoots().some((root) => lutrisLauncher(root.flatpak) !== undefined);
++    }
++    return this.games;
 +  }
 +  public snapshot(): IGameStoreSnapshot {
 +    return { entries: this.games ?? [], isInstalled: this.installed };
 +  }
-+  public reloadGames(): Bluebird<void> {
++  public async reloadGames(): Promise<void> {
 +    this.games = undefined;
 +    resetCompatibilityPathCache();
-+    return this.allGames().then(() => undefined);
++    await this.allGames();
 +  }
-+  private find(predicate: (game: LutrisGame) => boolean, query: string): Bluebird<LutrisGame> {
-+    return this.allGames().then((games) => {
-+      const matches = games.filter(predicate);
-+      if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
-+      if (matches.length > 1)
-+        throw new Error(
-+          "Several Lutris games match this game. Select the game directory manually.",
-+        );
-+      return matches[0];
-+    });
++  private async find(
++    predicate: (game: LutrisGame) => boolean,
++    query: string,
++  ): Promise<LutrisGame> {
++    const games = await this.allGames();
++    const matches = games.filter(predicate);
++    if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
++    if (matches.length > 1)
++      throw new Error(
++        "Several Lutris games match this game. Select the game directory manually.",
++      );
++    return matches[0];
 +  }
-+  public findByAppId(id: string | string[]): Bluebird<LutrisGame> {
++  public findByAppId(id: string | string[]): Promise<LutrisGame> {
 +    const ids = Array.isArray(id) ? id : [id];
 +    return this.find((game) => ids.includes(game.appid), ids.join(", "));
 +  }
-+  public findByName(name: string): Bluebird<LutrisGame> {
-+    return Bluebird.try(() => new RegExp(`^(?:${name})$`, "i")).then((pattern) =>
-+      this.find((game) => pattern.test(game.name), name),
-+    );
++  public async findByName(name: string): Promise<LutrisGame> {
++    const pattern = new RegExp(`^(?:${name})$`, "i");
++    return this.find((game) => pattern.test(game.name), name);
 +  }
-+  public identifyGame(gamePath: string): Bluebird<boolean> {
-+    return Bluebird.try(() => matchLutrisGames(gamePath).length > 0).catch(() => false);
++  public async identifyGame(gamePath: string): Promise<boolean> {
++    try {
++      return matchLutrisGames(gamePath).length > 0;
++    } catch {
++      return false;
++    }
 +  }
-+  public getGameStorePath(): Bluebird<string | undefined> {
-+    return Bluebird.resolve(
-+      lutrisRoots()
-+        .map((root) => lutrisLauncher(root.flatpak)?.executable)
-+        .find(Boolean),
-+    );
++  public async getGameStorePath(): Promise<string | undefined> {
++    return lutrisRoots()
++      .map((root) => lutrisLauncher(root.flatpak)?.executable)
++      .find(Boolean);
 +  }
-+  public isGameStoreInstalled(): Bluebird<boolean> {
-+    return this.getGameStorePath().then(Boolean);
++  public async isGameStoreInstalled(): Promise<boolean> {
++    return Boolean(await this.getGameStorePath());
 +  }
-+  public isGameInstalled(name: string): Bluebird<boolean> {
-+    return this.findByName(name)
-+      .then(() => true)
-+      .catch(GameEntryNotFound, () => false);
++  public async isGameInstalled(name: string): Promise<boolean> {
++    try {
++      await this.findByName(name);
++      return true;
++    } catch (err) {
++      if (err instanceof GameEntryNotFound) {
++        return false;
++      }
++      throw err;
++    }
 +  }
-+  public launchGame(
++  public async launchGame(
 +    appInfo: string | { appId: string; parameters?: string[] },
 +    api?: IExtensionApi,
-+  ): Bluebird<void> {
-+    return this.isGameStoreInstalled()
-+      .then((installed) => {
-+        if (!installed) throw new GameStoreNotFound(this.name);
-+        return this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
-+      })
-+      .then((game) => {
-+        if (!api) throw new Error("Lutris launch requires the Vortex application API");
-+        const command = lutrisLaunchCommand(game);
-+        return api.runExecutable(command.executable, command.args, {
-+          ...command.options,
-+          cwd: game.gamePath,
-+          suggestDeploy: true,
-+        });
-+      });
++  ): Promise<void> {
++    if (!(await this.isGameStoreInstalled())) throw new GameStoreNotFound(this.name);
++    const game = await this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
++    if (!api) throw new Error("Lutris launch requires the Vortex application API");
++    const command = lutrisLaunchCommand(game);
++    await api.runExecutable(command.executable, command.args, {
++      ...command.options,
++      cwd: game.gamePath,
++      suggestDeploy: true,
++    });
 +  }
 +}
 diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
 --- a/src/renderer/src/util/StarterInfo.ts
 +++ b/src/renderer/src/util/StarterInfo.ts
-@@ -26,6 +26,7 @@ import {
+@@ -25,6 +25,7 @@ import {
  import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
  import getVortexPath from "./getVortexPath";
  import { findHeroicGame, heroicLaunchCommand } from "./linux/heroic";
@@ -553,7 +553,7 @@ diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/Starte
  import { resolvePlatformPath } from "./nativeExecutable";
  import type { Steam, ISteamEntry } from "./Steam";
  import { getSafe } from "./storeHelper";
-@@ -278,6 +279,36 @@ class StarterInfo implements IStarterInfo {
+@@ -310,6 +311,36 @@ class StarterInfo implements IStarterInfo {
        }
      }
  

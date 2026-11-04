@@ -1,8 +1,8 @@
 diff --git a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
-index fee040e..2139e65 100644
+index 7f73115..f3a3c89 100644
 --- a/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
 +++ b/src/renderer/src/extensions/gamemode_management/GameModeManager.ts
-@@ -26,6 +26,7 @@ import { getNormalizeFunc } from "../../util/api";
+@@ -27,6 +27,7 @@ import { getNormalizeFunc } from "../../util/api";
  import { ProcessCanceled, SetupError, UserCanceled } from "../../util/CustomErrors";
  import EpicGamesLauncher from "../../util/EpicGamesLauncher";
  import * as fs from "../../util/fs";
@@ -10,7 +10,7 @@ index fee040e..2139e65 100644
  import { activeProfile, discoveryByGame } from "../../util/selectors";
  import Steam from "../../util/Steam";
  import { normalizeStoreQuery } from "../../util/storeQuery";
-@@ -82,6 +83,7 @@ class GameModeManager {
+@@ -84,6 +85,7 @@ export class GameModeManager {
        OriginLauncher.create(),
        UPlayLauncher.create(),
        XboxLauncher.create(api),
@@ -72,18 +72,18 @@ index 0000000..9ce6155
 +  });
 +});
 diff --git a/src/renderer/src/util/EpicGamesLauncher.ts b/src/renderer/src/util/EpicGamesLauncher.ts
-index 8c577f7..90d780d 100644
+index a461f68..36c4ad6 100644
 --- a/src/renderer/src/util/EpicGamesLauncher.ts
 +++ b/src/renderer/src/util/EpicGamesLauncher.ts
-@@ -10,6 +10,7 @@ import type { IGameStore, IGameStoreSnapshot } from "../types/IGameStore";
+@@ -10,6 +10,7 @@ import type { IExtensionApi } from "../types/IExtensionContext";
+ import type { IGameStore, IGameStoreSnapshot } from "../types/IGameStore";
  import { GameEntryNotFound } from "../types/IGameStore";
  import type { IGameStoreEntry } from "../types/IGameStoreEntry";
- import * as fs from "./fs";
 +import { HeroicStore } from "./Heroic";
- import lazyRequire from "./lazyRequire";
- import opn from "./opn";
  
-@@ -243,6 +244,10 @@ const manifestSchema = z.looseObject({
+ const ITEM_EXT = "item";
+ const STORE_ID = "epic";
+@@ -254,6 +255,10 @@ const manifestSchema = z.looseObject({
  });
  
  const instance: IGameStore | undefined =
@@ -97,6 +97,7 @@ index 8c577f7..90d780d 100644
  export default instance;
 diff --git a/src/renderer/src/util/Heroic.test.ts b/src/renderer/src/util/Heroic.test.ts
 new file mode 100644
+index 0000000..7d5c193
 --- /dev/null
 +++ b/src/renderer/src/util/Heroic.test.ts
 @@ -0,0 +1,223 @@
@@ -325,11 +326,10 @@ new file mode 100644
 +});
 diff --git a/src/renderer/src/util/Heroic.ts b/src/renderer/src/util/Heroic.ts
 new file mode 100644
+index 0000000..32837bb
 --- /dev/null
 +++ b/src/renderer/src/util/Heroic.ts
-@@ -0,0 +1,107 @@
-+import Bluebird from "bluebird";
-+
+@@ -0,0 +1,103 @@
 +import type { IExtensionApi } from "../types/IExtensionContext";
 +import { GameEntryNotFound, GameStoreNotFound, type IGameStore, type IGameStoreSnapshot } from "../types/IGameStore";
 +import { registerCompatibilityStore, resetCompatibilityPathCache } from "./compatibilityPaths";
@@ -360,86 +360,84 @@ new file mode 100644
 +    });
 +    registerGameToolRunner(id, heroicToolCommand);
 +  }
-+  public allGames(): Bluebird<HeroicGame[]> {
-+    return Bluebird.try(() => {
-+      if (this.games === undefined) {
-+        this.games = readHeroicGames().filter((entry) => entry.gameStoreId === this.id);
-+        this.installed = heroicRoots().some((root) => heroicLauncher(root.flatpak) !== undefined);
-+      }
-+      return this.games;
-+    });
++  public async allGames(): Promise<HeroicGame[]> {
++    if (this.games === undefined) {
++      this.games = readHeroicGames().filter((entry) => entry.gameStoreId === this.id);
++      this.installed = heroicRoots().some((root) => heroicLauncher(root.flatpak) !== undefined);
++    }
++    return this.games;
 +  }
 +  public snapshot(): IGameStoreSnapshot {
 +    return { entries: this.games ?? [], isInstalled: this.installed };
 +  }
-+  public reloadGames(): Bluebird<void> {
++  public async reloadGames(): Promise<void> {
 +    this.games = undefined;
 +    resetCompatibilityPathCache();
-+    return this.allGames().then(() => undefined);
++    await this.allGames();
 +  }
-+  private find(predicate: (game: HeroicGame) => boolean, query: string): Bluebird<HeroicGame> {
-+    return this.allGames().then((games) => {
-+      const matches = games.filter(predicate);
-+      if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
-+      if (matches.length > 1)
-+        throw new Error(
-+          "Several Heroic installations match this game. Select the game directory manually.",
-+        );
-+      return matches[0];
-+    });
++  private async find(
++    predicate: (game: HeroicGame) => boolean,
++    query: string,
++  ): Promise<HeroicGame> {
++    const games = await this.allGames();
++    const matches = games.filter(predicate);
++    if (matches.length === 0) throw new GameEntryNotFound(query, this.id);
++    if (matches.length > 1)
++      throw new Error(
++        "Several Heroic installations match this game. Select the game directory manually.",
++      );
++    return matches[0];
 +  }
-+  public findByAppId(id: string | string[]): Bluebird<HeroicGame> {
++  public findByAppId(id: string | string[]): Promise<HeroicGame> {
 +    const ids = Array.isArray(id) ? id : [id];
 +    return this.find((game) => ids.includes(game.appid), ids.join(", "));
 +  }
-+  public findByName(name: string): Bluebird<HeroicGame> {
-+    return Bluebird.try(() => new RegExp(`^(?:${name})$`, "i")).then((pattern) =>
-+      this.find((game) => pattern.test(game.name), name),
-+    );
++  public async findByName(name: string): Promise<HeroicGame> {
++    const pattern = new RegExp(`^(?:${name})$`, "i");
++    return this.find((game) => pattern.test(game.name), name);
 +  }
-+  public getGameStorePath(): Bluebird<string | undefined> {
-+    return Bluebird.resolve(
-+      heroicRoots()
-+        .map((root) => heroicLauncher(root.flatpak)?.executable)
-+        .find(Boolean),
-+    );
++  public async getGameStorePath(): Promise<string | undefined> {
++    return heroicRoots()
++      .map((root) => heroicLauncher(root.flatpak)?.executable)
++      .find(Boolean);
 +  }
-+  public isGameStoreInstalled(): Bluebird<boolean> {
-+    return this.getGameStorePath().then(Boolean);
++  public async isGameStoreInstalled(): Promise<boolean> {
++    return Boolean(await this.getGameStorePath());
 +  }
-+  public isGameInstalled(name: string): Bluebird<boolean> {
-+    return this.findByName(name)
-+      .then(() => true)
-+      .catch(GameEntryNotFound, () => false);
++  public async isGameInstalled(name: string): Promise<boolean> {
++    try {
++      await this.findByName(name);
++      return true;
++    } catch (err) {
++      if (err instanceof GameEntryNotFound) {
++        return false;
++      }
++      throw err;
++    }
 +  }
-+  public launchGame(
++  public async launchGame(
 +    appInfo: string | { appId: string; parameters?: string[] },
 +    api?: IExtensionApi,
-+  ): Bluebird<void> {
-+    return this.isGameStoreInstalled()
-+      .then((installed) => {
-+        if (!installed) throw new GameStoreNotFound(this.name);
-+        return this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
-+      })
-+      .then((game) => {
-+        if (!api) throw new Error("Heroic launch requires the Vortex application API");
-+        const command = heroicLaunchCommand(
-+          game,
-+          typeof appInfo === "string" ? [] : appInfo.parameters,
-+        );
-+        return api.runExecutable(command.executable, command.args, {
-+          ...command.options,
-+          cwd: game.gamePath,
-+          suggestDeploy: true,
-+        });
-+      });
++  ): Promise<void> {
++    if (!(await this.isGameStoreInstalled())) throw new GameStoreNotFound(this.name);
++    const game = await this.findByAppId(typeof appInfo === "string" ? appInfo : appInfo.appId);
++    if (!api) throw new Error("Heroic launch requires the Vortex application API");
++    const command = heroicLaunchCommand(
++      game,
++      typeof appInfo === "string" ? [] : appInfo.parameters,
++    );
++    await api.runExecutable(command.executable, command.args, {
++      ...command.options,
++      cwd: game.gamePath,
++      suggestDeploy: true,
++    });
 +  }
 +}
 diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
-index 338e8f7..4ee8b14 100644
+index ae2b387..dc45968 100644
 --- a/src/renderer/src/util/StarterInfo.ts
 +++ b/src/renderer/src/util/StarterInfo.ts
-@@ -25,6 +25,7 @@ import {
+@@ -24,6 +24,7 @@ import {
  } from "./CustomErrors";
  import { emitGameLaunched, recordLaunchExit } from "./gameLaunchAnalytics";
  import getVortexPath from "./getVortexPath";
@@ -447,7 +445,7 @@ index 338e8f7..4ee8b14 100644
  import { resolvePlatformPath } from "./nativeExecutable";
  import type { Steam, ISteamEntry } from "./Steam";
  import { getSafe } from "./storeHelper";
-@@ -250,6 +251,33 @@ class StarterInfo implements IStarterInfo {
+@@ -282,6 +283,33 @@ class StarterInfo implements IStarterInfo {
        }
      };
  

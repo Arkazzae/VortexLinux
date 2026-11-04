@@ -1,84 +1,18 @@
-diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
---- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
-+++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
-@@ -13,6 +13,7 @@
- import { getGame, UserCanceled } from "../../util/api";
- import * as fs from "../../util/fs";
- import type { Normalize } from "../../util/getNormalizeFunc";
-+import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
- import { activeGameId } from "../../util/selectors";
- import { truthy } from "../../util/util";
- import type { IDeploymentFailure } from "./actions/session";
-@@ -435,9 +436,13 @@
-     const game = getGame(gameId);
-     const directoryCleaning = game.directoryCleaning || "tag";
- 
--    // stat to ensure the target directory exists
--    return Promise.resolve(
--      fs
-+    return Promise.resolve().then(() => {
-+      // Link scanners use raw filesystem APIs, unlike fs.statAsync.
-+      // Resolve both roots so purge reaches the same files as deployment.
-+      installPath = resolveCaseInsensitiveSync(installPath);
-+      dataPath = resolveCaseInsensitiveSync(dataPath);
-+      // A missing selected prefix must fail, rather than count as an empty target.
-+      return fs
-         .statAsync(dataPath)
-         .then(() => this.purgeLinks(installPath, dataPath, onProgress))
-         .then(() => this.postLinkPurge(dataPath, false, true, directoryCleaning))
-@@ -447,8 +452,8 @@
-             return Promise.resolve(undefined);
-           }
-           return Promise.reject(err);
--        }),
--    );
-+        });
-+    });
-   }
- 
-   public postPurge(): PromiseLike<void> {
-@@ -851,15 +856,18 @@
-               (entry) => !entry.isDirectory && LinkingActivator.isTagName(entry.filePath),
-             ) !== undefined;
- 
--    return Promise.resolve(
--      turbowalk(
--        baseDir,
--        (entries) => {
--          allEntries = allEntries.concat(entries);
--        },
--        { recurse: false, skipHidden: false, skipLinks: false },
--      ),
--    )
-+    return Promise.resolve()
-+      .then(() => {
-+        // finalize also calls this directly with the game's logical mod path.
-+        baseDir = resolveCaseInsensitiveSync(baseDir);
-+        return turbowalk(
-+          baseDir,
-+          (entries) => {
-+            allEntries = allEntries.concat(entries);
-+          },
-+          { recurse: false, skipHidden: false, skipLinks: false },
-+        );
-+      })
-       .then(() => {
-         doRemove = doRemove || taggedForRemoval(allEntries);
- 
 diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
 new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,213 @@
 +import * as nodeFs from "node:fs";
 +import * as path from "node:path";
 +
 +import { afterEach, expect, vi } from "vitest";
 +
 +import { test } from "../../test-utils/deploymentTest";
++import type { IExtensionApi } from "../../types/IExtensionContext";
 +import type { IGame } from "../../types/IGame";
 +import { setCompatibilityGameProvider } from "../../util/compatibilityPaths";
-+import { saveActivation } from "./util/activationStore";
++import { filesStillDeployed, ownDeployedFiles, saveActivation } from "./util/activationStore";
 +import BlacklistSet from "./util/BlacklistSet";
 +
 +afterEach(() => {
@@ -148,6 +82,13 @@ new file mode 100644
 +      expect(
 +        JSON.parse(nodeFs.readFileSync(path.join(prefixConfig, manifest), "utf8")).files,
 +      ).toHaveLength(2);
++      expect(await filesStillDeployed(hostConfig, deployed)).toHaveLength(2);
++      const instanceApi = {
++        getState: () => ({ app: { instanceId: "test-instance" } }),
++      } as unknown as IExtensionApi;
++      expect(await ownDeployedFiles(instanceApi, modType, hostConfig, h.stagingDir)).toHaveLength(
++        2,
++      );
 +
 +      await h.method.prePurge(h.stagingDir);
 +      await h.method.purge(h.stagingDir, hostConfig, gameId);
@@ -233,3 +174,192 @@ new file mode 100644
 +    );
 +  },
 +);
++
++test.runIf(process.platform === "linux")(
++  "repairs deployment times that earlier Linux builds stored a thousand times too large",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "plugin.esp": "plugin" } });
++    const deployed = await h.deploy();
++    const stored = deployed.map((file) => ({ ...file, time: file.time * 1000 }));
++    await saveActivation(
++      "skyrimse",
++      "",
++      "test-instance",
++      h.gameDir,
++      h.stagingDir,
++      stored,
++      h.method.id,
++    );
++    const instanceApi = {
++      getState: () => ({ app: { instanceId: "test-instance" } }),
++    } as unknown as IExtensionApi;
++
++    const read = await ownDeployedFiles(instanceApi, "", h.gameDir, h.stagingDir);
++
++    expect(read.map((file) => file.time)).toEqual(deployed.map((file) => file.time));
++    expect(await filesStillDeployed(h.gameDir, read)).toHaveLength(1);
++  },
++);
++
++test.runIf(process.platform === "linux")(
++  "keeps an earlier backup whose name differs in case",
++  async ({ makeDeployment }) => {
++    const h = makeDeployment({ files: { "D3D9.dll": "mod" } });
++    nodeFs.writeFileSync(h.inGame("D3D9.dll"), "game");
++    nodeFs.writeFileSync(h.inGame("d3d9.dll.vortex_backup"), "first original");
++
++    await h.deploy().catch(() => undefined);
++
++    expect(nodeFs.readFileSync(h.inGame("d3d9.dll.vortex_backup"), "utf8")).toBe(
++      "first original",
++    );
++    expect(nodeFs.readFileSync(h.inGame("D3D9.dll"), "utf8")).toBe("game");
++  },
++);
+diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+--- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
++++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
+@@ -14,6 +14,7 @@ import type { IState } from "../../types/IState";
+ import { getGame, UserCanceled } from "../../util/api";
+ import * as fs from "../../util/fs";
+ import type { Normalize } from "../../util/getNormalizeFunc";
++import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
+ import { activeGameId } from "../../util/selectors";
+ import { truthy } from "../../util/util";
+ import type { IDeploymentFailure } from "./actions/session";
+@@ -47,9 +48,18 @@ async function isAbsent(filePath: string): Promise<boolean> {
+   }
+ }
+ 
++/** turbowalk reports mtime in seconds, but outside Windows it passes lstat's Date. */
++function entryTime(entry: IEntry): number {
++  const mtime = entry.mtime as number | Date;
++  return mtime instanceof Date ? mtime.getTime() : mtime * 1000;
++}
++
+ /** Moves a file aside for a link, refusing when an earlier backup already holds the name. */
+ async function backUpGameFile(filePath: string): Promise<void> {
+-  const backupPath = filePath + BACKUP_TAG;
++  // lstat below bypasses util/fs, so map a Windows user folder into the Wine prefix
++  // and find an earlier backup in another case here, as the rename would
++  filePath = resolveCaseInsensitiveSync(filePath);
++  const backupPath = resolveCaseInsensitiveSync(filePath + BACKUP_TAG);
+   if (await isAbsent(filePath)) {
+     return;
+   }
+@@ -399,7 +409,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
+                       relPath,
+                       source: sourceName,
+                       target: deployPath,
+-                      time: entry.mtime * 1000,
++                      time: entryTime(entry),
+                     };
+                   }
+                 });
+@@ -463,9 +473,13 @@ abstract class LinkingActivator implements IDeploymentMethod {
+     const game = getGame(gameId);
+     const directoryCleaning = game.directoryCleaning || "tag";
+ 
+-    // stat to ensure the target directory exists
+-    return Promise.resolve(
+-      fs
++    return Promise.resolve().then(() => {
++      // Link scanners use raw filesystem APIs, unlike fs.statAsync.
++      // Resolve both roots so purge reaches the same files as deployment.
++      installPath = resolveCaseInsensitiveSync(installPath);
++      dataPath = resolveCaseInsensitiveSync(dataPath);
++      // A missing selected prefix must fail, rather than count as an empty target.
++      return fs
+         .statAsync(dataPath)
+         .then(() => this.purgeLinks(installPath, dataPath, onProgress))
+         .then(() => this.postLinkPurge(dataPath, false, true, directoryCleaning))
+@@ -475,8 +489,8 @@ abstract class LinkingActivator implements IDeploymentMethod {
+             return Promise.resolve(undefined);
+           }
+           return Promise.reject(err);
+-        }),
+-    );
++        });
++    });
+   }
+ 
+   public postPurge(): PromiseLike<void> {
+@@ -877,15 +891,18 @@ abstract class LinkingActivator implements IDeploymentMethod {
+               (entry) => !entry.isDirectory && LinkingActivator.isTagName(entry.filePath),
+             ) !== undefined;
+ 
+-    return Promise.resolve(
+-      turbowalk(
+-        baseDir,
+-        (entries) => {
+-          allEntries = allEntries.concat(entries);
+-        },
+-        { recurse: false, skipHidden: false, skipLinks: false },
+-      ),
+-    )
++    return Promise.resolve()
++      .then(() => {
++        // finalize also calls this directly with the game's logical mod path.
++        baseDir = resolveCaseInsensitiveSync(baseDir);
++        return turbowalk(
++          baseDir,
++          (entries) => {
++            allEntries = allEntries.concat(entries);
++          },
++          { recurse: false, skipHidden: false, skipLinks: false },
++        );
++      })
+       .then(() => {
+         doRemove = doRemove || taggedForRemoval(allEntries);
+ 
+diff --git a/src/renderer/src/extensions/mod_management/util/activationStore.ts b/src/renderer/src/extensions/mod_management/util/activationStore.ts
+--- a/src/renderer/src/extensions/mod_management/util/activationStore.ts
++++ b/src/renderer/src/extensions/mod_management/util/activationStore.ts
+@@ -16,6 +16,7 @@ import * as fs from "../../../util/fs";
+ import { writeFileAtomic } from "../../../util/fsAtomic";
+ import getVortexPath from "../../../util/getVortexPath";
+ import type { TFunction } from "../../../util/i18n";
++import { resolveCaseInsensitiveSync } from "../../../util/linuxCompatibility";
+ import { log } from "../../../util/log";
+ import { activeGameId, discoveryByGame, installPathForGame } from "../../../util/selectors";
+ import { getSafe } from "../../../util/storeHelper";
+@@ -52,6 +53,10 @@ function emptyManifest(instance: string): IDeploymentManifest {
+   };
+ }
+ 
++// Earlier Linux builds stored deployment times a thousand times too large
++// (turbowalk's Date multiplied as if it were seconds); no real time in ms gets here.
++const IMPLAUSIBLE_TIME = 1e14;
++
+ /**
+  * since the manifest is read from disc, it could have been modified by the user.
+  * Check it for correctness
+@@ -75,7 +80,9 @@ function repairManifest(input: IDeploymentManifest): IDeploymentManifest {
+       file.time !== undefined &&
+       file.time !== null
+     ) {
+-      prev.push(file);
++      prev.push(
++        file.time > IMPLAUSIBLE_TIME ? { ...file, time: Math.round(file.time / 1000) } : file,
++      );
+     }
+     return prev;
+   }, [] as IDeployedFile[]);
+@@ -129,6 +136,8 @@ export async function filesStillDeployed(
+   files: IDeployedFile[],
+ ): Promise<IDeployedFile[]> {
+   const limit = new ConcurrencyLimiter(PRESENCE_CHECK_CONCURRENCY);
++  // lstat bypasses util/fs, so map a Windows user folder into the Wine prefix once
++  basePath = resolveCaseInsensitiveSync(basePath);
+   const present = await Promise.all(
+     files.map((file) =>
+       limit.do(() =>
+@@ -429,7 +438,7 @@ export async function ownDeployedFiles(
+   let manifest: IDeploymentManifest | undefined;
+   try {
+     const { manifestPath } = manifestPaths(deployPath, stagingPath, modType);
+-    manifest = readManifest(await readFile(manifestPath, "utf8"));
++    manifest = readManifest(await readFile(resolveCaseInsensitiveSync(manifestPath), "utf8"));
+   } catch {
+     manifest = undefined;
+   }
