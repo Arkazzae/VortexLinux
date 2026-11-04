@@ -32,7 +32,7 @@ if command -v apt-get >/dev/null 2>&1; then
   remove_package() {
     apt-get purge --quiet=2 --yes vortex-linux
   }
-  harness=(dbus-x11 file procps python3-websocket xauth xvfb)
+  harness=(dbus-x11 procps python3-websocket xauth xvfb)
 elif command -v dnf >/dev/null 2>&1; then
   install_packages() {
     dnf install --quiet --assumeyes --setopt=install_weak_deps=False "$@"
@@ -40,7 +40,7 @@ elif command -v dnf >/dev/null 2>&1; then
   remove_package() {
     dnf remove --quiet --assumeyes vortex-linux
   }
-  harness=(dbus-daemon file procps-ng python3-websocket-client shadow-utils
+  harness=(dbus-daemon procps-ng python3-websocket-client shadow-utils
     util-linux xorg-x11-server-Xvfb xorg-x11-xauth)
 elif command -v zypper >/dev/null 2>&1; then
   # Release packages are not signed.
@@ -53,7 +53,7 @@ elif command -v zypper >/dev/null 2>&1; then
   }
   # Minimal openSUSE images lack the awk xvfb-run uses and the python3
   # command.
-  harness=(dbus-1-daemon file gawk procps python3-base
+  harness=(dbus-1-daemon gawk procps python3-base
     python3-websocket-client shadow util-linux xauth xvfb-run)
 else
   printf 'The test image has no supported package manager\n' >&2
@@ -74,7 +74,9 @@ case "$TEST_ARTIFACT" in
       libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 libxss1 wine wine64)
     ;;
   *.deb|*.rpm)
-    # Only the package's own hard dependencies are installed with it.
+    # The package goes in alone, with only its own hard dependencies, so the
+    # library check below sees what a user's installation gets. The harness
+    # follows afterwards.
     is_package=true
     packages=("$TEST_ARTIFACT")
     ;;
@@ -84,10 +86,56 @@ case "$TEST_ARTIFACT" in
     ;;
 esac
 
-if ! install_packages "${packages[@]}" "${harness[@]}" >"$DEPENDENCY_LOG" 2>&1; then
-  printf 'Unable to install the dependencies and the test harness\n' >&2
-  sed -n '1,240p' "$DEPENDENCY_LOG" >&2
-  exit 1
+install_or_fail() {
+  local what="$1"
+  shift
+  if ! install_packages "$@" >>"$DEPENDENCY_LOG" 2>&1; then
+    printf 'Unable to install %s\n' "$what" >&2
+    sed -n '1,240p' "$DEPENDENCY_LOG" >&2
+    exit 1
+  fi
+}
+
+if [[ "$is_package" == true ]]; then
+  install_or_fail 'the package' "${packages[@]}"
+else
+  install_or_fail 'the dependencies and the test harness' "${packages[@]}" "${harness[@]}"
+fi
+
+if [[ "$is_package" == true ]]; then
+  sandbox_mode="$(stat -c '%U:%G %a' "$VORTEX_ROOT/chrome-sandbox")"
+  if [[ "$sandbox_mode" != 'root:root 4755' ]]; then
+    printf 'chrome-sandbox is installed as %s, not setuid root\n' "$sandbox_mode" >&2
+    exit 1
+  fi
+
+  # Every library the binaries link must come from the declared dependencies,
+  # in a version this distribution has. The .NET LTTng tracing provider is
+  # optional and only loaded when LTTng is installed.
+  printf 'Checking the shared libraries of every packaged binary\n'
+  # Minimal openSUSE images have no find or file, so walk the tree in bash
+  # and look for the 64-bit ELF magic.
+  unresolved=0
+  shopt -s globstar dotglob nullglob
+  for elf_file in "$VORTEX_ROOT"/**; do
+    [[ -f "$elf_file" && ! -L "$elf_file" ]] || continue
+    [[ "$(head -c 5 -- "$elf_file" | od -An -tx1 | tr -d ' \n')" == 7f454c4602 ]] || continue
+    [[ "$elf_file" == */libcoreclrtraceptprovider.so ]] && continue
+    if ! dependencies="$(ldd "$elf_file" 2>&1)"; then
+      grep -Fq 'not a dynamic executable' <<< "$dependencies" && continue
+    fi
+    if grep -Fq 'not found' <<< "$dependencies"; then
+      printf '%s:\n%s\n' "$elf_file" "$(grep -F 'not found' <<< "$dependencies")" >&2
+      unresolved=1
+    fi
+  done
+  shopt -u globstar dotglob nullglob
+  if ((unresolved)); then
+    printf 'Packaged binaries need libraries this system does not provide\n' >&2
+    exit 1
+  fi
+
+  install_or_fail 'the test harness' "${harness[@]}"
 fi
 
 if command -v dotnet >/dev/null 2>&1; then
@@ -105,38 +153,6 @@ for command_name in "${runtime_commands[@]}"; do
     exit 1
   fi
 done
-
-if [[ "$is_package" == true ]]; then
-  sandbox_mode="$(stat -c '%U:%G %a' "$VORTEX_ROOT/chrome-sandbox")"
-  if [[ "$sandbox_mode" != 'root:root 4755' ]]; then
-    printf 'chrome-sandbox is installed as %s, not setuid root\n' "$sandbox_mode" >&2
-    exit 1
-  fi
-
-  # Every library the binaries link must come from the declared dependencies,
-  # in a version this distribution has. The .NET LTTng tracing provider is
-  # optional and only loaded when LTTng is installed.
-  printf 'Checking the shared libraries of every packaged binary\n'
-  unresolved=0
-  while IFS= read -r elf_file; do
-    [[ "$elf_file" == */libcoreclrtraceptprovider.so ]] && continue
-    if ! dependencies="$(ldd "$elf_file" 2>&1)"; then
-      grep -Fq 'not a dynamic executable' <<< "$dependencies" && continue
-    fi
-    if grep -Fq 'not found' <<< "$dependencies"; then
-      printf '%s:\n%s\n' "$elf_file" "$(grep -F 'not found' <<< "$dependencies")" >&2
-      unresolved=1
-    fi
-  done < <(
-    find "$VORTEX_ROOT" -type f -print0 \
-      | xargs -0 file --no-pad --separator '|' \
-      | sed -n 's/| ELF 64-bit .*//p'
-  )
-  if ((unresolved)); then
-    printf 'Packaged binaries need libraries this system does not provide\n' >&2
-    exit 1
-  fi
-fi
 
 # The self-test opens no window. It runs without a display because Wine 11
 # stalls while creating a prefix under Xvfb, which has no DRI3.
