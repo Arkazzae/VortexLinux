@@ -1,8 +1,8 @@
 diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
 --- a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
 +++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.test.ts
-@@ -161,3 +161,65 @@ test.runIf(process.platform === "linux")(
-     );
+@@ -211,3 +211,65 @@ test.runIf(process.platform === "linux")(
+     expect(nodeFs.readFileSync(h.inGame("D3D9.dll"), "utf8")).toBe("game");
    },
  );
 +
@@ -70,7 +70,7 @@ diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.linux.
 diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
 --- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
 +++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
-@@ -85,6 +85,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
+@@ -121,6 +121,7 @@ abstract class LinkingActivator implements IDeploymentMethod {
    private mQueue: Promise<void> = Promise.resolve();
    private mContext: IDeploymentContext;
    private mDirCache: Set<string>;
@@ -78,7 +78,7 @@ diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/s
  
    constructor(
      id: string,
-@@ -663,16 +664,23 @@ abstract class LinkingActivator implements IDeploymentMethod {
+@@ -699,16 +700,23 @@ abstract class LinkingActivator implements IDeploymentMethod {
        }
      };
  
