@@ -10,8 +10,10 @@ readonly OUTPUT_DIRECTORY="${2:-${REPOSITORY_ROOT}/dist}"
 # shellcheck source=scripts/package-common.sh
 source "$REPOSITORY_ROOT/scripts/package-common.sh"
 
-# .NET loads whichever ICU it finds.
-readonly ICU_VERSIONS=(74 75 76 77 78 79 80)
+# .NET loads whichever ICU it finds, also versions newer than it knows. List
+# sonames well past today's, so a published package still installs after a
+# distribution moves to the next ICU.
+readonly ICU_VERSIONS=({74..99})
 deb_icu="$(printf 'libicu%s | ' "${ICU_VERSIONS[@]}")"
 rpm_icu="$(printf 'libicuuc.so.%s()(64bit) or ' "${ICU_VERSIONS[@]}")"
 
