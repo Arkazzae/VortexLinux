@@ -8,8 +8,12 @@ import urllib.request
 import websocket
 
 
+# Older pages render .main-page-inner, pages redesigned in Vortex 2.10 render
+# id="page-<id>". A page that failed to render gets that id too, around
+# .render-failure.
 MAIN_PAGE = '''JSON.stringify({
-    ready: !!document.querySelector('#content .main-page-inner'),
+    ready: !!document.querySelector('#content .main-page-inner, #content [id^="page-"]')
+        && !document.querySelector('#content .render-failure'),
     text: document.querySelector('#content')?.innerText?.slice(0, 2000)
 })'''
 
