@@ -13,6 +13,9 @@ publishes a new Vortex version, taking any pending notes with it.
 - Vortex 2.10.0. Some of our Linux fixes are part of Vortex itself now
   (finding the drive a folder is on, suggesting a staging folder on a mounted
   drive), so the patches that carried them got smaller.
+- Choosing "import" for a file changed outside Vortex no longer leaves a
+  `.vortex-import` folder in the staging folder, which Vortex then offered to
+  add as a mod.
 - Native packages for Debian, Ubuntu, Fedora and openSUSE: releases now
   include `vortex-linux_<version>_amd64.deb` for Ubuntu 24.04 or newer and
   Debian 13 or newer, and `vortex-linux-<version>-x86_64.rpm` for Fedora 43 or
