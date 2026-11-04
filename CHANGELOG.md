@@ -16,6 +16,9 @@ publishes a new Vortex version, taking any pending notes with it.
 - Choosing "import" for a file changed outside Vortex no longer leaves a
   `.vortex-import` folder in the staging folder, which Vortex then offered to
   add as a mod.
+- Windows .NET programs started through Wine no longer inherit the location of
+  the Linux .NET runtime that the AppImage and the packages bring, which could
+  keep them from finding their own runtime.
 - Native packages for Debian, Ubuntu, Fedora and openSUSE: releases now
   include `vortex-linux_<version>_amd64.deb` for Ubuntu 24.04 or newer and
   Debian 13 or newer, and `vortex-linux-<version>-x86_64.rpm` for Fedora 43 or
