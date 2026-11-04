@@ -19,6 +19,10 @@ publishes a new Vortex version, taking any pending notes with it.
 - Windows .NET programs started through Wine no longer inherit the location of
   the Linux .NET runtime that the AppImage and the packages bring, which could
   keep them from finding their own runtime.
+- Game extensions that use Node's `fs` directly now find files in Documents
+  and `%APPDATA%` where Vortex's own file functions put them: in the game's
+  Proton prefix when the prefix has that folder. The Witcher 3 could not save
+  its load order (`mods.settings`) because of this.
 - Native packages for Debian, Ubuntu, Fedora and openSUSE: releases now
   include `vortex-linux_<version>_amd64.deb` for Ubuntu 24.04 or newer and
   Debian 13 or newer, and `vortex-linux-<version>-x86_64.rpm` for Fedora 43 or

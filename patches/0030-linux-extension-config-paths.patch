@@ -53,14 +53,18 @@ diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util
      for (const [index, part] of parts.entries()) {
        const exact = path.join(current, part);
        if (fs.existsSync(exact)) {
-@@ -299,6 +318,24 @@
+@@ -299,6 +318,28 @@
  }
  
  export function resolveWindowsUserPathSync(input: string): string {
 +  return resolveUserPathSync(input, false);
 +}
 +
-+/** Resolve Windows-only roots for extension filesystem calls, including the root itself. */
++/**
++ * Resolve an extension's own filesystem call to where vortex-api's fs would
++ * put it, so a file written through one is found through the other. Windows-only
++ * roots also map themselves.
++ */
 +export function resolveExtensionUserPathSync(input: string): string {
 +  return gameProvider?.() === undefined ? input : resolveUserPathSync(input, true);
 +}
@@ -78,19 +82,19 @@ diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util
    if (process.platform !== "linux" || !path.isAbsolute(input)) {
      return input;
    }
-@@ -310,9 +347,10 @@
-   const selected = gameProvider?.() !== undefined;
-   let prefixes: string[] | undefined;
+@@ -312,7 +353,10 @@
    const candidates = linuxUserPathMappings()
-+    .filter((mapping) => !extensionRoots || mapping.gameData)
      .flatMap((mapping) => {
        const relative = path.relative(mapping.linuxRoot, input);
 -      if (relative.startsWith("..") || path.isAbsolute(relative) || relative.length === 0) {
-+      if (!isPathInside(mapping.linuxRoot, input) || (!extensionRoots && relative.length === 0)) {
++      // Documents and ~/.config are Linux folders too, so only what is below
++      // them can move into the prefix.
++      const mapRoot = extensionRoots && mapping.gameData;
++      if (!isPathInside(mapping.linuxRoot, input) || (!mapRoot && relative.length === 0)) {
          return [];
        }
        const myGames = relative.split(path.sep)[0].toLowerCase() === "my games";
-@@ -320,20 +358,24 @@
+@@ -320,20 +364,24 @@
        prefixes ??= compatibilityPrefixes();
        if (prefixes === undefined) {
          if (!gameData) return [];
@@ -135,7 +139,7 @@ diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer
    resolveWindowsUserPathSync,
    setCompatibilityGameProvider,
  } from "./compatibilityPaths";
-@@ -194,4 +195,120 @@
+@@ -194,4 +195,125 @@
      resetCompatibilityPathCache();
      expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
    });
@@ -220,7 +224,7 @@ diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer
 +    },
 +  );
 +
-+  it("preserves shared host paths and Vortex data in extension operations", () => {
++  it("keeps Linux roots and Vortex data on the host in extension operations", () => {
 +    const prefix = path.join(home, "prefix");
 +    fixture(prefix);
 +    const appData = path.join(home, ".config");
@@ -232,7 +236,6 @@ diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer
 +    setCompatibilityGameProvider(() => ({ environment: { WINEPREFIX: prefix } }));
 +    for (const hostPath of [
 +      documents,
-+      path.join(documents, relative),
 +      appData,
 +      path.join(appData, "other/settings"),
 +      userData,
@@ -241,6 +244,12 @@ diff --git a/src/renderer/src/util/compatibilitySelection.test.ts b/src/renderer
 +    ]) {
 +      expect(resolveExtensionUserPathSync(hostPath)).toBe(hostPath);
 +    }
++    // A folder the prefix has goes where vortex-api's fs puts it.
++    const settings = path.join(documents, relative);
++    expect(resolveExtensionUserPathSync(settings)).toBe(
++      path.join(prefix, "drive_c/users/steamuser/Documents", relative),
++    );
++    expect(resolveExtensionUserPathSync(settings)).toBe(resolveCaseInsensitiveSync(settings));
 +  });
 +
 +  it("resolves Windows root casing before creating new configuration", () => {
@@ -406,17 +415,21 @@ diff --git a/src/renderer/src/util/extensionFs.test.ts b/src/renderer/src/util/e
 new file mode 100644
 --- /dev/null
 +++ b/src/renderer/src/util/extensionFs.test.ts
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,294 @@
 +import * as fs from "node:fs";
 +import * as os from "node:os";
 +import * as path from "node:path";
 +import { pathToFileURL } from "node:url";
 +import { promisify } from "node:util";
 +
-+import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++// @ts-expect-error -- Vitest supports virtual modules at runtime but omits this overload.
++vi.mock("original-fs", async () => import("node:fs"), { virtual: true });
 +
 +import { type CompatibilityGame, setCompatibilityGameProvider } from "./compatibilityPaths";
 +import { wrapExtensionFs } from "./extensionFs";
++import { writeFileAsync } from "./fs";
 +
 +describe.runIf(process.platform === "linux")("extension filesystem game paths", () => {
 +  let root: string;
@@ -550,7 +563,7 @@ new file mode 100644
 +    expect(fs.readFileSync(path.join(local, "settings.ini"), "utf8")).toBe("native");
 +  });
 +
-+  it("keeps Documents, shared appData, and Vortex data on the host", () => {
++  it("maps Documents and appData folders that the prefix has", () => {
 +    const extensionFs = wrapExtensionFs(fs, "fs");
 +    for (const [logical, physical] of [
 +      [
@@ -561,15 +574,51 @@ new file mode 100644
 +        path.join(root, "host", ".config", "Example"),
 +        path.join(profile, "AppData", "Roaming", "Example"),
 +      ],
-+      [process.env.VORTEX_USERDATA!, path.join(profile, "AppData", "Roaming", "Vortex")],
 +    ]) {
 +      fs.mkdirSync(physical, { recursive: true });
-+      fs.writeFileSync(path.join(physical, "settings.ini"), "prefix");
++      extensionFs.mkdirSync(logical, { recursive: true });
++      extensionFs.writeFileSync(path.join(logical, "settings.ini"), "prefix");
++      expect(fs.readFileSync(path.join(physical, "settings.ini"), "utf8")).toBe("prefix");
++      expect(fs.existsSync(logical)).toBe(false);
++    }
++  });
++
++  it("keeps the Linux roots, folders the prefix lacks, and Vortex data on the host", () => {
++    const extensionFs = wrapExtensionFs(fs, "fs");
++    const prefixVortex = path.join(profile, "AppData", "Roaming", "Vortex");
++    fs.mkdirSync(prefixVortex, { recursive: true });
++    fs.mkdirSync(path.join(profile, "Documents"), { recursive: true });
++    for (const logical of [
++      path.join(root, "host", "Documents", "Mods"),
++      path.join(root, "host", ".config", "someapp"),
++      process.env.VORTEX_USERDATA!,
++    ]) {
 +      extensionFs.mkdirSync(logical, { recursive: true });
 +      extensionFs.writeFileSync(path.join(logical, "settings.ini"), "host");
-+      expect(extensionFs.readFileSync(path.join(logical, "settings.ini"), "utf8")).toBe("host");
-+      expect(fs.readFileSync(path.join(physical, "settings.ini"), "utf8")).toBe("prefix");
++      expect(fs.readFileSync(path.join(logical, "settings.ini"), "utf8")).toBe("host");
 +    }
++    for (const hostRoot of [
++      path.join(root, "host", "Documents"),
++      path.join(root, "host", ".config"),
++    ]) {
++      expect(extensionFs.statSync(hostRoot).ino).toBe(fs.statSync(hostRoot).ino);
++    }
++    expect(fs.readdirSync(prefixVortex)).toEqual([]);
++    expect(fs.readdirSync(path.join(profile, "Documents"))).toEqual([]);
++  });
++
++  it("finds a file that vortex-api's fs wrote into the prefix's Documents", async () => {
++    // The Witcher 3 extension writes mods.settings beside the real file through
++    // vortex-api's fs and then moves it over with node:fs/promises.
++    const settings = path.join(profile, "Documents", "The Witcher 3");
++    fs.mkdirSync(settings, { recursive: true });
++    const logical = path.join(root, "host", "Documents", "The Witcher 3", "mods.settings");
++    await writeFileAsync(`${logical}.vortex_tmp`, "[Example]\nEnabled=1\n");
++    const extensionFs = wrapExtensionFs(fs.promises, "node:fs/promises");
++    await extensionFs.rename(`${logical}.vortex_tmp`, logical);
++    expect(await extensionFs.readFile(logical, "utf8")).toBe("[Example]\nEnabled=1\n");
++    expect(fs.readdirSync(settings)).toEqual(["mods.settings"]);
++    expect(fs.existsSync(path.join(root, "host", "Documents"))).toBe(false);
 +  });
 +
 +  it("maps both sides of copy, rename, hardlink, and symlink operations", async () => {
@@ -627,6 +676,12 @@ new file mode 100644
 +    expect(extensionFs.existsSync(local)).toBe(false);
 +    expect(await new Promise((resolve) => extensionFs.exists(local, resolve))).toBe(false);
 +    expect(await promisify(extensionFs.exists)(local)).toBe(false);
++    // My Games is game data too, so it never falls back to the host Documents.
++    const myGames = path.join(root, "host", "Documents", "My Games", "Example");
++    expect(() => extensionFs.mkdirSync(myGames, { recursive: true })).toThrow(/prefix/i);
++    await expect(extensionFs.promises.stat(myGames)).rejects.toMatchObject({ code: "ENOENT" });
++    expect(extensionFs.existsSync(myGames)).toBe(false);
++    expect(fs.existsSync(path.join(root, "host", "Documents"))).toBe(false);
 +  });
 +
 +  it("leaves the shared module unchanged and caches private views and methods", () => {
