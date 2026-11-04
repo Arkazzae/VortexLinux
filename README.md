@@ -44,15 +44,6 @@ Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension
 
 Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
 
-## Games tested (confirmed working)
-
-- Starfield
-- Skyrim Special Edition
-- Abiotic Factor
-- Zero Sievert
-- Baldur's Gate 3
-- Cyberpunk 2077
-
 ## Install
 
 Grab the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest). What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
