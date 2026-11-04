@@ -142,9 +142,9 @@ diff --git a/src/renderer/src/extensions/mod_management/modActivation.ts b/src/r
  import type { Normalize } from "../../util/getNormalizeFunc";
 +import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
  import { truthy } from "../../util/util";
- import { MERGED_PATH } from "./modMerging";
+ import { mergedSourceName } from "./modMerging";
  import type { IDeployedFile, IDeploymentMethod } from "./types/IDeploymentMethod";
-@@ -32,6 +36,24 @@ async function ensureWritable(api: IExtensionApi, modPath: string): Promise<void
+@@ -33,6 +37,24 @@ async function ensureWritable(api: IExtensionApi, modPath: string): Promise<void
    );
  }
  
@@ -169,7 +169,7 @@ diff --git a/src/renderer/src/extensions/mod_management/modActivation.ts b/src/r
  /**
   * activate a list of mod
   *
-@@ -66,6 +88,7 @@ async function deployMods(
+@@ -67,6 +89,7 @@ async function deployMods(
      typeId,
      installationPath,
      destinationPath,
@@ -180,7 +180,7 @@ diff --git a/src/renderer/src/extensions/mod_management/modActivation.ts b/src/r
 diff --git a/src/renderer/src/util/fs.ts b/src/renderer/src/util/fs.ts
 --- a/src/renderer/src/util/fs.ts
 +++ b/src/renderer/src/util/fs.ts
-@@ -1069,6 +1069,9 @@ export function ensureDirWritableAsync(
+@@ -1065,6 +1065,9 @@ export function ensureDirWritableAsync(
    if (confirm === undefined) {
      confirm = () => PromiseBB.resolve();
    }

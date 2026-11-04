@@ -70,26 +70,18 @@ index 611c1d771..8c338f750 100644
                  const relPathL = relPath.toLowerCase();
                  // when getDeployedPath actually renames the file it's possible to get multiple
 diff --git a/src/renderer/src/extensions/hardlink_activator/index.ts b/src/renderer/src/extensions/hardlink_activator/index.ts
-index 917490366..1b0e3e4cf 100644
+index 73c530dde..77589bedc 100644
 --- a/src/renderer/src/extensions/hardlink_activator/index.ts
 +++ b/src/renderer/src/extensions/hardlink_activator/index.ts
-@@ -5,7 +5,6 @@ import { getErrorCode, getErrorMessageOrDefault, unknownToError } from "@vortex/
- import PromiseBB from "bluebird";
- import type { TFunction } from "i18next";
- import turbowalk from "turbowalk";
--import * as winapi from "winapi-bindings";
- 
- import { setSettingsPage } from "../../actions/session";
- import { log } from "../../logging";
-@@ -14,6 +13,7 @@ import type { IGame } from "../../types/IGame";
- import type { IState } from "../../types/IState";
+@@ -14,6 +14,7 @@ import type { IState } from "../../types/IState";
  import * as fs from "../../util/fs";
+ import { getVolumePath } from "../../util/getVolumePath";
  import { installPathForGame } from "../../util/selectors";
-+import { assertPathWritable, getPathDevice, getVolumePath } from "../../util/volume";
++import { assertPathWritable, getPathDevice } from "../../util/volume";
  import type { IDiscoveryResult } from "../gamemode_management/types/IDiscoveryResult";
  import { getGame } from "../gamemode_management/util/getGame";
  import LinkingDeployment from "../mod_management/LinkingDeployment";
-@@ -84,7 +84,10 @@ class DeploymentMethod extends LinkingDeployment {
+@@ -84,7 +85,10 @@ class DeploymentMethod extends LinkingDeployment {
      }
  
      try {
@@ -101,7 +93,7 @@ index 917490366..1b0e3e4cf 100644
      } catch {
        log("info", "hardlink deployment not supported due to lack of write access", {
          typeId,
-@@ -109,7 +112,7 @@ class DeploymentMethod extends LinkingDeployment {
+@@ -109,7 +113,7 @@ class DeploymentMethod extends LinkingDeployment {
      const installationPath = installPathForGame(state, gameId);
  
      try {
@@ -110,15 +102,6 @@ index 917490366..1b0e3e4cf 100644
          // hard links work only on the same drive
          return {
            description: (t) => t("Works only if mods are installed on the same drive as the game."),
-@@ -117,7 +120,7 @@ class DeploymentMethod extends LinkingDeployment {
-           solution: (t) => {
-             let displayPath = modPaths[typeId];
-             try {
--              displayPath = winapi.GetVolumePathName(modPaths[typeId]);
-+              displayPath = getVolumePath(modPaths[typeId]);
-             } catch {
-               log("warn", "Failed to resolve volume path", {
-                 path: modPaths[typeId],
 diff --git a/src/renderer/src/extensions/mod_management/stagingDirectory.ts b/src/renderer/src/extensions/mod_management/stagingDirectory.ts
 index 21a7e5941..2aa51176a 100644
 --- a/src/renderer/src/extensions/mod_management/stagingDirectory.ts
@@ -170,10 +153,10 @@ index 21a7e5941..2aa51176a 100644
      }
    }
 diff --git a/src/renderer/src/extensions/mod_management/util/deploy.ts b/src/renderer/src/extensions/mod_management/util/deploy.ts
-index 6c6fb9c86..08ede799e 100644
+index 6a0002641..8bdbc6824 100644
 --- a/src/renderer/src/extensions/mod_management/util/deploy.ts
 +++ b/src/renderer/src/extensions/mod_management/util/deploy.ts
-@@ -152,6 +152,16 @@ export function purgeMods(
+@@ -193,6 +193,16 @@ export function purgeMods(
            });
            const deployedActivator = getActivator(manifest?.deploymentMethod);
            return purgeModsImpl(api, deployedActivator, profile);
@@ -190,56 +173,19 @@ index 6c6fb9c86..08ede799e 100644
          } else {
            return purgeModsImpl(api, undefined, profile).catch((err: unknown) => {
              // If the user is unmanaging the game and the purge was unable to find any
-diff --git a/src/renderer/src/extensions/mod_management/views/Settings.tsx b/src/renderer/src/extensions/mod_management/views/Settings.tsx
-index dfd5a6cb3..5a30b36e3 100644
---- a/src/renderer/src/extensions/mod_management/views/Settings.tsx
-+++ b/src/renderer/src/extensions/mod_management/views/Settings.tsx
-@@ -17,7 +17,6 @@ import {
- } from "react-bootstrap";
- import type * as Redux from "redux";
- import type { ThunkDispatch } from "redux-thunk";
--import * as winapi from "winapi-bindings";
- 
- import { showDialog } from "../../../actions/notifications";
- import { ComponentEx, connect, translate } from "../../../controls/ComponentEx";
-@@ -56,6 +55,7 @@ import * as selectors from "../../../util/selectors";
- import { getSafe } from "../../../util/storeHelper";
- import { cleanFailedTransfer, testPathTransfer, transferPath } from "../../../util/transferPath";
- import { ciEqual, isChildPath, isPathValid, isReservedDirectory } from "../../../util/util";
-+import { getVolumePath } from "../../../util/volume";
- import { currentGame, currentGameDiscovery } from "../../gamemode_management/selectors";
- import type { IDiscoveryResult } from "../../gamemode_management/types/IDiscoveryResult";
- import type { IGameStored } from "../../gamemode_management/types/IGameStored";
-@@ -1053,7 +1053,7 @@ class Settings extends ComponentEx<IProps, IComponentState> {
-       if (modPathStats.dev === userDataStats.dev) {
-         suggestion = path.join("{USERDATA}", "{game}", "mods");
-       } else {
--        const volume = winapi.GetVolumePathName(modPaths[""]);
-+        const volume = getVolumePath(modPaths[""]);
-         suggestion = path.join(volume, suggestInstallPathDirectory, "{game}");
-       }
-       this.changePath(suggestion);
 diff --git a/src/renderer/src/extensions/move_activator/index.ts b/src/renderer/src/extensions/move_activator/index.ts
-index 8e712f5c2..7c99e812e 100644
+index 6a1c1bd9b..ee710adad 100644
 --- a/src/renderer/src/extensions/move_activator/index.ts
 +++ b/src/renderer/src/extensions/move_activator/index.ts
-@@ -5,7 +5,6 @@ import PromiseBB from "bluebird";
- import type { TFunction } from "i18next";
- import type { IEntry } from "turbowalk";
- import turbowalk from "turbowalk";
--import * as winapi from "winapi-bindings";
- 
- import { setSettingsPage } from "../../actions/session";
- import type { IExtensionApi, IExtensionContext } from "../../types/IExtensionContext";
-@@ -13,6 +12,7 @@ import type { IGame } from "../../types/IGame";
- import { UserCanceled } from "../../util/CustomErrors";
+@@ -13,6 +13,7 @@ import { UserCanceled } from "../../util/CustomErrors";
  import * as fs from "../../util/fs";
+ import { getVolumePath } from "../../util/getVolumePath";
  import { log } from "../../util/log";
-+import { assertPathWritable, getPathDevice, getVolumePath } from "../../util/volume";
++import { assertPathWritable, getPathDevice } from "../../util/volume";
  import type { IDiscoveryResult } from "../gamemode_management/types/IDiscoveryResult";
  import { getGame } from "../gamemode_management/util/getGame";
  import type { IDeployment } from "../mod_management/LinkingDeployment";
-@@ -86,7 +86,9 @@ class DeploymentMethod extends LinkingDeployment {
+@@ -86,7 +87,9 @@ class DeploymentMethod extends LinkingDeployment {
      }
  
      try {
@@ -250,7 +196,7 @@ index 8e712f5c2..7c99e812e 100644
      } catch (err) {
        log("info", "move deployment not supported due to lack of write access", {
          typeId,
-@@ -109,7 +111,7 @@ class DeploymentMethod extends LinkingDeployment {
+@@ -109,7 +112,7 @@ class DeploymentMethod extends LinkingDeployment {
      }
  
      try {
@@ -259,20 +205,11 @@ index 8e712f5c2..7c99e812e 100644
          // actually we could support this but it would be so slow it wouldn't make sense
  
          return {
-@@ -118,7 +120,7 @@ class DeploymentMethod extends LinkingDeployment {
-           solution: (t) => {
-             let displayPath = modPaths[typeId];
-             try {
--              displayPath = winapi.GetVolumePathName(modPaths[typeId]);
-+              displayPath = getVolumePath(modPaths[typeId]);
-             } catch (err) {
-               log("warn", "Failed to resolve volume path", {
-                 path: modPaths[typeId],
 diff --git a/src/renderer/src/util/transferPath.ts b/src/renderer/src/util/transferPath.ts
-index d6553d987..afadcdc73 100644
+index dea986c24..20e2601dd 100644
 --- a/src/renderer/src/util/transferPath.ts
 +++ b/src/renderer/src/util/transferPath.ts
-@@ -1,11 +1,10 @@
+@@ -1,7 +1,7 @@
  import * as nodeFs from "fs";
  import * as path from "path";
  
@@ -281,38 +218,9 @@ index d6553d987..afadcdc73 100644
  import PromiseBB from "bluebird";
  import type { IEntry } from "turbowalk";
  import turbowalk from "turbowalk";
--import * as winapi from "winapi-bindings";
- 
- import { DOWNLOADS_DIR_TAG } from "../extensions/download_management/util/downloadDirectory";
- import { STAGING_DIR_TAG } from "../extensions/mod_management/stagingDirectory";
-@@ -14,7 +13,6 @@ import {
-   InsufficientDiskSpace,
-   NotFound,
-   ProcessCanceled,
--  UnsupportedOperatingSystem,
-   UserCanceled,
- } from "./CustomErrors";
- import * as fs from "./fs";
-@@ -22,6 +20,7 @@ import type { Normalize } from "./getNormalizeFunc";
- import getNormalizeFunc from "./getNormalizeFunc";
- import { log } from "./log";
- import { isChildPath } from "./util";
-+import { getVolumePath } from "./volume";
- 
- const MIN_DISK_SPACE_OFFSET = 512 * 1024 * 1024;
- 
-@@ -36,18 +35,12 @@ const MIN_DISK_SPACE_OFFSET = 512 * 1024 * 1024;
-  * @param destination The proposed destination folder.
-  */
- export function testPathTransfer(source: string, destination: string): PromiseBB<void> {
--  if (process.platform !== "win32") {
--    return PromiseBB.reject(new UnsupportedOperatingSystem());
--  }
--
-   let destinationRoot: string;
+@@ -39,10 +39,8 @@ export function testPathTransfer(source: string, destination: string): PromiseBB
    try {
--    destinationRoot = winapi.GetVolumePathName(destination);
-+    destinationRoot = getVolumePath(destination);
+     destinationRoot = getVolumePath(destination);
    } catch (err) {
 -    if (isErrorWithSystemCode(err)) {
 -      if (err.systemCode === 2) {
@@ -382,14 +290,16 @@ index 000000000..5a885f327
 +});
 diff --git a/src/renderer/src/util/volume.ts b/src/renderer/src/util/volume.ts
 new file mode 100644
-index 000000000..e38bcba47
+index 000000000..f04ed7b8d
 --- /dev/null
 +++ b/src/renderer/src/util/volume.ts
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,54 @@
 +import * as fs from "node:fs";
 +import * as path from "node:path";
 +
 +import * as winapi from "winapi-bindings";
++
++export { getVolumePath } from "./getVolumePath";
 +
 +export interface IDiskSpace {
 +  free: number;
@@ -424,24 +334,6 @@ index 000000000..e38bcba47
 +
 +export function getPathDevice(input: string): number {
 +  return fs.statSync(nearestExistingPath(input)).dev;
-+}
-+
-+export function getVolumePath(input: string): string {
-+  if (process.platform === "win32") {
-+    return winapi.GetVolumePathName(input);
-+  }
-+
-+  const existing = nearestExistingPath(input);
-+  let current = fs.statSync(existing).isDirectory() ? existing : path.dirname(existing);
-+  const device = fs.statSync(current).dev;
-+
-+  while (true) {
-+    const parent = path.dirname(current);
-+    if (parent === current || fs.statSync(parent).dev !== device) {
-+      return current;
-+    }
-+    current = parent;
-+  }
 +}
 +
 +export function getDiskSpace(input: string): IDiskSpace {

@@ -1,16 +1,16 @@
 diff --git a/src/renderer/src/extensions/gamebryo_plugin_management/autosort.ts b/src/renderer/src/extensions/gamebryo_plugin_management/autosort.ts
-index b37fb28..e9a144e 100644
+index 743cde6..9bb2125 100644
 --- a/src/renderer/src/extensions/gamebryo_plugin_management/autosort.ts
 +++ b/src/renderer/src/extensions/gamebryo_plugin_management/autosort.ts
-@@ -16,6 +16,7 @@ import type { IExtensionApi } from "../../types/IExtensionContext";
- import { fileMD5 } from "../../util/checksum";
+@@ -17,6 +17,7 @@ import { fileMD5 } from "../../util/checksum";
+ import { recordErrorSpan } from "../../util/errorHandling";
  import * as fs from "../../util/fs";
  import getVortexPath from "../../util/getVortexPath";
 +import { resolveCaseInsensitiveSync } from "../../util/linuxCompatibility";
  import { getSafe } from "../../util/storeHelper";
  import { batchDispatch } from "../../util/util";
  import { webpackRequireHack } from "../../util/webpack-hacks";
-@@ -39,6 +40,7 @@ import {
+@@ -40,6 +41,7 @@ import {
  } from "./util/gameSupport";
  import { isGhosted } from "./util/ghost";
  import { missingGroupFixes } from "./util/groups";
@@ -18,22 +18,25 @@ index b37fb28..e9a144e 100644
  import { lootErrorReporter, LootPhase } from "./util/LootErrorReporter";
  import { toLootError } from "./util/lootErrors";
  import { downloadMasterlist, downloadPrelude } from "./util/masterlist";
-@@ -853,11 +855,15 @@ class LootInterface {
-       loot = await getLootAsync().create(
-         this.convertGameId(gameMode, false),
-         gamePath,
--        localPath,
-+        // libloot reads plugins.txt itself, so it needs the folder inside the Proton prefix.
-+        process.platform === "linux" ? resolveCaseInsensitiveSync(localPath) : localPath,
-         "en",
-         this.logCB,
-         (modulePath, args) => this.fork(modulePath, args, () => loot?.isClosed() === true),
-       );
+@@ -873,7 +875,8 @@ class LootInterface {
+         getLootAsync().create(
+           this.convertGameId(gameMode, false),
+           gamePath,
+-          localPath,
++          // libloot reads plugins.txt itself, so it needs the folder inside the Proton prefix.
++          process.platform === "linux" ? resolveCaseInsensitiveSync(localPath) : localPath,
+           "en",
+           this.logCB,
+           (modulePath, args) =>
+@@ -883,6 +886,9 @@ class LootInterface {
+           throw new VortexError("LOOT process ended", { kind: "loot:process-died", call: "init" });
+         }),
+       ]);
 +      if (process.platform === "linux") {
 +        loot = adaptLootForLinux(loot, () => gameDataPath(gameMode));
 +      }
      } catch (rawErr) {
-       const err = toLootError(rawErr);
+       const err = rawErr instanceof VortexError ? rawErr : toLootError(rawErr);
        log("error", "failed to initialize LOOT", { kind: err.data.kind, error: err.message });
 diff --git a/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.test.ts b/src/renderer/src/extensions/gamebryo_plugin_management/util/linuxLoot.test.ts
 new file mode 100644

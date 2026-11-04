@@ -137,7 +137,7 @@ new file mode 100644
 diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
 --- a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
 +++ b/src/renderer/src/extensions/mod_management/LinkingDeployment.ts
-@@ -348,8 +348,11 @@ abstract class LinkingActivator implements IDeploymentMethod {
+@@ -376,8 +376,11 @@ abstract class LinkingActivator implements IDeploymentMethod {
      deployPath: string,
      blackList: BlacklistSet,
    ): Promise<void> {
@@ -151,7 +151,7 @@ diff --git a/src/renderer/src/extensions/mod_management/LinkingDeployment.ts b/s
          .statAsync(sourcePath)
          .then(() =>
            turbowalk(
-@@ -386,32 +389,35 @@ abstract class LinkingActivator implements IDeploymentMethod {
+@@ -414,32 +417,35 @@ abstract class LinkingActivator implements IDeploymentMethod {
              return null;
            }
            throw err;
@@ -493,7 +493,7 @@ new file mode 100644
 diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/src/extensions/mod_management/index.ts
 --- a/src/renderer/src/extensions/mod_management/index.ts
 +++ b/src/renderer/src/extensions/mod_management/index.ts
-@@ -133,6 +133,10 @@ import renderModName from "./util/modName";
+@@ -154,6 +154,10 @@ import renderModName from "./util/modName";
  import { getModSources, registerModSource } from "./util/modSource";
  import sortMods from "./util/sort";
  import { setResolvedCB } from "./util/testModReference";
@@ -504,7 +504,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
  import ActivationButton from "./views/ActivationButton";
  import DeactivationButton from "./views/DeactivationButton";
  import type { IDuplicatesMap, IRemoveDuplicateMap } from "./views/DuplicatesDialog";
-@@ -364,30 +368,6 @@ async function deployAllModTypes(
+@@ -397,30 +401,6 @@ async function deployAllModTypes(
    }
  }
  
@@ -535,7 +535,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
  function checkIncompatibilities(
    api: IExtensionApi,
    profile: IProfile,
-@@ -627,7 +607,7 @@ function deployableModTypes(modPaths: { [typeId: string]: string }) {
+@@ -667,7 +647,7 @@ function deployableModTypes(modPaths: { [typeId: string]: string }) {
    return Object.keys(modPaths).filter((typeId) => truthy(modPaths[typeId]));
  }
  
@@ -544,7 +544,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
    return (
      api: IExtensionApi,
      manual: boolean,
-@@ -685,7 +665,7 @@ function genUpdateModDeployment(installManager: InstallManager) {
+@@ -725,7 +705,7 @@ function genUpdateModDeployment(installManager: InstallManager) {
      }
      const stagingPath = installPathForGame(state, gameId);
  
@@ -553,7 +553,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
      const activator = getCurrentActivator(state, gameId, true);
  
      if (activator === undefined) {
-@@ -778,15 +758,18 @@ function genUpdateModDeployment(installManager: InstallManager) {
+@@ -818,15 +798,18 @@ function genUpdateModDeployment(installManager: InstallManager) {
                  await installManager.waitForIdle();
                }
  
@@ -578,7 +578,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
                notification.message = t("Deploying mods");
                if (showNotification) {
                  api.sendNotification(notification);
-@@ -822,6 +805,23 @@ function genUpdateModDeployment(installManager: InstallManager) {
+@@ -862,6 +845,23 @@ function genUpdateModDeployment(installManager: InstallManager) {
                  log("warn", "profile no longer found?", profileId);
                }
  
@@ -602,7 +602,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
                progress(t("Checking for external changes"), 5);
                await dealWithExternalChanges(
                  api,
-@@ -855,10 +855,6 @@ function genUpdateModDeployment(installManager: InstallManager) {
+@@ -895,10 +895,6 @@ function genUpdateModDeployment(installManager: InstallManager) {
                const deployProgress = (name, percent) =>
                  progress(t("Deploying: ") + name, 50 + percent / 2, name);
  
@@ -613,7 +613,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
                await deployAllModTypes(
                  api,
                  activator,
-@@ -907,6 +903,7 @@ function genUpdateModDeployment(installManager: InstallManager) {
+@@ -948,6 +944,7 @@ function genUpdateModDeployment(installManager: InstallManager) {
              if (err instanceof UserCanceled) {
                // nop
              } else if (err instanceof ProcessCanceled) {
@@ -621,7 +621,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
                api.sendNotification({
                  type: "warning",
                  title: "Deployment interrupted",
-@@ -1235,7 +1232,7 @@ function onModsEnabled(api: IExtensionApi, deploymentTimer: Debouncer) {
+@@ -1275,7 +1272,7 @@ function onModsEnabled(api: IExtensionApi, deploymentTimer: Debouncer) {
    };
  }
  
@@ -630,7 +630,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
    return async (gameId: string, modId: string, enable?: boolean) => {
      const state: IState = api.store.getState();
      const game = getGame(gameId);
-@@ -1253,8 +1250,19 @@ function onDeploySingleMod(api: IExtensionApi) {
+@@ -1293,8 +1290,19 @@ function onDeploySingleMod(api: IExtensionApi) {
        return;
      }
  
@@ -651,7 +651,7 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
        return;
      }
      const stagingPath: string = installPathForGame(state, gameId);
-@@ -1274,7 +1282,33 @@ function onDeploySingleMod(api: IExtensionApi) {
+@@ -1314,7 +1322,33 @@ function onDeploySingleMod(api: IExtensionApi) {
  
      const subdir = genSubDirFunc(game, getModType(mod.type));
      await withActivationLock(async () => {
@@ -685,15 +685,23 @@ diff --git a/src/renderer/src/extensions/mod_management/index.ts b/src/renderer/
          const normalize = await getDeploymentNormalizeFunc(game, discovery.path, dataPath);
          const lastActivation = await loadActivation(
            api,
-@@ -1285,6 +1319,7 @@ function onDeploySingleMod(api: IExtensionApi) {
-           activator,
-         );
-         resetDeploymentFailures(api, gameId);
-+        deploymentPrepared = true;
-         await activator.prepare(dataPath, false, lastActivation, normalize);
-         if (mod !== undefined) {
-           if (enable !== false) {
-@@ -1310,11 +1345,12 @@ function onDeploySingleMod(api: IExtensionApi) {
+@@ -1331,6 +1365,7 @@ function onDeploySingleMod(api: IExtensionApi) {
+             profile !== undefined
+               ? await doSortMods(api, profile, state.persistent.mods[gameId], VortexModId(mod.id))
+               : [];
++          deploymentPrepared = true;
+           await activateSingleMod({
+             method: activator,
+             game,
+@@ -1343,6 +1378,7 @@ function onDeploySingleMod(api: IExtensionApi) {
+             laterSources: laterStagingFolders(sorted, mod),
+           });
+         } else {
++          deploymentPrepared = true;
+           await activator.prepare(dataPath, false, lastActivation, normalize);
+           await activator.deactivate(modPath, subdir(mod), mod.installationPath);
+         }
+@@ -1358,11 +1394,12 @@ function onDeploySingleMod(api: IExtensionApi) {
          );
          reportRecordedFailures(api, gameId);
        } catch (unknownErr) {

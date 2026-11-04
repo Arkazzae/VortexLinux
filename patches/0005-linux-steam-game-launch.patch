@@ -192,10 +192,10 @@ index 0000000..7069782
 +  });
 +});
 diff --git a/src/renderer/src/util/StarterInfo.ts b/src/renderer/src/util/StarterInfo.ts
-index 976df7b..b02a209 100644
+index 0147b0d..879e6c4 100644
 --- a/src/renderer/src/util/StarterInfo.ts
 +++ b/src/renderer/src/util/StarterInfo.ts
-@@ -70,44 +70,55 @@ type OnShowErrorFunc = (
+@@ -69,44 +69,55 @@ type OnShowErrorFunc = (
    allowReport?: boolean,
  ) => void;
  
@@ -221,15 +221,15 @@ index 976df7b..b02a209 100644
 -  api: IExtensionApi,
 -): Promise<ISteamEntry | undefined> {
 -  if (process.platform === "win32") {
--    return undefined;
--  }
--  if (!isWindowsExecutable(info.exePath)) {
 +  games: ISteamEntry[],
 +  platform: NodeJS.Platform = process.platform,
 +): ISteamEntry | undefined {
 +  if (platform === "win32" || info.store !== "steam") {
      return undefined;
    }
+-  if (!isWindowsExecutable(info.exePath)) {
+-    return undefined;
+-  }
 -  if (info.store !== "steam") {
 +
 +  const candidates = [info.workingDirectory, info.exePath].filter(
@@ -278,21 +278,22 @@ index 976df7b..b02a209 100644
  }
  
  /**
-@@ -188,12 +199,7 @@ class StarterInfo implements IStarterInfo {
-           .then(() => {
-             // assuming that runThroughLauncher returns immediately on handing things off
-             // to the launcher
--            const isLinuxSteamLauncher = process.platform !== "win32" && res.launcher === "steam";
--            // Keep existing Linux Steam behavior unless running under Flatpak, where we now
--            // emulate stop events to avoid stale running state.
--            if (!isLinuxSteamLauncher || process.env.IS_FLATPAK === "true") {
--              onSpawned();
--            }
-+            onSpawned();
-             if (["hide", "hide_recover"].includes(info.onStart)) {
-               void hideWindow();
-             } else if (info.onStart === "close") {
-@@ -257,8 +263,32 @@ class StarterInfo implements IStarterInfo {
+@@ -218,13 +229,7 @@ class StarterInfo implements IStarterInfo {
+       await StarterInfo.runThroughLauncher(launcherResult.launcher, info, api, infoObj);
+       // assuming that runThroughLauncher returns immediately on handing things off
+       // to the launcher
+-      const isLinuxSteamLauncher =
+-        process.platform !== "win32" && launcherResult.launcher === "steam";
+-      // Keep existing Linux Steam behavior unless running under Flatpak, where we now
+-      // emulate stop events to avoid stale running state.
+-      if (!isLinuxSteamLauncher || process.env.IS_FLATPAK === "true") {
+-        onSpawned();
+-      }
++      onSpawned();
+       if (["hide", "hide_recover"].includes(info.onStart)) {
+         void hideWindow();
+       } else if (info.onStart === "close") {
+@@ -290,8 +295,32 @@ class StarterInfo implements IStarterInfo {
        }
      };
  

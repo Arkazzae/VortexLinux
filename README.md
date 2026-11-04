@@ -40,6 +40,8 @@ Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension
 
 2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder 🎉. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
 
+2.10.0 finds the drive a folder sits on the Linux way as well, and suggests the staging folder from it, so two more of our patches got smaller.
+
 Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
 
 ## Games tested (confirmed working)

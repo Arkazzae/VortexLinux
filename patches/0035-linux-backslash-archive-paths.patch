@@ -1,15 +1,15 @@
 diff --git a/src/renderer/src/extensions/mod_management/InstallManager.ts b/src/renderer/src/extensions/mod_management/InstallManager.ts
 --- a/src/renderer/src/extensions/mod_management/InstallManager.ts
 +++ b/src/renderer/src/extensions/mod_management/InstallManager.ts
-@@ -187,6 +187,7 @@ import type { IModInstaller, ISupportedInstaller } from "./types/IModInstaller";
+@@ -186,6 +186,7 @@ import type { IModInstaller, ISupportedInstaller } from "./types/IModInstaller";
  import type { IInstallationDetails, InstallFunc } from "./types/InstallFunc";
  import type { IReplaceChoice, ReplaceChoice } from "./types/IReplaceChoice";
  import type { ISupportedResult, ITestSupportedDetails, TestSupported } from "./types/TestSupported";
 +import { splitBackslashNames } from "./util/archivePaths";
+ import { calculateModSize } from "./util/calculate_mod_size/calculateModSize.util";
  import { getCSharpScriptAllowListForGame } from "./util/cSharpScriptAllowList";
  import gatherDependencies, {
-   findDownloadByRef,
-@@ -254,6 +255,9 @@ class InstructionGroups {
+@@ -255,6 +256,9 @@ class InstructionGroups {
  }
  
  async function buildFileList(basePath: string): Promise<string[]> {
