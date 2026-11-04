@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.10.0-1 - 2026-11-04
+
 - Vortex 2.10.0. Some of our Linux fixes are part of Vortex itself now
   (finding the drive a folder is on, suggesting a staging folder on a mounted
   drive), so the patches that carried them got smaller.
