@@ -40,7 +40,7 @@ Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension
 
 2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder 🎉. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
 
-2.10.0 finds the drive a folder sits on the Linux way as well, and suggests the staging folder from it, so two more of our patches got smaller.
+2.10.0 brings three Linux fixes of its own 🎉: Vortex finds the drive a folder sits on, so moving the staging folder and the folder it suggests work across mounted drives ([#24375](https://github.com/Nexus-Mods/Vortex/pull/24375)), it accepts installer instructions that separate folders with backslashes ([#24378](https://github.com/Nexus-Mods/Vortex/pull/24378)), and the "Handle Mod Manager Download buttons" setting (`nxm://` links) is no longer greyed out on Linux ([#24387](https://github.com/Nexus-Mods/Vortex/pull/24387)). The first one made two of our patches smaller.
 
 Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
 
