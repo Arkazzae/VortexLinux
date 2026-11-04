@@ -104,7 +104,7 @@ index 0000000..e31cf64
 +  });
 +});
 diff --git a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
-index d797474..01c61aa 100644
+index d797474..cb0965c 100644
 --- a/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
 +++ b/src/renderer/src/extensions/gamemode_management/util/getGameVersion.ts
 @@ -1,4 +1,5 @@
@@ -114,7 +114,7 @@ index d797474..01c61aa 100644
  
  import { getErrorMessageOrDefault } from "@vortex/shared";
  import { ProcessCanceled } from "@vortex/shared/errors";
-@@ -11,6 +12,101 @@ import { resolvePlatformPath } from "../../../util/nativeExecutable";
+@@ -11,6 +12,102 @@ import { resolvePlatformPath } from "../../../util/nativeExecutable";
  import type { IGame } from "../../../types/IGame";
  import type { IDiscoveryResult } from "../types/IDiscoveryResult";
  
@@ -204,10 +204,11 @@ index d797474..01c61aa 100644
 +  return bestMatch?.version;
 +}
 +
++/** The version resource; on Linux null for a placeholder, so the deps manifest can answer. */
 +function executableVersion(executablePath: string): string | null {
 +  try {
 +    const version = exeVersion(executablePath);
-+    return knownVersion(version) ? version : null;
++    return process.platform !== "linux" || knownVersion(version) ? version : null;
 +  } catch {
 +    return null;
 +  }
@@ -216,7 +217,7 @@ index d797474..01c61aa 100644
  export type GameVersionResolver = (game: IGame, discovery: IDiscoveryResult) => Promise<string>;
  
  /** The version the game extension reports through getGameVersion; null when the
-@@ -41,16 +137,23 @@ async function fromExtension(game: IGame, discovery: IDiscoveryResult): Promise<
+@@ -41,16 +138,23 @@ async function fromExtension(game: IGame, discovery: IDiscoveryResult): Promise<
    return null;
  }
  
