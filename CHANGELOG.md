@@ -10,6 +10,10 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.10.1-1 - 2026-11-05
+
+Automatic update to Vortex 2.10.1, published after the usual checks passed. Upstream commit `0514276ed038745a059cf5230b289df6b576c87d`. The Linux patches and packaging are unchanged since 2.10.0-1.
+
 ## 2.10.0-1 - 2026-11-04
 
 - Vortex 2.10.0. Some of our Linux fixes are part of Vortex itself now
