@@ -10,6 +10,18 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Game settings has a Wine tab for Windows games: it shows the prefix Vortex
+  uses and where it came from, and you can choose another folder. Vortex checks
+  that the folder is a prefix before using it. Steam, Heroic, Lutris and Bottles
+  still start their games in their own prefix, so a different folder there only
+  moves the game's INI and plugin files and where tools run. The error message
+  used to point at a button on the Dashboard that the current layout doesn't
+  have. (#22)
+- Steam games whose Proton prefix is in another Steam library than the game,
+  for example after moving the game to an SD card, no longer fail with "Wine
+  prefix is unavailable" or "Proton version is not installed". A game that really
+  has no prefix yet now gets a message asking to start it once from Steam.
+
 ## 2.10.1-1 - 2026-11-05
 
 Automatic update to Vortex 2.10.1, published after the usual checks passed. Upstream commit `0514276ed038745a059cf5230b289df6b576c87d`. The Linux patches and packaging are unchanged since 2.10.0-1.

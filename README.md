@@ -1,6 +1,7 @@
 # Vortex for Linux
 
 [![Build status](https://github.com/Arkazzae/VortexLinux/actions/workflows/upstream-compatibility.yml/badge.svg)](https://github.com/Arkazzae/VortexLinux/actions/workflows/upstream-compatibility.yml)
+[![Latest release](https://img.shields.io/github/v/release/Arkazzae/VortexLinux?label=release)](https://github.com/Arkazzae/VortexLinux/releases/latest)
 
 ![The folder Skyrim reads through Proton, C:\users\steamuser\Documents\My Games\Skyrim Special Edition, turns into the folder Vortex for Linux writes to: ~/.local/share/Steam/steamapps/compatdata/489830/pfx/drive_c/users/steamuser/Documents/My Games/Skyrim Special Edition](docs/hero.webp)
 
@@ -8,179 +9,127 @@
 
 This repo does the other thing: it patches Vortex to actually understand Linux, and builds it as a native app.
 
-## What it does
+**[Install](#install)** · [Before your first game](#before-you-add-your-first-game) · [Build it yourself](#building-from-source) · [Report a bug](#something-broken)
 
-- Finds native and Flatpak Steam libraries and selects the active game’s Proton prefix
-- Maps `Documents` / `AppData` into the right prefix, so mods and saves land where the game actually looks
-- Discovers Epic, GOG and Amazon games in native and Flatpak Heroic installations
-- Launches games through Steam or Heroic
-- Experimental: recognises Windows games installed through Lutris or Bottles, deploys into their prefix and launches them through the launcher
-- Runs Windows modding tools in the game’s Wine/Proton prefix, including calls made by extensions
-- Reads and writes Windows INI files while preserving encoding, comments and hardlinks
-- Builds Bethesda plugin management with native Linux LOOT
-- Deploys and purges hardlinked mods without leaving stale files behind
-- Resolves Windows path casing consistently and keeps staging files safe when external changes are detected
+## What works
 
-These are general Linux fixes, not per-game hacks. Game-specific Vortex extensions can still carry their own Windows-only assumptions, so some games may still need fixes.
+- **Steam**, native or Flatpak. Vortex finds your libraries and each game's Proton prefix.
+- **Heroic**, native or Flatpak, with your Epic, GOG and Amazon games.
+- **Lutris and Bottles**, as an [experiment](#lutris-and-bottles-experimental).
+- **Files land where the game looks.** `Documents` and `AppData` map into the game's prefix, so saves, INI files and plugin lists end up in the right place.
+- **Windows modding tools** such as xEdit or BodySlide run in the game's own Wine or Proton prefix.
+- **LOOT** sorts Bethesda plugins natively.
+- **Deploy and purge** use hardlinks and leave no stale files behind.
 
-### What runs where
+Vortex itself runs as a normal Linux app: the interface, downloads, FOMOD installers, deployment and LOOT. Only the Windows-only tools go through Wine.
 
-| Part | Runs as |
-|---|---|
-| Vortex itself: UI, downloads, installers, deployment | native Linux process |
-| Game discovery and launch through Steam, Heroic, Lutris, Bottles | native, through each launcher |
-| Mod deployment, INI edits, LOOT sorting, FOMOD installers | native |
-| Windows-only modding tools such as xEdit or BodySlide | the game's own Wine or Proton prefix |
-| Windows .NET runtimes those tools need | bundled, loaded through Wine |
-| Vortex's few Windows-only helpers, and tools run with no game selected | a separate Wine prefix under `~/.local/share/vortex-linux` |
+> [!NOTE]
+> These are general Linux fixes, not per-game hacks. A game's own Vortex extension can still assume Windows here and there, so some games may need a fix of their own.
 
 ## Upstream is catching up 🎉
 
-Vortex itself is slowly becoming more Linux-friendly. Since 2.7.1, the extension API's `util.epicGamesLauncher` is a shim over `GameStoreHelper` instead of `undefined` everywhere except Windows, so our Epic API fallback patch is gone 🎊.
-
-2.9.0 goes further: Vortex now builds LOOT on Linux itself, with a libloot made for Linux, so we no longer compile libloot from source and our LOOT patch shrank to fixing file name casing and the Proton folder. Reading game versions from `.exe` files is plain TypeScript now too, so it works the same on every platform.
-
-2.10.0 brings three Linux fixes of its own: Vortex finds the drive a folder sits on, so moving the staging folder and the folder it suggests work across mounted drives ([#24375](https://github.com/Nexus-Mods/Vortex/pull/24375)), it accepts installer instructions that separate folders with backslashes ([#24378](https://github.com/Nexus-Mods/Vortex/pull/24378)), and the "Handle Mod Manager Download buttons" setting (`nxm://` links) is no longer greyed out on Linux ([#24387](https://github.com/Nexus-Mods/Vortex/pull/24387)). The first one made two of our patches smaller.
-
-Every fix that lands upstream is one less patch to carry here, and the goal is for this repo to shrink.
+Vortex itself keeps getting better at Linux. Since 2.9 it builds LOOT for Linux on its own, and 2.10 fixed staging folders on mounted drives, installers that use backslashes and the greyed-out `nxm://` setting. Every fix that lands upstream is one less patch to carry here. The goal is for this repo to shrink.
 
 ## Install
 
-Grab the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest). What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+Download the file for your distribution from the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest). [CHANGELOG.md](CHANGELOG.md) says what changed.
 
-### Arch
+| Distribution | Install with |
+|---|---|
+| Arch | `sudo pacman -U ./vortex-linux-*.pkg.tar.zst` |
+| Debian 13+, Ubuntu 24.04+ | `sudo apt install ./vortex-linux_*_amd64.deb` |
+| Fedora 43+ | `sudo dnf install ./vortex-linux-*-x86_64.rpm` |
+| openSUSE Leap 16, Tumbleweed | `sudo zypper install --allow-unsigned-rpm ./vortex-linux-*-x86_64.rpm` |
+| Anything else | the [AppImage](#appimage) |
 
-```sh
-sha256sum --check vortex-linux-*.pkg.tar.zst.sha256
-sudo pacman -U ./vortex-linux-*.pkg.tar.zst
-```
+The package manager pulls in Wine and everything else Vortex needs, and Vortex shows up in your app menu. You never have to install .NET yourself. Vortex tells you when a newer release is out; install it the same way.
 
-### Debian and Ubuntu
+Every file has a `.sha256` next to it, and `sha256sum --check <file>.sha256` verifies the download. The RPM isn't signed, which is why zypper needs `--allow-unsigned-rpm`.
 
-For Ubuntu 24.04 or newer and Debian 13 or newer:
+> [!NOTE]
+> Debian 12 and Ubuntu 22.04 are too old. Vortex's FOMOD installer needs glibc 2.38, and that goes for the AppImage too.
 
-```sh
-sha256sum --check vortex-linux_*_amd64.deb.sha256
-sudo apt install ./vortex-linux_*_amd64.deb
-```
-
-apt pulls in Wine and the libraries Vortex needs, and Vortex shows up in your app menu. Like the AppImage, the package brings its own Linux .NET runtime and the Windows .NET runtimes modding tools need. To update, install the newer `.deb` the same way.
-
-Debian 12 and Ubuntu 22.04 are too old: the FOMOD installer Vortex ships needs glibc 2.38, so apt refuses the package there. The AppImage needs the same.
-
-### Fedora and openSUSE
-
-For Fedora 43 or newer, openSUSE Leap 16 and Tumbleweed:
-
-```sh
-sha256sum --check vortex-linux-*-x86_64.rpm.sha256
-sudo dnf install ./vortex-linux-*-x86_64.rpm                          # Fedora
-sudo zypper install --allow-unsigned-rpm ./vortex-linux-*-x86_64.rpm  # openSUSE
-```
-
-The package works like the Debian one: the package manager pulls in Wine and the libraries, and the .NET runtimes come with it. It isn't signed, which is why zypper needs `--allow-unsigned-rpm`; the checksum is how you verify the download.
-
-### Everything else (AppImage)
+### AppImage
 
 Install Wine from your package manager first, then:
 
 ```sh
-sha256sum --check Vortex-*.AppImage.sha256
 chmod +x Vortex-*.AppImage
 ./Vortex-*.AppImage
 ```
 
-The AppImage bundles the Linux .NET 9 runtime Vortex probes for at startup, plus the Windows .NET runtimes modding tools need, so you don't need .NET installed system-wide. Wine you do need.
+.NET is inside the AppImage, so Wine is the only thing you install yourself. Gear Lever or AppImageLauncher add it to your app menu and can update it in place (so can `appimageupdatetool`).
 
-No FUSE 2 on your system? Run it as:
+For the download buttons on Nexus Mods, turn on **Handle Mod Manager Download buttons** in Vortex's settings. Vortex then registers the AppImage for `nxm://` links and keeps that pointing at the file wherever you put it. This needs `xdg-utils`, which desktop distributions already ship.
 
-```sh
-./Vortex-*.AppImage --appimage-extract-and-run
-```
-
-AppImages don't add themselves to your app menu; Gear Lever or AppImageLauncher handle that. For Nexus Mods download links, turn on "Handle Nexus Links" in Vortex: the AppImage then registers itself as the `nxm://` handler and keeps pointing at wherever the AppImage file is. This uses `xdg-settings` from xdg-utils, which desktop distributions ship with their browsers.
-
-The AppImage embeds [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) information pointing at this repository's latest release, so Gear Lever, AppImageLauncher and `appimageupdatetool` can check for and apply updates in place. Vortex also shows a notification when a newer Linux release is published; the older builds from `recipes/` stay pinned and never update.
+> [!TIP]
+> No FUSE 2 on your system? Start it with `./Vortex-*.AppImage --appimage-extract-and-run`.
 
 ## Before you add your first game
 
-**Launch the game once through Steam or Heroic.** Proton and the game create their real config and save directories on that first run; if you point Vortex at a prefix that doesn't exist yet, nothing will line up.
+1. **Start the game once from Steam or Heroic.** That first run is when Proton creates the prefix and the game creates its config and save folders. Until they exist, Vortex has nothing to line up with.
+2. **Keep the staging folder on the same filesystem as the game.** Mods are deployed as hardlinks, and hardlinks can't cross filesystems. `Settings → Mods` suggests a folder that works.
 
-**Keep staging and the game on the same filesystem.** Hardlinks can't cross filesystems. Vortex suggests a good folder under `Settings → Mods`. If you already have mods in an old staging folder, use Vortex's transfer flow. Don't move or delete it by hand.
+> [!CAUTION]
+> Don't move or delete a staging folder that already has mods in it by hand. Change the path in `Settings → Mods` and let Vortex move the mods.
 
-The selected game determines which prefix Vortex uses. Steam’s per-game Proton
-selection takes precedence over its default selection. Heroic’s game settings
-select Wine, Proton or UMU; Flatpak tools run inside the Heroic Flatpak.
+### Which Wine prefix Vortex uses
 
-A game added by hand runs in Wine's default prefix, `$WINEPREFIX` or `~/.wine`.
-For another prefix, edit the game on the Dashboard and set `WINEPREFIX` under
-Environment Variables.
-`VORTEX_COMPAT_PREFIXES` can list additional prefixes, separated by colons, for
-lookups without a selected game. If several prefixes match, Vortex reports the
-ambiguity instead of choosing by modification time.
+The prefix follows the game you've selected: its Proton prefix on Steam, the Wine, Proton or UMU you set up in Heroic, the Lutris prefix, or the bottle. Tools run with the same Wine or Proton. A game you added by hand starts in Wine's default prefix, `$WINEPREFIX` or `~/.wine`, and Linux-native games from Heroic keep their native paths.
 
-If Heroic is an AppImage outside `PATH`, set `HEROIC_BINARY` to its executable.
-Launch it once before scanning for games. Linux-native Heroic games keep their
-native configuration paths.
+`Game settings → Wine` shows the prefix in use and lets you choose another. Steam, Heroic, Lutris and Bottles still start their games in their own prefix, so a different folder there only moves the game's INI and plugin files and where tools run.
 
-**Lutris and Bottles.** Games that use Lutris' Wine runner work
-too. If Vortex doesn't find the game by itself, set its folder manually, as it
-appears inside the Lutris prefix (also when that folder is a symlink to another
-disk). Vortex recognises that it belongs to Lutris, uses the game's Lutris
-prefix, starts it through Lutris and runs tools with the Wine version selected
-for it in Lutris. Tools need a Wine build for now; games set to Proton in Lutris
-can be deployed to and launched, but not run tools. Set `LUTRIS_BINARY` if
-`lutris` isn't on `PATH`.
+Vortex's own Windows helpers, and tools started with no game selected, use a separate prefix in `~/.local/share/vortex-linux/wineprefix`.
 
-Bottles works the same way: set the game folder inside the bottle, or the folder
-of a program you added to a bottle. Vortex uses the bottle as the prefix, starts
-a program added in Bottles through `bottles-cli`, and runs tools with the
-bottle's runner. Bottles keeps bottles by name, so rename bottles that share a
-name. Flatpak Bottles only sees folders its sandbox allows. Set
-`BOTTLES_CLI_BINARY` if `bottles-cli` isn't on `PATH`. Both are new and lightly
-tested; please report what breaks.
+A few environment variables help when Vortex can't find something:
 
-The separate prefix for Vortex’s own helper processes still defaults to
-`${XDG_DATA_HOME:-$HOME/.local/share}/vortex-linux/wineprefix`.
+| Variable | Set it when |
+|---|---|
+| `HEROIC_BINARY` | Heroic is an AppImage outside `PATH`. Open it once before Vortex scans for games. |
+| `LUTRIS_BINARY` | `lutris` isn't on `PATH` |
+| `BOTTLES_CLI_BINARY` | `bottles-cli` isn't on `PATH` |
+| `VORTEX_COMPAT_PREFIXES` | you want more prefixes searched when no game is selected (colon-separated). If several match, Vortex says so instead of guessing. |
 
-## Building from source (Arch)
+### Lutris and Bottles (experimental)
+
+Both are new and lightly tested, so please report what breaks.
+
+If Vortex doesn't find the game by itself, set its folder by hand, as it appears inside the Lutris prefix or the bottle (a symlink to another disk is fine). Vortex recognises whose game it is, uses that prefix, starts the game through the launcher and runs tools with the Wine version chosen there.
+
+- **Lutris:** tools need a Wine runner for now. Games set to Proton can be deployed to and launched, but can't run tools.
+- **Bottles:** the folder of a program you added to a bottle works too. Bottles are looked up by name, so rename any that share one. Flatpak Bottles only sees the folders its sandbox allows.
+
+## Building from source
+
+On Arch:
 
 ```sh
 git clone https://github.com/Arkazzae/VortexLinux.git
-cd vortex-linux
+cd VortexLinux
 scripts/prepare-arch-build.sh
 cd dist/arch-build
 makepkg -si
 ```
 
-The build pins Vortex to an exact upstream commit and downloads the source, Node dependencies, Electron and the Microsoft runtime files. First build is a big one.
+The build pins Vortex to an exact upstream commit and downloads its source, the Node dependencies, Electron and the Microsoft runtimes. The first build takes a while.
 
 ### Older Vortex versions
 
-We support **1.16.9** and **2.6.2** for collections that need an older Vortex,
-alongside the [latest release](https://github.com/Arkazzae/VortexLinux/releases/latest).
-Need another version? [Open an issue](https://github.com/Arkazzae/VortexLinux/issues/new)
-and tell us which version your collection needs.
+Some collections need an older Vortex, so **1.16.9** and **2.6.2** are supported next to the latest release. They stay on their version and never update. Need a different one? [Open an issue](https://github.com/Arkazzae/VortexLinux/issues/new) and say which version your collection asks for.
 
-To build one, fork this repo and run **Actions → Build a selected Vortex version**,
-then download the files from the completed run. Or build locally:
+To get one, fork this repo, run **Actions → Build a selected Vortex version** and download the files from the finished run. Or build it locally:
 
 ```sh
 python3 scripts/build-version.py --version 2.6.2
 ```
 
-You'll find the files in `dist/versions/2.6.2/artifacts/`.
+The files end up in `dist/versions/2.6.2/artifacts/`.
 
 ## How it's tested
 
-Every change goes through the same pipeline before it can become a release:
+Nothing becomes a release until CI has applied every patch to the pinned Vortex commit, run the tests and built every package. Each package is then installed in a clean container of every distribution it supports, with no system .NET, and put to work: a FOMOD install, LOOT sorting, INI writes, a hardlink purge, Windows tools through Wine. Vortex has to boot, render its main page and uninstall cleanly.
 
-1. **The patches apply.** CI checks out the pinned Vortex commit and applies every patch in order.
-2. **The tests pass.** It runs the tests that ship with the patches, typechecks the renderer, and builds and tests the native LOOT binding.
-3. **Every package builds.** The Arch package is built in a clean Arch container, and the AppImage, `.deb` and `.rpm` are built from that package.
-4. **Every package starts.** The AppImage in a clean Ubuntu 24.04 container, the `.deb` on Ubuntu 24.04, Ubuntu 26.04 and Debian 13, the `.rpm` on Fedora 43 and 44, openSUSE Leap 16 and Tumbleweed. Each container has no system .NET; the packages are installed with only their own dependencies, and their libraries are checked against the distribution. Then the bundled checks run (the .NET probe, the Windows .NET runtimes through Wine, a FOMOD install, LOOT sorting, INI writes, prefix selection, Heroic discovery, tool arguments, hardlink purge), Vortex boots under Xvfb, the main page has to render and Vortex has to find .NET from inside the app. The packages must also uninstall cleanly.
-
-### Run it yourself
+To run the same checks yourself:
 
 ```sh
 scripts/test-package.sh dist/Vortex-*.AppImage              # the AppImage check
@@ -189,15 +138,18 @@ scripts/check-upstream-compatibility.sh --ref latest --keep  # patches against t
 scripts/run-upstream-tests.sh /path/to/patched-vortex        # the test suite
 ```
 
-`--ref pinned` checks the patches against the pinned version instead, and `--keep` keeps the prepared source for the test suite.
+`--ref pinned` checks against the pinned version instead, and `--keep` keeps the prepared source for the test suite.
 
 ## Something broken?
 
-Open an issue with the game, the store, where it's installed, how to reproduce it, and the relevant chunk of `~/.config/Vortex/vortex.log`. Scrub your Nexus tokens and private download links out of the log first.
+[Open an issue](https://github.com/Arkazzae/VortexLinux/issues/new) with the game, the store, where it's installed, how to reproduce it, and the relevant part of `~/.config/Vortex/vortex.log`.
+
+> [!WARNING]
+> Remove your Nexus tokens and private download links from the log before you post it.
 
 ## Thanks
 
-Most of what got fixed here started as somebody's bug report. The people behind those reports and pull requests are listed in [THANKS.md](THANKS.md).
+Most of what got fixed here started as somebody's bug report. The people behind those reports and pull requests are in [THANKS.md](THANKS.md).
 
 ## License
 
