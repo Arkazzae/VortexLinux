@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.10.1-2 - 2026-11-09
+
 - Game settings has a Wine tab for Windows games: it shows the prefix Vortex
   uses and where it came from, and you can choose another folder. Vortex checks
   that the folder is a prefix before using it. Steam, Heroic, Lutris and Bottles
