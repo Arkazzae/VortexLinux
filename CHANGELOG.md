@@ -15,6 +15,10 @@ publishes a new Vortex version, taking any pending notes with it.
   Wine. Vortex checks that the folder is a prefix before using it. The error
   message used to point at a button on the Dashboard that the current layout
   doesn't have. (#22)
+- Steam games whose Proton prefix is in another Steam library than the game,
+  for example after moving the game to an SD card, no longer fail with "Wine
+  prefix is unavailable" or "Proton version is not installed". A game that really
+  has no prefix yet now gets a message asking to start it once from Steam.
 
 ## 2.10.1-1 - 2026-11-05
 
