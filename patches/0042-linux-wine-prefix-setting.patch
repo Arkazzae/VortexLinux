@@ -1,0 +1,307 @@
+diff --git a/src/renderer/src/extensions/gamemode_management/index.ts b/src/renderer/src/extensions/gamemode_management/index.ts
+--- a/src/renderer/src/extensions/gamemode_management/index.ts
++++ b/src/renderer/src/extensions/gamemode_management/index.ts
+@@ -37,6 +37,7 @@ import local from "../../util/local";
+ import { showError } from "../../util/message";
+ import { resolveNativeExecutable, resolvePlatformPath } from "../../util/nativeExecutable";
+ import opn from "../../util/opn";
++import { canChooseWinePrefix } from "../../util/compatibilityPaths";
+ import { activeGameId, activeProfile } from "../../util/selectors";
+ import { getSafe } from "../../util/storeHelper";
+ import { batchDispatch } from "../../util/util";
+@@ -910,6 +911,14 @@ function init(context: IExtensionContext): boolean {
+     },
+   );
+ 
++  context.registerSettings(
++    "Wine",
++    LazyComponent(() => require("./views/WinePrefixSettings")),
++    undefined,
++    () => canChooseWinePrefix(),
++    80,
++  );
++
+   context.registerDashlet(
+     "Recently Managed",
+     2,
+diff --git a/src/renderer/src/extensions/gamemode_management/views/WinePrefixSettings.tsx b/src/renderer/src/extensions/gamemode_management/views/WinePrefixSettings.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/extensions/gamemode_management/views/WinePrefixSettings.tsx
+@@ -0,0 +1,96 @@
++import { mdiFolderOpen } from "@mdi/js";
++import React, { useCallback, useContext, useEffect, useState } from "react";
++import { useTranslation } from "react-i18next";
++import { useDispatch, useSelector } from "react-redux";
++
++import { MainContext } from "@/contexts";
++import { Button } from "@/ui/components/button/Button";
++import { TextField } from "@/ui/components/form/text_field/TextField";
++
++import {
++  isWinePrefix,
++  resolvePrefixInput,
++  winePrefixParameters,
++} from "../../../util/linux/winePrefixSetting";
++import { activeGameId } from "../../../util/selectors";
++import { setGameParameters } from "../actions/settings";
++import { currentGame, currentGameDiscovery } from "../selectors";
++
++/** Lets a game added by hand run in a prefix other than Wine's default. */
++export default function WinePrefixSettings() {
++  const { t } = useTranslation(["common"]);
++  const { api } = useContext(MainContext);
++  const dispatch = useDispatch();
++  const gameId = useSelector(activeGameId);
++  const game = useSelector(currentGame);
++  const discovery = useSelector(currentGameDiscovery);
++  const saved = discovery?.environment?.WINEPREFIX ?? "";
++  const [draft, setDraft] = useState(saved);
++  const [error, setError] = useState<string | undefined>(undefined);
++
++  useEffect(() => {
++    setDraft(saved);
++    setError(undefined);
++  }, [gameId, saved]);
++
++  const apply = useCallback(
++    (input: string) => {
++      setDraft(input);
++      const clearing = input.trim() === "";
++      const prefix = clearing ? undefined : resolvePrefixInput(input);
++      // A prefix that isn't one would fail every file operation inside it, so it is never stored.
++      if (!clearing && (prefix === undefined || !isWinePrefix(prefix))) {
++        setError(t("This folder is not a Wine prefix: it has no drive_c folder."));
++        return;
++      }
++      setError(undefined);
++      if ((prefix ?? "") !== saved) {
++        dispatch(
++          setGameParameters(gameId, winePrefixParameters(discovery, game?.environment, prefix)),
++        );
++      }
++    },
++    [dispatch, discovery, game, gameId, saved, t],
++  );
++
++  const browse = useCallback(() => {
++    void api.selectDir({ defaultPath: saved || undefined }).then((selected) => {
++      if (selected !== undefined) {
++        apply(selected);
++      }
++    });
++  }, [api, apply, saved]);
++
++  return (
++    <form
++      className="space-y-2"
++      id="wine-prefix-settings"
++      onSubmit={(event) => {
++        event.preventDefault();
++        apply(draft);
++      }}
++    >
++      <TextField
++        errorMessage={error}
++        hints={t("The folder that holds this game's drive_c. Leave it empty for Wine's default.")}
++        label={t("Wine prefix")}
++        placeholder={process.env.WINEPREFIX || "~/.wine"}
++        value={draft}
++        onBlur={() => apply(draft)}
++        onChange={(event) => setDraft(event.target.value)}
++      />
++
++      <div className="flex gap-x-2">
++        <Button appearance="weak" brand="neutral" leftIconPath={mdiFolderOpen} onClick={browse}>
++          {t("Browse")}
++        </Button>
++
++        {saved !== "" && (
++          <Button appearance="weak" brand="neutral" onClick={() => apply("")}>
++            {t("Use Wine's default")}
++          </Button>
++        )}
++      </div>
++    </form>
++  );
++}
+diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
+--- a/src/renderer/src/util/compatibilityPaths.ts
++++ b/src/renderer/src/util/compatibilityPaths.ts
+@@ -89,6 +89,16 @@ function resolveGamePrefix(game: CompatibilityGame): string | null | undefined {
+   return undefined;
+ }
+ 
++/** A game added by hand runs in a prefix of the user's choosing; a launcher owns any other. */
++export function canChooseWinePrefix(game = gameProvider?.()): boolean {
++  return (
++    process.platform === "linux" &&
++    game !== undefined &&
++    !game.store &&
++    selectedGamePrefix(game) !== null
++  );
++}
++
+ /**
+  * A game added by hand has no store to ask, so it lives where plain Wine runs
+  * everything: $WINEPREFIX, or ~/.wine when that isn't set.
+diff --git a/src/renderer/src/util/linux/winePrefixSetting.test.ts b/src/renderer/src/util/linux/winePrefixSetting.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/linux/winePrefixSetting.test.ts
+@@ -0,0 +1,113 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import {
++  canChooseWinePrefix,
++  registerCompatibilityStore,
++  resetCompatibilityPathCache,
++  selectedGamePrefix,
++} from "../compatibilityPaths";
++import { isWinePrefix, resolvePrefixInput, winePrefixParameters } from "./winePrefixSetting";
++
++describe.runIf(process.platform === "linux")("Wine prefix setting", () => {
++  let root: string;
++
++  beforeEach(() => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-wine-prefix-"));
++    vi.stubEnv("HOME", root);
++    vi.stubEnv("WINEPREFIX", "");
++    resetCompatibilityPathCache();
++  });
++
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    resetCompatibilityPathCache();
++    fs.rmSync(root, { force: true, recursive: true });
++  });
++
++  const windowsGame = () => {
++    const gamePath = path.join(root, "Games/Example");
++    fs.mkdirSync(gamePath, { recursive: true });
++    fs.writeFileSync(path.join(gamePath, "Example.exe"), "MZ");
++    return { path: gamePath, executable: "Example.exe" };
++  };
++
++  it("expands the home folder and refuses relative paths", () => {
++    expect(resolvePrefixInput("~/.wine")).toBe(path.join(root, ".wine"));
++    expect(resolvePrefixInput(" $HOME/prefixes/game/ ")).toBe(path.join(root, "prefixes/game"));
++    expect(resolvePrefixInput("/mnt/prefix/")).toBe("/mnt/prefix");
++    expect(resolvePrefixInput("prefixes/game")).toBeUndefined();
++  });
++
++  it("recognises a prefix by its drive_c folder", () => {
++    expect(isWinePrefix(root)).toBe(false);
++    fs.mkdirSync(path.join(root, "drive_c"));
++    expect(isWinePrefix(root)).toBe(true);
++  });
++
++  it("keeps the game's other variables when setting and clearing the prefix", () => {
++    const set = winePrefixParameters(
++      { environment: { DXVK_HUD: "1" }, envCustomized: true },
++      { SteamAppId: "1" },
++      "/prefix",
++    );
++    expect(set).toEqual({
++      environment: { DXVK_HUD: "1", WINEPREFIX: "/prefix" },
++      envCustomized: true,
++    });
++
++    expect(winePrefixParameters(set, { SteamAppId: "1" }, undefined)).toEqual({
++      environment: { DXVK_HUD: "1" },
++      envCustomized: true,
++    });
++  });
++
++  it("starts from the extension's variables until the user customised them", () => {
++    expect(
++      winePrefixParameters({ environment: { STALE: "1" } }, { SteamAppId: "1" }, "/prefix"),
++    ).toEqual({
++      environment: { SteamAppId: "1", WINEPREFIX: "/prefix" },
++      envCustomized: true,
++    });
++  });
++
++  it("stops counting as customised once the prefix is cleared again", () => {
++    const set = winePrefixParameters({}, { SteamAppId: "1" }, "/prefix");
++    expect(winePrefixParameters(set, { SteamAppId: "1" }, undefined)).toEqual({
++      environment: { SteamAppId: "1" },
++      envCustomized: false,
++    });
++  });
++
++  it("makes the game use the chosen prefix", () => {
++    const game = windowsGame();
++    const prefix = path.join(root, "chosen");
++    expect(selectedGamePrefix(game)).toBeUndefined();
++
++    const { environment } = winePrefixParameters({}, undefined, prefix);
++
++    expect(selectedGamePrefix({ ...game, environment })).toBe(prefix);
++  });
++
++  it("offers the setting only for a Windows game no launcher owns", () => {
++    registerCompatibilityStore("test-launcher", () => undefined);
++    const game = windowsGame();
++    expect(canChooseWinePrefix(game)).toBe(true);
++    expect(canChooseWinePrefix({ ...game, store: "steam" })).toBe(false);
++    expect(canChooseWinePrefix({ ...game, store: "test-launcher" })).toBe(false);
++    expect(canChooseWinePrefix(undefined)).toBe(false);
++
++    const native = path.join(root, "Games/Native");
++    fs.mkdirSync(native);
++    fs.writeFileSync(path.join(native, "run.sh"), "#!/bin/sh\n");
++    expect(canChooseWinePrefix({ path: native, executable: "run.sh" })).toBe(false);
++  });
++
++  it("keeps the setting reachable after a prefix was chosen", () => {
++    const game = windowsGame();
++    expect(canChooseWinePrefix({ ...game, environment: { WINEPREFIX: "/gone" } })).toBe(true);
++  });
++});
+diff --git a/src/renderer/src/util/linux/winePrefixSetting.ts b/src/renderer/src/util/linux/winePrefixSetting.ts
+new file mode 100644
+--- /dev/null
++++ b/src/renderer/src/util/linux/winePrefixSetting.ts
+@@ -0,0 +1,37 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { isEqual } from "lodash";
++
++type Environment = Record<string, string>;
++
++/** The absolute folder a typed or picked value names; undefined for a relative one. */
++export function resolvePrefixInput(input: string): string | undefined {
++  const expanded = input.trim().replace(/^(?:~|\$HOME)(?=\/|$)/, os.homedir());
++  return path.isAbsolute(expanded) ? path.resolve(expanded) : undefined;
++}
++
++export function isWinePrefix(folder: string): boolean {
++  return fs.existsSync(path.join(folder, "drive_c"));
++}
++
++/**
++ * What to store for a game to use `prefix`, or Wine's default without one. The game's
++ * other variables stay, and envCustomized follows the same rule as the tool edit dialog
++ * because launching a game ignores the stored environment without it.
++ */
++export function winePrefixParameters(
++  discovery: { environment?: Environment; envCustomized?: boolean },
++  gameEnvironment: Environment | undefined,
++  prefix: string | undefined,
++): { environment: Environment; envCustomized: boolean } {
++  const original = gameEnvironment ?? {};
++  const { WINEPREFIX: _previous, ...environment } = discovery.envCustomized
++    ? (discovery.environment ?? {})
++    : original;
++  if (prefix !== undefined) {
++    environment.WINEPREFIX = prefix;
++  }
++  return { environment, envCustomized: !isEqual(environment, original) };
++}

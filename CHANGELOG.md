@@ -10,6 +10,12 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- A game added by hand can use another Wine prefix without touching
+  environment variables: open the game and pick the folder under Game settings,
+  Wine. Vortex checks that the folder is a prefix before using it. The error
+  message used to point at a button on the Dashboard that the current layout
+  doesn't have. (#22)
+
 ## 2.10.1-1 - 2026-11-05
 
 Automatic update to Vortex 2.10.1, published after the usual checks passed. Upstream commit `0514276ed038745a059cf5230b289df6b576c87d`. The Linux patches and packaging are unchanged since 2.10.0-1.

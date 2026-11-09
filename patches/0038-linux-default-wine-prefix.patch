@@ -28,7 +28,7 @@ diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util
    return Object.assign(
      new Error(
 -      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or configure its WINEPREFIX.",
-+      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or edit the game on the Dashboard and set WINEPREFIX under Environment Variables.",
++      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or choose the prefix in Game settings under Wine for a game added by hand.",
      ),
      { code: "ENOENT" },
    );
@@ -78,7 +78,7 @@ diff --git a/src/renderer/src/util/linux/gameTools.test.ts b/src/renderer/src/ut
 +    const manual = { path: path.join(root, "Games/Example"), executable: "Example.exe" };
 +    const game = path.join(manual.path, manual.executable);
 +    write(game, "MZ");
-+    await expect(resolveGameTool(game, [], {}, manual)).rejects.toThrow(/Environment Variables/);
++    await expect(resolveGameTool(game, [], {}, manual)).rejects.toThrow(/Game settings/);
 +    fs.mkdirSync(path.join(root, ".wine/drive_c"), { recursive: true });
 +    resetCompatibilityPathCache();
 +    const command = await resolveGameTool(game, [], {}, manual);
@@ -97,7 +97,7 @@ diff --git a/src/renderer/src/util/linux/gameTools.ts b/src/renderer/src/util/li
    if (!prefix || !fs.existsSync(path.join(prefix, "drive_c"))) {
      throw new Error(
 -      "The game's Wine prefix is unavailable. Launch the game once or configure WINEPREFIX for this tool.",
-+      "The game's Wine prefix is unavailable. Launch the game once, or edit the game or tool on the Dashboard and set WINEPREFIX under Environment Variables.",
++      "The game's Wine prefix is unavailable. Launch the game once, choose the prefix in Game settings under Wine for a game added by hand, or set WINEPREFIX for a tool with Edit on the Tools page.",
      );
    }
    if (game?.store === "steam") {
