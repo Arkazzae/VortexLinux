@@ -113,8 +113,10 @@ selection takes precedence over its default selection. Heroic’s game settings
 select Wine, Proton or UMU; Flatpak tools run inside the Heroic Flatpak.
 
 A game added by hand runs in Wine's default prefix, `$WINEPREFIX` or `~/.wine`.
-For another prefix, open the game in Vortex and choose it under
-`Game settings → Wine`.
+`Game settings → Wine` shows the prefix Vortex uses for a game and lets you
+choose another one. Steam, Heroic, Lutris and Bottles still start their games in
+their own prefix, so a different folder there only moves the game's INI and plugin
+files and where tools run.
 `VORTEX_COMPAT_PREFIXES` can list additional prefixes, separated by colons, for
 lookups without a selected game. If several prefixes match, Vortex reports the
 ambiguity instead of choosing by modification time.

@@ -10,11 +10,13 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
-- A game added by hand can use another Wine prefix without touching
-  environment variables: open the game and pick the folder under Game settings,
-  Wine. Vortex checks that the folder is a prefix before using it. The error
-  message used to point at a button on the Dashboard that the current layout
-  doesn't have. (#22)
+- Game settings has a Wine tab for Windows games: it shows the prefix Vortex
+  uses and where it came from, and you can choose another folder. Vortex checks
+  that the folder is a prefix before using it. Steam, Heroic, Lutris and Bottles
+  still start their games in their own prefix, so a different folder there only
+  moves the game's INI and plugin files and where tools run. The error message
+  used to point at a button on the Dashboard that the current layout doesn't
+  have. (#22)
 - Steam games whose Proton prefix is in another Steam library than the game,
   for example after moving the game to an SD card, no longer fail with "Wine
   prefix is unavailable" or "Proton version is not installed". A game that really

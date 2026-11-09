@@ -28,7 +28,7 @@ diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util
    return Object.assign(
      new Error(
 -      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or configure its WINEPREFIX.",
-+      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or choose the prefix in Game settings under Wine for a game added by hand.",
++      "The selected game's Wine/Proton user profile is unavailable. Launch the game once, or choose the prefix in Game settings under Wine.",
      ),
      { code: "ENOENT" },
    );
@@ -97,7 +97,7 @@ diff --git a/src/renderer/src/util/linux/gameTools.ts b/src/renderer/src/util/li
    if (!prefix || !fs.existsSync(path.join(prefix, "drive_c"))) {
      throw new Error(
 -      "The game's Wine prefix is unavailable. Launch the game once or configure WINEPREFIX for this tool.",
-+      "The game's Wine prefix is unavailable. Launch the game once, choose the prefix in Game settings under Wine for a game added by hand, or set WINEPREFIX for a tool with Edit on the Tools page.",
++      "The game's Wine prefix is unavailable. Launch the game once, choose the prefix in Game settings under Wine, or set WINEPREFIX for a tool with Edit on the Tools page.",
      );
    }
    if (game?.store === "steam") {
