@@ -17,5 +17,10 @@ and try the fixes. In order of appearance:
 - **lyssieth** reported mods with backslashes in their archives (#16)
 - **sevencard** reported nxm:// links not working from the AppImage (#18)
 - **pancakedevourer** reported the plain Wine prefix problem (#22)
+- **gsebos** reported `plugins.txt` landing in the Linux home instead of the
+  Proton prefix (#31)
+- **catsgomoo** showed that Steam can keep a game's Proton prefix on another
+  drive than the game, and shared the launch options for starting Vortex from
+  Steam (#22)
 
 Found something? [Open an issue](https://github.com/Arkazzae/VortexLinux/issues/new).
