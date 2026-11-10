@@ -65,6 +65,18 @@ For the download buttons on Nexus Mods, turn on **Handle Mod Manager Download bu
 > [!TIP]
 > No FUSE 2 on your system? Start it with `./Vortex-*.AppImage --appimage-extract-and-run`.
 
+### Steam Deck and launching from Steam
+
+On the Steam Deck, set Vortex up in desktop mode. Gear Lever from Discover adds the AppImage to the app menu.
+
+To start Vortex from Steam, add it as a non-Steam game and set its launch options to:
+
+```
+LD_PRELOAD= %command% --no-sandbox
+```
+
+Users report that Vortex doesn't start from Steam without these, with both the AppImage and the RPM. The empty `LD_PRELOAD` keeps Steam's overlay out of Vortex. `--no-sandbox` turns off Chromium's sandbox, so only use it for launching from Steam.
+
 ## Before you add your first game
 
 1. **Start the game once from Steam or Heroic.** That first run is when Proton creates the prefix and the game creates its config and save folders. Until they exist, Vortex has nothing to line up with.
