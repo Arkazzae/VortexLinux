@@ -89,7 +89,13 @@ Users report that Vortex doesn't start from Steam without these, with both the A
 
 The prefix follows the game you've selected: its Proton prefix on Steam, the Wine, Proton or UMU you set up in Heroic, the Lutris prefix, or the bottle. Tools run with the same Wine or Proton. A game you added by hand starts in Wine's default prefix, `$WINEPREFIX` or `~/.wine`, and Linux-native games from Heroic keep their native paths.
 
-`Game settings → Wine` shows the prefix in use and lets you choose another. Steam, Heroic, Lutris and Bottles still start their games in their own prefix, so a different folder there only moves the game's INI and plugin files and where tools run.
+To use a different prefix:
+
+1. Open the game in Vortex and click **Game settings** in the sidebar.
+2. Open the **Wine** tab. It shows the prefix in use and where Vortex found it.
+3. Type the folder, or pick it with **Browse**. It must contain `drive_c`. For a Steam game, use the `pfx` folder inside the game's `compatdata` folder.
+
+**Use detected prefix** switches back. Steam, Heroic, Lutris and Bottles still start their games in their own prefix, so a different folder there only moves the game's INI and plugin files and where tools run.
 
 Vortex's own Windows helpers, and tools started with no game selected, use a separate prefix in `~/.local/share/vortex-linux/wineprefix`.
 
