@@ -88,7 +88,7 @@ index d3358aa..9d5578b 100644
  
      for (let idx = 0; idx < mods.length; idx++) {
 diff --git a/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts b/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts
-index e1173be..2939a5a 100644
+index 971a8dc..8d173cb 100644
 --- a/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts
 +++ b/src/renderer/src/extensions/mod_management/util/externalChanges.test.ts
 @@ -1,4 +1,4 @@
@@ -97,9 +97,9 @@ index e1173be..2939a5a 100644
  import * as path from "node:path";
  
  import {
-@@ -24,7 +24,12 @@ import {
- } from "../../../test-utils/externalChangesTest";
+@@ -25,7 +25,12 @@ import {
  import { MERGED_PATH } from "../modMerging";
+ import type { IMod } from "../types/IMod";
  import { deployedFilePath } from "./deployedFilePath";
 -import { changesBySource, changeToEntry, dealWithExternalChanges } from "./externalChanges";
 +import {
@@ -111,7 +111,7 @@ index e1173be..2939a5a 100644
  
  vi.mock("../../../logging", () => {
    const log = vi.fn();
-@@ -104,6 +109,67 @@ describe("changeToEntry", () => {
+@@ -105,6 +110,65 @@ describe("changeToEntry", () => {
  
      expect(changeToEntry("", change, existing).action).toBe("drop");
    });
@@ -158,9 +158,7 @@ index e1173be..2939a5a 100644
 +    expect(readdirSync(h.stagingPath)).toEqual([MOD_A_FOLDER]);
 +  });
 +
-+  test("keeps the staged file when the deployed file is gone", async ({
-+    makeExternalChanges,
-+  }) => {
++  test("keeps the staged file when the deployed file is gone", async ({ makeExternalChanges }) => {
 +    const h = await makeExternalChanges([], MODS_WITH_A);
 +    await h.stageFile(MOD_A_FOLDER, "plugin.esp");
 +

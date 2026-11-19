@@ -10,6 +10,10 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Update to Vortex 2.11.0 and use its Linux dashboard disk-space support.
+- Keep download recovery and Linux release notifications working with the new upstream code.
+- Build native modules against the Electron version in the upstream dependency catalog.
+
 ## 2.10.1-2 - 2026-11-09
 
 - Game settings has a Wine tab for Windows games: it shows the prefix Vortex

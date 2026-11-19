@@ -26,10 +26,10 @@ diff --git a/src/renderer/src/extensions/gamemode_management/index.ts b/src/rend
      2,
 diff --git a/src/renderer/src/extensions/gamemode_management/views/WinePrefixSettings.tsx b/src/renderer/src/extensions/gamemode_management/views/WinePrefixSettings.tsx
 new file mode 100644
+index 0000000..1dc6ebb
 --- /dev/null
 +++ b/src/renderer/src/extensions/gamemode_management/views/WinePrefixSettings.tsx
-@@ -0,0 +1,167 @@
-+import { mdiFolderOpen } from "@mdi/js";
+@@ -0,0 +1,166 @@
 +import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 +import { useTranslation } from "react-i18next";
 +import { useDispatch, useSelector } from "react-redux";
@@ -183,7 +183,7 @@ new file mode 100644
 +      />
 +
 +      <div className="flex gap-x-2">
-+        <Button appearance="weak" brand="neutral" leftIconPath={mdiFolderOpen} onClick={browse}>
++        <Button appearance="weak" brand="neutral" leftIcon="folder_open" onClick={browse}>
 +          {t("Browse")}
 +        </Button>
 +

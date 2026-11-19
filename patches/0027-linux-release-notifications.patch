@@ -132,20 +132,20 @@ index 528ef05..9342487 100644
      const channel = this.props.updateChannel === "none" ? "stable" : this.props.updateChannel;
      window.api.updater.checkForUpdates(channel, true);
 diff --git a/src/renderer/src/extensions/updater/index.ts b/src/renderer/src/extensions/updater/index.ts
-index f6fb7b2..bd6aa43 100644
+index afc79ea..119e39e 100644
 --- a/src/renderer/src/extensions/updater/index.ts
 +++ b/src/renderer/src/extensions/updater/index.ts
-@@ -4,6 +4,8 @@ import type { IExtensionContext } from "../../types/IExtensionContext";
+@@ -5,6 +5,8 @@ import type { IExtensionContext } from "../../types/IExtensionContext";
  import { toUpdateChannel } from "../../types/IState";
  import { getApplication } from "../../util/application";
- import { setUpdaterSnapshot } from "./actions";
+ import { setUpdaterSnapshot, setWhatsNew } from "./actions";
 +import { LINUX_PACKAGE_VERSION } from "./linuxBuild";
 +import { initLinuxReleaseNotifications } from "./linuxRelease";
  import settingsReducer, { sessionReducer } from "./reducers";
  import SettingsUpdate from "./SettingsUpdate";
  import { createUpdaterAnalytics, isTransition } from "./updaterAnalytics";
-@@ -44,6 +46,10 @@ function init(context: IExtensionContext): boolean {
-   context.registerSettings("Vortex", SettingsUpdate);
+@@ -53,6 +55,10 @@ function init(context: IExtensionContext): boolean {
+   }));
  
    context.once(() => {
 +    if (process.platform === "linux" && LINUX_PACKAGE_VERSION !== "") {
@@ -165,10 +165,10 @@ index 0000000..b1499fe
 +export const LINUX_PACKAGE_VERSION: string = "";
 diff --git a/src/renderer/src/extensions/updater/linuxRelease.test.ts b/src/renderer/src/extensions/updater/linuxRelease.test.ts
 new file mode 100644
-index 0000000..905e57c
+index 0000000..080579f
 --- /dev/null
 +++ b/src/renderer/src/extensions/updater/linuxRelease.test.ts
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,247 @@
 +import { EventEmitter } from "node:events";
 +
 +import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -295,6 +295,7 @@ index 0000000..905e57c
 +      api,
 +      registerReducer: vi.fn(),
 +      registerSettings: vi.fn(),
++      registerDialog: vi.fn(),
 +      once: (callback: () => void) => callbacks.push(callback),
 +    } as unknown as IExtensionContext;
 +    const originalPlatform = process.platform;

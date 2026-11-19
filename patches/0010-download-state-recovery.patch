@@ -1,10 +1,10 @@
 diff --git a/src/renderer/src/IPCDownloadAdapter.ts b/src/renderer/src/IPCDownloadAdapter.ts
-index 37ba7c2..c394b60 100644
+index 9022403..42861df 100644
 --- a/src/renderer/src/IPCDownloadAdapter.ts
 +++ b/src/renderer/src/IPCDownloadAdapter.ts
-@@ -139,6 +139,11 @@ type ActiveDownload = {
-   callback?: (err: Error | null, id?: string) => void;
-   fileNameHint?: string;
+@@ -148,6 +148,11 @@ type ActiveDownload = {
+   // what to do when the final name is another record's archive; unset (resumes) keeps both
+   redownload?: RedownloadMode;
    allowInstall?: boolean;
 +  rawUrls?: string[];
 +  modInfo?: ModInfo;
@@ -14,14 +14,13 @@ index 37ba7c2..c394b60 100644
    lastBytesReceived: number;
    lastProgressDispatch: number;
    startedEventEmitted: boolean;
-@@ -439,8 +444,50 @@ export class IPCDownloadAdapter {
+@@ -498,9 +503,51 @@ export class IPCDownloadAdapter {
      wireState: WireDownloadState,
      activeDownload?: ActiveDownload,
    ): Promise<void> {
 -    const reduxState = this.#api.getState();
--    const download = reduxState.persistent.downloads.files?.[downloadId];
 +    let reduxState = this.#api.getState();
-+    let download = reduxState.persistent.downloads.files?.[downloadId];
+     let download = reduxState.persistent.downloads.files?.[downloadId];
 +
 +    // A game setup failure can roll its state branch back while a community
 +    // extension's download is still active. The main process still completes
@@ -66,8 +65,9 @@ index 37ba7c2..c394b60 100644
 +    }
  
      if (download?.localPath !== undefined) {
-       const gameId = toInternalGameId(this.#api, download.game?.[0] ?? activeGameId(reduxState));
-@@ -592,14 +639,19 @@ export class IPCDownloadAdapter {
+       const dlPath = this.#downloadFolder(reduxState, download);
+       const tempPath = path.join(dlPath, download.localPath);
+@@ -700,15 +747,20 @@ export class IPCDownloadAdapter {
  
        const allowInstall = normalizeAllowInstall(options?.allowInstall);
  
@@ -75,6 +75,7 @@ index 37ba7c2..c394b60 100644
 +      const activeDownload: ActiveDownload = {
          callback,
          fileNameHint: fileName,
+         redownload: effectiveRedownload,
          allowInstall,
 +        rawUrls,
 +        modInfo,
@@ -89,7 +90,7 @@ index 37ba7c2..c394b60 100644
        log("debug", "download queued", { downloadId, collationId });
  
        // Create the Redux record. nexus_integration's onChangeDownloads watches
-@@ -621,6 +673,7 @@ export class IPCDownloadAdapter {
+@@ -730,6 +782,7 @@ export class IPCDownloadAdapter {
        // attributeExtractors and collection install plumbing read from.
        const resolvedMeta = this.#resolvedMeta.get(collationId);
        this.#resolvedMeta.delete(collationId);
@@ -97,7 +98,7 @@ index 37ba7c2..c394b60 100644
  
        if (resolvedMeta !== undefined) {
          const flattened = flatten(resolvedMeta) as Record<string, unknown>;
-@@ -880,6 +933,10 @@ export class IPCDownloadAdapter {
+@@ -994,6 +1047,10 @@ export class IPCDownloadAdapter {
        this.#activeDownloads.set(downloadId, {
          callback,
          allowInstall,
