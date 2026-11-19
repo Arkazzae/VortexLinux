@@ -10,6 +10,8 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+## 2.11.0-1 - 2026-11-19
+
 - Update to Vortex 2.11.0 and use its Linux dashboard disk-space support.
 - Keep download recovery and Linux release notifications working with the new upstream code.
 - Build native modules against the Electron version in the upstream dependency catalog.
