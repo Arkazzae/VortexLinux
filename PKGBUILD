@@ -232,6 +232,19 @@ sha512sums=(
   '58e243f490e09b00ef8c20d7c3dc06d0385aa4180b359eeb4ae8924ad1300fd19ec96c10e3989a96c4ce0076cf38e639bfb2b909baace73864dac28d64cdf9fc'
 )
 
+_configure_electron_build() {
+  local electron_version
+  electron_version="$(sed -nE 's/^  electron: ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' pnpm-workspace.yaml)"
+  if [[ ! "$electron_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf 'Unable to determine the Electron version from the upstream pnpm catalog\n' >&2
+    return 1
+  fi
+
+  export npm_config_runtime='electron'
+  export npm_config_target="$electron_version"
+  export npm_config_disturl='https://electronjs.org/headers'
+}
+
 prepare() {
   cd "$srcdir/vortex"
 
@@ -260,9 +273,7 @@ fs.writeFileSync(
 );
 NODE
 
-  export npm_config_runtime='electron'
-  export npm_config_target='44.2.0'
-  export npm_config_disturl='https://electronjs.org/headers'
+  _configure_electron_build
   # pnpm builds native addons in parallel, and each node-gyp process would
   # otherwise download and extract the Electron headers into the same cache
   # directory at once, letting some read a partially written common.gypi.
@@ -283,9 +294,7 @@ build() {
   export NODE_ENV='production'
   export NO_PARALLEL=1
   export VORTEX_SKIP_SUBMODULES=1
-  export npm_config_runtime='electron'
-  export npm_config_target='44.2.0'
-  export npm_config_disturl='https://electronjs.org/headers'
+  _configure_electron_build
 
   pnpm run build
 
@@ -322,9 +331,6 @@ build() {
     cd "$leveldown_dir"
     CFLAGS="$leveldown_cflags" \
       CXXFLAGS="$leveldown_cflags -Wp,-D_GLIBCXX_ASSERTIONS" \
-      npm_config_runtime='electron' \
-      npm_config_target='44.2.0' \
-      npm_config_disturl='https://electronjs.org/headers' \
       "$srcdir/vortex/src/main/dist/node_modules/.bin/node-gyp" rebuild
   )
   if [[ ! -f "$leveldown_build" || ! -f "$leveldown_prebuild" ]]; then
