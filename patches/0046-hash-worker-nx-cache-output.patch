@@ -1,0 +1,12 @@
+diff --git a/src/main/package.json b/src/main/package.json
+--- a/src/main/package.json
++++ b/src/main/package.json
+@@ -78,6 +78,8 @@
+           "{projectRoot}/build/main.cjs.map",
+           "{projectRoot}/build/bsdiff-worker.cjs",
+           "{projectRoot}/build/bsdiff-worker.cjs.map",
++          "{projectRoot}/build/hash-worker.cjs",
++          "{projectRoot}/build/hash-worker.cjs.map",
+           "{projectRoot}/build/hdiffz.wasm",
+           "{projectRoot}/build/LICENSE-HDiffPatch.txt",
+           "{projectRoot}/build/LICENSE-bzip2.txt"
