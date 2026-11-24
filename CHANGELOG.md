@@ -14,6 +14,9 @@ publishes a new Vortex version, taking any pending notes with it.
   the Proton prefix, such as Baldur's Gate 3, when the staging folder is on the
   same drive as the prefix. The suggested staging folder is on that drive too.
   (#37)
+- Baldur's Gate 3 mods that keep their Generated, Public or Data folder inside
+  another folder, such as Upscaled Tattoos and Makeup, no longer end with
+  "Installation canceled". (#38)
 
 ## 2.11.0-1 - 2026-11-19
 
