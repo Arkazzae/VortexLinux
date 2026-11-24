@@ -10,6 +10,11 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Hardlink and move deployment no longer refuse games that put their mods in
+  the Proton prefix, such as Baldur's Gate 3, when the staging folder is on the
+  same drive as the prefix. The suggested staging folder is on that drive too.
+  (#37)
+
 ## 2.11.0-1 - 2026-11-19
 
 - Update to Vortex 2.11.0 and use its Linux dashboard disk-space support.
