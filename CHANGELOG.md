@@ -17,6 +17,8 @@ publishes a new Vortex version, taking any pending notes with it.
 - Baldur's Gate 3 mods that keep their Generated, Public or Data folder inside
   another folder, such as Upscaled Tattoos and Makeup, no longer end with
   "Installation canceled". (#38)
+- Building the package again for the same Vortex version no longer leaves out
+  the hash worker, which made archives added by hand fail to hash. (#39)
 
 ## 2.11.0-1 - 2026-11-19
 
