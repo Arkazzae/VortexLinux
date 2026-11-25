@@ -10,6 +10,9 @@ publishes a new Vortex version, taking any pending notes with it.
 
 ## Unreleased
 
+- Skyrim Special Edition and other Gamebryo games now open and list saves in the
+  selected Wine or Proton prefix. This also covers profile-specific saves. (#40)
+
 ## 2.11.0-1 - 2026-11-19
 
 - Update to Vortex 2.11.0 and use its Linux dashboard disk-space support.

@@ -1,0 +1,274 @@
+diff --git a/extensions/gamebryo-savegame-management/src/index.ts b/extensions/gamebryo-savegame-management/src/index.ts
+index 6971724..2879343 100644
+--- a/extensions/gamebryo-savegame-management/src/index.ts
++++ b/extensions/gamebryo-savegame-management/src/index.ts
+@@ -24,7 +24,7 @@ import {
+   mygamesPath,
+   saveFiles,
+ } from "./util/gameSupport";
+-import { profileSavePath } from "./util/profileSavePath";
++import { profileSavePath, resolveSaveDirectory } from "./util/profileSavePath";
+ import { refreshSavegames } from "./util/refreshSavegames";
+ import restoreSavegamePlugins, { MissingPluginsError } from "./util/restoreSavegamePlugins";
+ import transferSavegames from "./util/transferSavegames";
+@@ -42,7 +42,7 @@ function applySaveSettings(
+   }
+   // TODO: we should provide a way for the user to set his own
+   //   save path without overwriting it
+-  iniFile.data.General.SLocalSavePath = savePath;
++  iniFile.data.General.SLocalSavePath = savePath.replaceAll("/", "\\");
+ 
+   const { store } = api;
+   store.dispatch(setSavegamePath(savePath));
+@@ -156,17 +156,18 @@ function openSavegamesDirectory(api: types.IExtensionApi, profileId?: string) {
+     profileId = selectors.activeProfile(state).id;
+   }
+   const profile = state.persistent.profiles[profileId];
+-  const hasLocalSaves = util.getSafe(profile, ["features", "local_saves"], false);
+-  const profileSavesPath = hasLocalSaves
+-    ? path.join(mygamesPath(profile.gameId), "Saves", profile.id)
+-    : path.join(mygamesPath(profile.gameId), "Saves");
+-  fs.ensureDirAsync(profileSavesPath)
+-    .then(() => util.opn(profileSavesPath))
+-    .catch((err) =>
+-      api.showErrorNotification("Failed to open savegame directory", err, {
+-        allowReport: (err as any).code !== "ENOENT",
+-      }),
+-    );
++  return openSaveDirectory(api, getSavesPath(profile), true);
++}
++
++async function openSaveDirectory(api: types.IExtensionApi, savesPath: string, create = false) {
++  try {
++    if (create) await fs.ensureDirAsync(savesPath);
++    await util.opn(await resolveSaveDirectory(savesPath));
++  } catch (err) {
++    api.showErrorNotification("Failed to open savegame directory", err, {
++      allowReport: (err as any).code !== "ENOENT",
++    });
++  }
+ }
+ 
+ interface IExtensionContextExt extends types.IExtensionContext {
+@@ -301,7 +302,7 @@ function once(context: types.IExtensionContext, update: util.Debouncer) {
+               {
+                 label: "Open Directory",
+                 action: () => {
+-                  util.opn(savesPath);
++                  void openSaveDirectory(context.api, savesPath);
+                 },
+               },
+             ],
+diff --git a/extensions/gamebryo-savegame-management/src/util/profileSavePath.ts b/extensions/gamebryo-savegame-management/src/util/profileSavePath.ts
+index 307256a..1feeecc 100644
+--- a/extensions/gamebryo-savegame-management/src/util/profileSavePath.ts
++++ b/extensions/gamebryo-savegame-management/src/util/profileSavePath.ts
+@@ -1,3 +1,4 @@
++import { realpath } from "node:fs/promises";
+ import * as path from "path";
+ 
+ import { types, util } from "@nexusmods/vortex-api";
+@@ -18,3 +19,9 @@ export function profileSavePath(profile: types.IProfile, forceGlobal: boolean =
+       : "Saves" + path.sep;
+   }
+ }
++
++// The extension filesystem maps My Games into the selected Wine prefix. The
++// desktop opener and turbowalk need the resulting on-disk directory.
++export async function resolveSaveDirectory(savesPath: string): Promise<string> {
++  return process.platform === "linux" ? realpath(savesPath) : savesPath;
++}
+diff --git a/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts b/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts
+index 703a42a..4a9044c 100644
+--- a/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts
++++ b/extensions/gamebryo-savegame-management/src/util/refreshSavegames.ts
+@@ -6,6 +6,7 @@ import turbowalk, { IEntry } from "turbowalk";
+ import { CORRUPTED_NAME, MAX_SAVEGAMES } from "../constants";
+ import { parseSaveGame } from "../savegame/GamebryoSaveGame";
+ import { ISavegame } from "../types/ISavegame";
++import { resolveSaveDirectory } from "./profileSavePath";
+ 
+ // TODO essentially disables cache clearing since we can as many screenshots as the max of
+ // savegames we will display.
+@@ -58,13 +59,16 @@ export function refreshSavegames(
+   let truncated = false;
+   let saves: IEntry[] = [];
+ 
+-  return turbowalk(
+-    savesPath,
+-    (entries) => {
+-      saves = saves.concat(entries.filter((file) => isSavegame(file)));
+-    },
+-    { recurse: false },
+-  )
++  return Promise.resolve(resolveSaveDirectory(savesPath))
++    .then((directory) =>
++      turbowalk(
++        directory,
++        (entries) => {
++          saves = saves.concat(entries.filter((file) => isSavegame(file)));
++        },
++        { recurse: false },
++      ),
++    )
+     .catch((err) =>
+       ["ENOENT", "ENOTFOUND"].indexOf(err.code) !== -1 ? Promise.resolve() : Promise.reject(err),
+     )
+diff --git a/extensions/gamebryo-savegame-management/test/saveDirectory.linux.test.ts b/extensions/gamebryo-savegame-management/test/saveDirectory.linux.test.ts
+new file mode 100644
+index 0000000..dcd7a15
+--- /dev/null
++++ b/extensions/gamebryo-savegame-management/test/saveDirectory.linux.test.ts
+@@ -0,0 +1,152 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { setCompatibilityGameProvider } from "../../../src/renderer/src/util/compatibilityPaths";
++import { wrapExtensionFs } from "../../../src/renderer/src/util/extensionFs";
++import { resolveCaseInsensitiveSync } from "../../../src/renderer/src/util/linuxCompatibility";
++import init from "../src/index";
++
++vi.mock("../src/views/SavegameList", () => ({ default: {} }));
++// Vortex gives bundled extensions a prefix-aware view of Node's filesystem.
++vi.mock("node:fs/promises", async () => ({
++  realpath: wrapExtensionFs(fs.promises, "node:fs/promises").realpath,
++}));
++
++const open = vi.fn();
++vi.mock("@nexusmods/vortex-api", async () => ({
++  log: vi.fn(),
++  fs: {
++    ensureDirAsync: (dir: string) =>
++      fs.promises.mkdir(resolveCaseInsensitiveSync(dir), { recursive: true }),
++  },
++  util: {
++    opn: (dir: string) => open(dir),
++    getVortexPath: () => process.env.VORTEX_LINUX_DOCUMENTS,
++    getSafe: (await import("lodash")).default.get,
++    makeOverlayableDictionary: (games) => ({ ...games, get: (id, key) => games[id][key] }),
++    Debouncer: class {
++      schedule = vi.fn();
++    },
++  },
++  selectors: { activeProfile: (state) => state.persistent.profiles.test },
++}));
++
++describe.runIf(process.platform === "linux")("Skyrim SE save directories", () => {
++  let root: string;
++  let prefix: string;
++  let saves: string;
++  let hostSaves: string;
++  const profile = { id: "test", gameId: "skyrimse", features: { local_saves: false } };
++  const getState = () => ({ persistent: { profiles: { test: profile } } });
++  const api = {
++    getState,
++    store: { getState, dispatch: vi.fn() },
++    showErrorNotification: vi.fn(),
++    setStylesheet: vi.fn(),
++    onStateChange: vi.fn(),
++    onAsync: vi.fn(),
++    events: { on: vi.fn() },
++  };
++  const once = vi.fn();
++  const registerAction = vi.fn();
++  const registerMainPage = vi.fn();
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    profile.features.local_saves = false;
++    root = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-skyrim-saves-"));
++    const steam = path.join(root, "SteamLibrary/steamapps");
++    const game = path.join(steam, "common/Skyrim Special Edition");
++    fs.mkdirSync(game, { recursive: true });
++    fs.writeFileSync(
++      path.join(steam, "appmanifest_489830.acf"),
++      '"AppState"\n{\n"appid" "489830"\n"installdir" "Skyrim Special Edition"\n}',
++    );
++    prefix = path.join(steam, "compatdata/489830/pfx");
++    const relative = "My Games/Skyrim Special Edition/Saves";
++    saves = path.join(prefix, "drive_c/users/steamuser/Documents", relative);
++    hostSaves = path.join(root, "Documents", relative);
++    fs.mkdirSync(saves, { recursive: true });
++    vi.stubEnv("VORTEX_LINUX_DOCUMENTS", path.join(root, "Documents"));
++    vi.stubEnv("XDG_DATA_HOME", path.join(root, ".local/share"));
++    setCompatibilityGameProvider(() => ({ store: "steam", path: game }));
++    init({
++      api,
++      registerAction,
++      registerMainPage,
++      registerReducer: vi.fn(),
++      registerProfileFeature: vi.fn(),
++      once,
++    } as unknown as Parameters<typeof init>[0]);
++  });
++
++  afterEach(() => {
++    setCompatibilityGameProvider(undefined);
++    vi.unstubAllGlobals();
++    vi.unstubAllEnvs();
++    fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  const openAction = (group: string) =>
++    registerAction.mock.calls.find(
++      ([where, , , , name]) => where === group && name === "Open Save Games",
++    )![5];
++
++  it("opens the detected Proton save folder and creates new profile folders there", async () => {
++    openAction("savegames-icons")();
++    await vi.waitFor(() => expect(open).toHaveBeenLastCalledWith(saves));
++    profile.features.local_saves = true;
++    openAction("profile-actions")([profile.id]);
++    await vi.waitFor(() => expect(open).toHaveBeenLastCalledWith(path.join(saves, profile.id)));
++    expect(fs.statSync(path.join(saves, profile.id)).isDirectory()).toBe(true);
++    expect(fs.existsSync(hostSaves)).toBe(false);
++  });
++
++  it("lists the prefix saves even when the host has a stale copy", async () => {
++    profile.features.local_saves = true;
++    fs.mkdirSync(hostSaves, { recursive: true });
++    fs.writeFileSync(path.join(hostSaves, "host.ess"), "stale");
++    const fixture = path.join(__dirname, "saves/skyrimse/skyrimse_1.ess");
++    fs.copyFileSync(fixture, path.join(saves, "global.ess"));
++    const { onLoadSaves } = registerMainPage.mock.calls[0][3].props();
++    expect(await onLoadSaves("__global")).toMatchObject([
++      { filePath: path.join(saves, "global.ess") },
++    ]);
++    expect(await onLoadSaves(profile.id)).toEqual([]);
++    fs.mkdirSync(path.join(saves, profile.id));
++    fs.copyFileSync(fixture, path.join(saves, profile.id, "local.ess"));
++    expect(await onLoadSaves(profile.id)).toMatchObject([
++      { filePath: path.join(saves, profile.id, "local.ess") },
++    ]);
++  });
++
++  it("writes a relative Windows save path when applying profile settings to Skyrim.ini", async () => {
++    vi.stubGlobal("window", { addEventListener: vi.fn() });
++    once.mock.calls[0][0]();
++    const applySettings = api.onAsync.mock.calls.find(([event]) => event === "apply-settings")![1];
++    const iniPath = path.join(path.dirname(hostSaves), "Skyrim.ini");
++    const ini = { data: { General: { SLocalSavePath: "" } } };
++    await applySettings(profile, iniPath, ini);
++    expect(ini.data.General.SLocalSavePath).toBe("Saves\\");
++    profile.features.local_saves = true;
++    await applySettings(profile, iniPath, ini);
++    expect(ini.data.General.SLocalSavePath).toBe("Saves\\test\\");
++  });
++
++  it("reports an unavailable prefix without opening a host folder", async () => {
++    fs.renameSync(prefix, prefix + "-offline");
++    openAction("savegames-icons")();
++    await vi.waitFor(() =>
++      expect(api.showErrorNotification).toHaveBeenCalledWith(
++        "Failed to open savegame directory",
++        expect.objectContaining({ code: "ENOENT" }),
++        { allowReport: false },
++      ),
++    );
++    expect(open).not.toHaveBeenCalled();
++    expect(fs.existsSync(hostSaves)).toBe(false);
++  });
++});
