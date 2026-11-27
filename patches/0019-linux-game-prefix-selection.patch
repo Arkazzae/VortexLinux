@@ -39,6 +39,179 @@ index 220d69f..c53b742 100644
      this.mReduxWatcher = new ReduxWatcher(store, this.watcherError);
  
      // Process any pending actions that were deferred during construction
+diff --git a/src/renderer/src/extensions/hardlink_activator/prefixDeploymentTarget.test.ts b/src/renderer/src/extensions/hardlink_activator/prefixDeploymentTarget.test.ts
+new file mode 100644
+index 0000000..f003a53
+--- /dev/null
++++ b/src/renderer/src/extensions/hardlink_activator/prefixDeploymentTarget.test.ts
+@@ -0,0 +1,167 @@
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { makeRealDeploymentMethod } from "../../test-utils/builders";
++import {
++  resetCompatibilityPathCache,
++  setCompatibilityGameProvider,
++} from "../../util/compatibilityPaths";
++import { fsTargetPath } from "../../util/getVolumePath";
++import type * as selectors from "../../util/selectors";
++import type * as volume from "../../util/volume";
++import { suggestStagingPath } from "../gamemode_management/util/discovery";
++import type * as modSelectors from "../mod_management/selectors";
++import moveInit from "../move_activator";
++import hardlinkInit from "./index";
++
++// Real devices can't be created in a test: every existing path below one of
++// these roots counts as the staging folder's drive, anything else as another.
++const fixture = vi.hoisted(() => ({
++  stagingDrive: [] as string[],
++  staging: "",
++  modPaths: {} as Record<string, string>,
++  userData: "",
++}));
++
++vi.mock("../../util/volume", async (original) => {
++  const actual = await original<typeof volume>();
++  const nodePath = await import("node:path");
++  return {
++    ...actual,
++    getPathDevice: (input: string) => {
++      const existing = actual.nearestExistingPath(input);
++      return fixture.stagingDrive.some(
++        (root) => existing === root || existing.startsWith(root + nodePath.sep),
++      )
++        ? 1
++        : 2;
++    },
++  };
++});
++
++vi.mock("../../util/getVortexPath", () => ({ default: () => fixture.userData }));
++
++vi.mock("../gamemode_management/util/getGame", () => ({
++  getGame: () => ({ id: "baldursgate3", getModPaths: () => fixture.modPaths }),
++}));
++
++vi.mock("../../util/selectors", async (original) => ({
++  ...(await original<typeof selectors>()),
++  installPathForGame: () => fixture.staging,
++}));
++
++vi.mock("../mod_management/selectors", async (original) => ({
++  ...(await original<typeof modSelectors>()),
++  installPathForGame: () => fixture.staging,
++}));
++
++const identity = (input: string) => input;
++const GAME = "baldursgate3";
++
++describe.runIf(process.platform === "linux")(
++  "drive checks on a mod path inside the game's prefix",
++  () => {
++    let home: string;
++    let prefix: string;
++    let gameDir: string;
++    let linuxModPath: string;
++    let state: any;
++
++    beforeEach(() => {
++      home = fs.mkdtempSync(path.join(os.tmpdir(), "vortex-prefix-target-"));
++      prefix = path.join(home, "steamapps/compatdata/1086940/pfx");
++      gameDir = path.join(home, "steamapps/common/Baldurs Gate 3");
++      fixture.staging = path.join(home, "staging/baldursgate3");
++      // what the game extension asks for: AppData\Local as Vortex maps it on Linux
++      linuxModPath = path.join(home, "Local/Larian Studios/Baldur's Gate 3/Mods");
++      fixture.modPaths = { "": linuxModPath };
++      fixture.userData = path.join(home, ".config/Vortex");
++
++      // the game ran once through Proton, so its profile folder exists in the prefix
++      fs.mkdirSync(
++        path.join(prefix, "drive_c/users/steamuser/AppData/Local/Larian Studios/Baldur's Gate 3"),
++        { recursive: true },
++      );
++      fs.mkdirSync(gameDir, { recursive: true });
++      fs.mkdirSync(fixture.staging, { recursive: true });
++      fs.mkdirSync(fixture.userData, { recursive: true });
++      // the staging folder, the game and the prefix share one drive; home is another
++      fixture.stagingDrive = [path.join(home, "staging"), path.join(home, "steamapps")];
++
++      vi.stubEnv("VORTEX_LINUX_APPDATA", path.join(home, ".config"));
++      vi.stubEnv("VORTEX_LINUX_LOCAL_APPDATA", path.join(home, "Local"));
++      vi.stubEnv("VORTEX_LINUX_DOCUMENTS", path.join(home, "Documents"));
++      vi.stubEnv("VORTEX_COMPAT_PREFIXES", "");
++      setCompatibilityGameProvider(() => ({ path: gameDir, environment: { WINEPREFIX: prefix } }));
++
++      state = {
++        settings: {
++          gameMode: { discovered: { [GAME]: { path: gameDir } } },
++          mods: { suggestInstallPathDirectory: "Vortex Mods" },
++        },
++      };
++    });
++
++    afterEach(() => {
++      setCompatibilityGameProvider(undefined);
++      resetCompatibilityPathCache();
++      vi.unstubAllEnvs();
++      fs.rmSync(home, { force: true, recursive: true });
++    });
++
++    it("looks at the folder in the prefix", () => {
++      expect(fsTargetPath(linuxModPath)).toBe(
++        path.join(
++          prefix,
++          "drive_c/users/steamuser/AppData/Local/Larian Studios/Baldur's Gate 3/Mods",
++        ),
++      );
++    });
++
++    it.each([
++      ["hardlink", hardlinkInit],
++      ["move", moveInit],
++    ])("%s deployment compares the staging drive with the prefix", (_name, init) => {
++      const method = makeRealDeploymentMethod({} as any, init);
++
++      expect(method.isSupported(state, GAME, "")).toBeUndefined();
++    });
++
++    it("still refuses hardlinks when the prefix is on another drive than staging", () => {
++      fixture.stagingDrive = [path.join(home, "staging")];
++      const method = makeRealDeploymentMethod({} as any, hardlinkInit);
++
++      const reason = method.isSupported(state, GAME, "");
++
++      expect(reason?.description(identity as any)).toMatch(/same drive/);
++    });
++
++    it("uses the Linux folder while the game has no prefix", () => {
++      setCompatibilityGameProvider(() => ({
++        path: gameDir,
++        environment: { WINEPREFIX: path.join(home, "missing") },
++      }));
++      const method = makeRealDeploymentMethod({} as any, hardlinkInit);
++
++      expect(fsTargetPath(linuxModPath)).toBe(linuxModPath);
++      const reason = method.isSupported(state, GAME, "");
++      expect(reason?.description(identity as any)).toMatch(/same drive/);
++    });
++
++    it("still suggests a staging folder before the prefix exists", async () => {
++      setCompatibilityGameProvider(() => ({
++        path: gameDir,
++        environment: { WINEPREFIX: path.join(home, "missing") },
++      }));
++      const api = { getState: () => state } as any;
++
++      // the fixture keeps the Linux mod path and user data on one real drive
++      await expect(suggestStagingPath(api, GAME)).resolves.toBe(
++        path.join("{USERDATA}", "{game}", "mods"),
++      );
++    });
++  },
++);
 diff --git a/src/renderer/src/util/compatibilityPaths.ts b/src/renderer/src/util/compatibilityPaths.ts
 index a6f2ec8..058df74 100644
 --- a/src/renderer/src/util/compatibilityPaths.ts
@@ -397,6 +570,40 @@ index 0000000..fb672cd
 +    expect(resolveWindowsUserPathSync(path.join(documents, relative))).toBe(expected);
 +  });
 +});
+diff --git a/src/renderer/src/util/getVolumePath.ts b/src/renderer/src/util/getVolumePath.ts
+index 40d7ca8..291d6d7 100644
+--- a/src/renderer/src/util/getVolumePath.ts
++++ b/src/renderer/src/util/getVolumePath.ts
+@@ -3,6 +3,20 @@ import * as path from "path";
+ 
+ import * as winapi from "winapi-bindings";
+ 
++import { resolveCaseInsensitiveSync } from "./linuxCompatibility";
++
++/**
++ * The path util/fs would use: on Linux, Windows user folders such as AppData
++ * move into the game's Wine/Proton prefix. Without a prefix, the path as given.
++ */
++export function fsTargetPath(input: string): string {
++  try {
++    return resolveCaseInsensitiveSync(path.resolve(input));
++  } catch {
++    return input;
++  }
++}
++
+ /**
+  * Returns the root of the volume containing the path: the drive on Windows,
+  * the mount point elsewhere. Like the Windows API, the path doesn't need to exist.
+@@ -12,7 +26,7 @@ export function getVolumePath(filePath: string): string {
+     return winapi.GetVolumePathName(filePath);
+   }
+ 
+-  let current = path.resolve(filePath);
++  let current = path.resolve(fsTargetPath(filePath));
+   while (!existsSync(current)) {
+     current = path.dirname(current);
+   }
 diff --git a/src/renderer/src/util/linux/steamLibraries.ts b/src/renderer/src/util/linux/steamLibraries.ts
 new file mode 100644
 index 0000000..4b832f0
@@ -554,3 +761,25 @@ index 167f7b6..1be0938 100644
  
    const normalized = path.normalize(input);
    const root = path.parse(normalized).root;
+diff --git a/src/renderer/src/util/volume.ts b/src/renderer/src/util/volume.ts
+index f04ed7b..3a38ad9 100644
+--- a/src/renderer/src/util/volume.ts
++++ b/src/renderer/src/util/volume.ts
+@@ -3,6 +3,8 @@ import * as path from "node:path";
+ 
+ import * as winapi from "winapi-bindings";
+ 
++import { fsTargetPath } from "./getVolumePath";
++
+ export { getVolumePath } from "./getVolumePath";
+ 
+ export interface IDiskSpace {
+@@ -19,7 +21,7 @@ function missingPathError(input: string): NodeJS.ErrnoException {
+ }
+ 
+ export function nearestExistingPath(input: string): string {
+-  let current = path.resolve(input);
++  let current = path.resolve(fsTargetPath(input));
+ 
+   while (!fs.existsSync(current)) {
+     const parent = path.dirname(current);
