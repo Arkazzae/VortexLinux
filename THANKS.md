@@ -22,5 +22,8 @@ and try the fixes. In order of appearance:
 - **catsgomoo** showed that Steam can keep a game's Proton prefix on another
   drive than the game, and shared the launch options for starting Vortex from
   Steam (#22)
+- **Yagz** fixed hardlink deployment into the Proton prefix, Baldur's Gate 3
+  mods with a wrapper folder and the hash worker missing from rebuilt packages
+  (#37, #38, #39)
 
 Found something? [Open an issue](https://github.com/Arkazzae/VortexLinux/issues/new).
